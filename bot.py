@@ -37,9 +37,9 @@ BINANCE_ID = "828543482"
 BYBIT_ID = "199582741"
 
 # 🔐 API KEYS (empty রাখো এখন)
-TRONGRID_API_KEY = ""
-ETHERSCAN_API_KEY = ""
-HELIUS_API_KEY = ""
+TRONGRID_API_KEY = os.getenv("TRONGRID_API_KEY", "")
+ETHERSCAN_API_KEY = os.getenv("ETHERSCAN_API_KEY", "")
+HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "")
 
 # =========================
 # CHECK TOKEN (optional but good)
