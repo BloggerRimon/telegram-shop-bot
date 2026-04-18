@@ -1454,15 +1454,6 @@ def http_post_json(url: str, payload=None, headers=None, timeout=25):
 
 def verify_result(ok: bool, status: str, reason: str):
     return {"ok": ok, "status": status, "reason": reason}
-def amount_within_tolerance(actual_amount, expected_amount, tolerance=0.10):
-    actual_dec = safe_decimal(actual_amount)
-    expected_dec = safe_decimal(expected_amount)
-    tolerance_dec = safe_decimal(tolerance)
-
-    if actual_dec is None or expected_dec is None or tolerance_dec is None:
-        return False
-
-    return abs(actual_dec - expected_dec) <= tolerance_dec
 
 
 # =========================
@@ -1498,9 +1489,10 @@ def verify_usdt_trc20_txid(txid: str, expected_amount: float, expected_to_addres
     if not events:
         return verify_result(False, "pending", "no confirmed events found")
 
-   expected_amount_dec = safe_decimal(expected_amount)
-if expected_amount_dec is None:
-    return verify_result(False, "rejected", "invalid expected amount")
+    expected_amount_dec = safe_decimal(expected_amount)
+    if expected_amount_dec is None:
+        return verify_result(False, "rejected", "invalid expected amount")
+    expected_micro = int(expected_amount_dec * Decimal("1000000"))
 
     for ev in events:
         if str(ev.get("event_name", "")).lower() != "transfer":
@@ -1517,9 +1509,8 @@ if expected_amount_dec is None:
             value_int = int(str(value_raw))
         except Exception:
             continue
-      actual_amount = Decimal(value_int) / Decimal("1000000")
-if str(to_addr).strip() == str(expected_to_address).strip() and amount_within_tolerance(actual_amount, expected_amount, 0.10):
-    return verify_result(True, "confirmed", "verified")
+        if str(to_addr).strip() == str(expected_to_address).strip() and value_int == expected_micro:
+            return verify_result(True, "confirmed", "verified")
 
     return verify_result(False, "rejected", "no matching USDT TRC20 transfer found")
 
@@ -1566,12 +1557,12 @@ def verify_trx_transfer(txid: str, expected_amount: float, expected_to_address: 
         return verify_result(False, "rejected", "no destination found")
 
     actual_to = tron_hex_to_base58(to_address_hex)
-    if actual_to != expected_to_address:
-    return verify_result(False, "rejected", "destination address mismatch")
+    expected_sun = int(safe_decimal(expected_amount) * Decimal("1000000"))
 
-actual_amount = Decimal(amount_sun) / Decimal("1000000")
-if not amount_within_tolerance(actual_amount, expected_amount, 0.10):
-    return verify_result(False, "rejected", "amount mismatch")
+    if actual_to != expected_to_address:
+        return verify_result(False, "rejected", "destination address mismatch")
+    if amount_sun != expected_sun:
+        return verify_result(False, "rejected", "amount mismatch")
 
     return verify_result(True, "confirmed", "verified")
 
@@ -1625,9 +1616,9 @@ def verify_evm_native_transfer(txid: str, expected_amount: float, expected_to_ad
     except Exception:
         return verify_result(False, "rejected", "invalid value")
 
-    actual_amount = Decimal(value_wei) / Decimal("1000000000000000000")
-if not amount_within_tolerance(actual_amount, expected_amount, 0.10):
-    return verify_result(False, "rejected", "amount mismatch")
+    expected_wei = int(safe_decimal(expected_amount) * Decimal("1000000000000000000"))
+    if value_wei != expected_wei:
+        return verify_result(False, "rejected", "amount mismatch")
 
     return verify_result(True, "confirmed", "verified")
 
@@ -1645,7 +1636,8 @@ def verify_evm_token_transfer(txid: str, expected_amount: float, expected_to_add
     logs = receipt.get("logs", []) or []
     expected_contract = normalize_evm_address(token_contract)
     expected_to_topic = to_evm_topic_address(expected_to_address).lower()
-   unit = Decimal(10) ** Decimal(decimals)
+    unit = Decimal(10) ** Decimal(decimals)
+    expected_raw = int(safe_decimal(expected_amount) * unit)
 
     for log in logs:
         log_address = normalize_evm_address(log.get("address"))
@@ -1663,9 +1655,8 @@ def verify_evm_token_transfer(txid: str, expected_amount: float, expected_to_add
             value_raw = int(data_hex, 16)
         except Exception:
             continue
-        actual_amount = Decimal(value_raw) / unit
-if amount_within_tolerance(actual_amount, expected_amount, 0.10):
-    return verify_result(True, "confirmed", "verified")
+        if value_raw == expected_raw:
+            return verify_result(True, "confirmed", "verified")
 
     return verify_result(False, "rejected", "no matching token transfer found")
 
@@ -1681,10 +1672,10 @@ def verify_btc_transfer(txid: str, expected_amount: float, expected_to_address: 
     if not status.get("confirmed"):
         return verify_result(False, "pending", "transaction not confirmed yet")
 
-   for vout in tx.get("vout", []) or []:
-    actual_amount = Decimal(vout.get("value", 0)) / Decimal("100000000")
-    if vout.get("scriptpubkey_address") == expected_to_address and amount_within_tolerance(actual_amount, expected_amount, 0.10):
-        return verify_result(True, "confirmed", "verified")
+    expected_sats = int(safe_decimal(expected_amount) * Decimal("100000000"))
+    for vout in tx.get("vout", []) or []:
+        if vout.get("scriptpubkey_address") == expected_to_address and int(vout.get("value", 0)) == expected_sats:
+            return verify_result(True, "confirmed", "verified")
     return verify_result(False, "rejected", "no matching BTC output found")
 
 
@@ -1699,10 +1690,10 @@ def verify_ltc_transfer(txid: str, expected_amount: float, expected_to_address: 
     if not status.get("confirmed"):
         return verify_result(False, "pending", "transaction not confirmed yet")
 
+    expected_litoshi = int(safe_decimal(expected_amount) * Decimal("100000000"))
     for vout in tx.get("vout", []) or []:
-    actual_amount = Decimal(vout.get("value", 0)) / Decimal("100000000")
-    if vout.get("scriptpubkey_address") == expected_to_address and amount_within_tolerance(actual_amount, expected_amount, 0.10):
-        return verify_result(True, "confirmed", "verified")
+        if vout.get("scriptpubkey_address") == expected_to_address and int(vout.get("value", 0)) == expected_litoshi:
+            return verify_result(True, "confirmed", "verified")
     return verify_result(False, "rejected", "no matching LTC output found")
 
 
@@ -1729,7 +1720,7 @@ def verify_sol_transfer(txid: str, expected_amount: float, expected_to_address: 
     if meta.get("err") is not None:
         return verify_result(False, "rejected", "solana transaction failed")
 
-    
+    expected_lamports = int(safe_decimal(expected_amount) * Decimal("1000000000"))
     instructions = []
     message = (tx.get("transaction", {}) or {}).get("message", {}) or {}
     instructions.extend(message.get("instructions", []) or [])
@@ -1744,9 +1735,8 @@ def verify_sol_transfer(txid: str, expected_amount: float, expected_to_address: 
         if parsed.get("type") == "transfer":
             destination = info.get("destination")
             lamports = info.get("lamports")
-           actual_amount = Decimal(int(lamports)) / Decimal("1000000000")
-if destination == expected_to_address and amount_within_tolerance(actual_amount, expected_amount, 0.10):
-    return verify_result(True, "confirmed", "verified")
+            if destination == expected_to_address and int(lamports) == expected_lamports:
+                return verify_result(True, "confirmed", "verified")
 
     return verify_result(False, "rejected", "no matching SOL transfer found")
 
