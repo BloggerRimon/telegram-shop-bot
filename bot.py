@@ -258,14 +258,26 @@ def safe_decimal(value):
 
 def is_valid_txid_format(txid: str) -> bool:
     txid = txid.strip()
+
+    # allow 0x (important fix)
+    if txid.startswith("0x") or txid.startswith("0X"):
+        txid = txid[2:]
+
     if len(txid) < 20:
         return False
-    hex_allowed = "0123456789abcdefABCDEF"
-    if all(ch in hex_allowed for ch in txid):
+
+    # HEX check
+    try:
+        int(txid, 16)
         return True
+    except:
+        pass
+
+    # Base58 check
     base58_allowed = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
     if all(ch in base58_allowed for ch in txid):
         return True
+
     return False
 
 
