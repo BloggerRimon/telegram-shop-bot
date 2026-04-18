@@ -1454,11 +1454,17 @@ def http_post_json(url: str, payload=None, headers=None, timeout=25):
 
 def verify_result(ok: bool, status: str, reason: str):
     return {"ok": ok, "status": status, "reason": reason}
+def amount_within_tolerance(actual_amount, expected_amount, tolerance=0.10):
+    actual_dec = safe_decimal(actual_amount)
+    expected_dec = safe_decimal(expected_amount)
+    tolerance_dec = safe_decimal(tolerance)
+
+    if actual_dec is None or expected_dec is None or tolerance_dec is None:
+        return False
+
+    return abs(actual_dec - expected_dec) <= tolerance_dec
 
 
-# =========================
-# VERIFY FUNCTIONS
-# =========================
 def verify_usdt_trc20_txid(txid: str, expected_amount: float, expected_to_address: str):
     info_res = http_post_json(
         f"{TRONGRID_BASE}/walletsolidity/gettransactioninfobyid",
@@ -1468,6 +1474,7 @@ def verify_usdt_trc20_txid(txid: str, expected_amount: float, expected_to_addres
     )
     if not info_res["ok"]:
         return verify_result(False, "pending", f"tron info http {info_res['status_code']}")
+
     info_data = info_res["data"]
     if not info_data:
         return verify_result(False, "pending", "transaction not confirmed yet")
@@ -1485,31 +1492,35 @@ def verify_usdt_trc20_txid(txid: str, expected_amount: float, expected_to_addres
     )
     if not ev_res["ok"]:
         return verify_result(False, "pending", f"tron event http {ev_res['status_code']}")
+
     events = ev_res["data"].get("data", [])
     if not events:
         return verify_result(False, "pending", "no confirmed events found")
 
-    expected_amount_dec = safe_decimal(expected_amount)
-    if expected_amount_dec is None:
-        return verify_result(False, "rejected", "invalid expected amount")
-    expected_micro = int(expected_amount_dec * Decimal("1000000"))
-
     for ev in events:
         if str(ev.get("event_name", "")).lower() != "transfer":
             continue
+
         contract_address = str(ev.get("contract_address", "")).strip()
         if contract_address != USDT_TRC20_CONTRACT:
             continue
+
         result = ev.get("result", {}) or {}
         to_addr = result.get("to", "") or result.get("_to", "")
         value_raw = result.get("value", "") or result.get("_value", "")
         if not to_addr or value_raw == "":
             continue
+
         try:
             value_int = int(str(value_raw))
         except Exception:
             continue
-        if str(to_addr).strip() == str(expected_to_address).strip() and value_int == expected_micro:
+
+        actual_amount = Decimal(value_int) / Decimal("1000000")
+        if (
+            str(to_addr).strip() == str(expected_to_address).strip()
+            and amount_within_tolerance(actual_amount, expected_amount, 0.10)
+        ):
             return verify_result(True, "confirmed", "verified")
 
     return verify_result(False, "rejected", "no matching USDT TRC20 transfer found")
@@ -1524,6 +1535,7 @@ def verify_trx_transfer(txid: str, expected_amount: float, expected_to_address: 
     )
     if not tx_res["ok"]:
         return verify_result(False, "pending", f"tron tx http {tx_res['status_code']}")
+
     tx_data = tx_res["data"]
     if not tx_data:
         return verify_result(False, "pending", "transaction not found yet")
@@ -1536,6 +1548,7 @@ def verify_trx_transfer(txid: str, expected_amount: float, expected_to_address: 
     )
     if not info_res["ok"]:
         return verify_result(False, "pending", f"tron info http {info_res['status_code']}")
+
     info_data = info_res["data"]
     if not info_data:
         return verify_result(False, "pending", "transaction not confirmed yet")
@@ -1557,42 +1570,22 @@ def verify_trx_transfer(txid: str, expected_amount: float, expected_to_address: 
         return verify_result(False, "rejected", "no destination found")
 
     actual_to = tron_hex_to_base58(to_address_hex)
-    expected_sun = int(safe_decimal(expected_amount) * Decimal("1000000"))
 
     if actual_to != expected_to_address:
         return verify_result(False, "rejected", "destination address mismatch")
-    if amount_sun != expected_sun:
+
+    actual_amount = Decimal(amount_sun) / Decimal("1000000")
+    if not amount_within_tolerance(actual_amount, expected_amount, 0.10):
         return verify_result(False, "rejected", "amount mismatch")
 
     return verify_result(True, "confirmed", "verified")
 
 
-def etherscan_v2_get(params: dict):
-    merged = dict(params)
-    merged["apikey"] = ETHERSCAN_API_KEY
-    return http_get_json(ETHERSCAN_V2_URL, params=merged, timeout=25)
-
-
-def get_evm_tx_receipt(chainid: str, txid: str):
-    return etherscan_v2_get({
-        "chainid": chainid,
-        "module": "proxy",
-        "action": "eth_getTransactionReceipt",
-        "txhash": txid,
-    })
-
-
-def get_evm_tx_by_hash(chainid: str, txid: str):
-    return etherscan_v2_get({
-        "chainid": chainid,
-        "module": "proxy",
-        "action": "eth_getTransactionByHash",
-        "txhash": txid,
-    })
 def verify_evm_native_transfer(txid: str, expected_amount: float, expected_to_address: str, chainid: str, symbol: str):
     tx_res = get_evm_tx_by_hash(chainid, txid)
     if not tx_res["ok"]:
         return verify_result(False, "pending", f"{symbol} tx http {tx_res['status_code']}")
+
     tx_data = tx_res["data"].get("result")
     if not tx_data:
         return verify_result(False, "pending", "transaction not found yet")
@@ -1600,9 +1593,11 @@ def verify_evm_native_transfer(txid: str, expected_amount: float, expected_to_ad
     receipt_res = get_evm_tx_receipt(chainid, txid)
     if not receipt_res["ok"]:
         return verify_result(False, "pending", f"{symbol} receipt http {receipt_res['status_code']}")
+
     receipt = receipt_res["data"].get("result")
     if not receipt:
         return verify_result(False, "pending", "transaction not confirmed yet")
+
     if str(receipt.get("status", "")).lower() not in {"0x1", "1"}:
         return verify_result(False, "rejected", "transaction failed")
 
@@ -1616,20 +1611,30 @@ def verify_evm_native_transfer(txid: str, expected_amount: float, expected_to_ad
     except Exception:
         return verify_result(False, "rejected", "invalid value")
 
-    expected_wei = int(safe_decimal(expected_amount) * Decimal("1000000000000000000"))
-    if value_wei != expected_wei:
+    actual_amount = Decimal(value_wei) / Decimal("1000000000000000000")
+    if not amount_within_tolerance(actual_amount, expected_amount, 0.10):
         return verify_result(False, "rejected", "amount mismatch")
 
     return verify_result(True, "confirmed", "verified")
 
 
-def verify_evm_token_transfer(txid: str, expected_amount: float, expected_to_address: str, chainid: str, token_contract: str, decimals: int, symbol: str):
+def verify_evm_token_transfer(
+    txid: str,
+    expected_amount: float,
+    expected_to_address: str,
+    chainid: str,
+    token_contract: str,
+    decimals: int,
+    symbol: str,
+):
     receipt_res = get_evm_tx_receipt(chainid, txid)
     if not receipt_res["ok"]:
         return verify_result(False, "pending", f"{symbol} receipt http {receipt_res['status_code']}")
+
     receipt = receipt_res["data"].get("result")
     if not receipt:
         return verify_result(False, "pending", "transaction not confirmed yet")
+
     if str(receipt.get("status", "")).lower() not in {"0x1", "1"}:
         return verify_result(False, "rejected", "transaction failed")
 
@@ -1637,25 +1642,30 @@ def verify_evm_token_transfer(txid: str, expected_amount: float, expected_to_add
     expected_contract = normalize_evm_address(token_contract)
     expected_to_topic = to_evm_topic_address(expected_to_address).lower()
     unit = Decimal(10) ** Decimal(decimals)
-    expected_raw = int(safe_decimal(expected_amount) * unit)
 
     for log in logs:
         log_address = normalize_evm_address(log.get("address"))
         if log_address != expected_contract:
             continue
+
         topics = log.get("topics", []) or []
         if len(topics) < 3:
             continue
+
         if str(topics[0]).lower() != ERC20_TRANSFER_TOPIC:
             continue
+
         if str(topics[2]).lower() != expected_to_topic:
             continue
+
         data_hex = str(log.get("data", "0x0"))
         try:
             value_raw = int(data_hex, 16)
         except Exception:
             continue
-        if value_raw == expected_raw:
+
+        actual_amount = Decimal(value_raw) / unit
+        if amount_within_tolerance(actual_amount, expected_amount, 0.10):
             return verify_result(True, "confirmed", "verified")
 
     return verify_result(False, "rejected", "no matching token transfer found")
@@ -1665,17 +1675,23 @@ def verify_btc_transfer(txid: str, expected_amount: float, expected_to_address: 
     tx_res = http_get_json(f"{BTC_API_BASE}/tx/{txid}", timeout=20)
     if not tx_res["ok"]:
         return verify_result(False, "pending", f"btc tx http {tx_res['status_code']}")
+
     tx = tx_res["data"]
     status = tx.get("status", {}) or {}
     if not tx:
         return verify_result(False, "pending", "transaction not found yet")
+
     if not status.get("confirmed"):
         return verify_result(False, "pending", "transaction not confirmed yet")
 
-    expected_sats = int(safe_decimal(expected_amount) * Decimal("100000000"))
     for vout in tx.get("vout", []) or []:
-        if vout.get("scriptpubkey_address") == expected_to_address and int(vout.get("value", 0)) == expected_sats:
+        actual_amount = Decimal(vout.get("value", 0)) / Decimal("100000000")
+        if (
+            vout.get("scriptpubkey_address") == expected_to_address
+            and amount_within_tolerance(actual_amount, expected_amount, 0.10)
+        ):
             return verify_result(True, "confirmed", "verified")
+
     return verify_result(False, "rejected", "no matching BTC output found")
 
 
@@ -1683,23 +1699,34 @@ def verify_ltc_transfer(txid: str, expected_amount: float, expected_to_address: 
     tx_res = http_get_json(f"{LTC_API_BASE}/tx/{txid}", timeout=20)
     if not tx_res["ok"]:
         return verify_result(False, "pending", f"ltc tx http {tx_res['status_code']}")
+
     tx = tx_res["data"]
     status = tx.get("status", {}) or {}
     if not tx:
         return verify_result(False, "pending", "transaction not found yet")
+
     if not status.get("confirmed"):
         return verify_result(False, "pending", "transaction not confirmed yet")
 
-    expected_litoshi = int(safe_decimal(expected_amount) * Decimal("100000000"))
     for vout in tx.get("vout", []) or []:
-        if vout.get("scriptpubkey_address") == expected_to_address and int(vout.get("value", 0)) == expected_litoshi:
+        actual_amount = Decimal(vout.get("value", 0)) / Decimal("100000000")
+        if (
+            vout.get("scriptpubkey_address") == expected_to_address
+            and amount_within_tolerance(actual_amount, expected_amount, 0.10)
+        ):
             return verify_result(True, "confirmed", "verified")
+
     return verify_result(False, "rejected", "no matching LTC output found")
 
 
 def helius_rpc(method: str, params):
     payload = {"jsonrpc": "2.0", "id": "1", "method": method, "params": params}
-    return http_post_json(HELIUS_RPC_URL, payload=payload, headers={"content-type": "application/json"}, timeout=25)
+    return http_post_json(
+        HELIUS_RPC_URL,
+        payload=payload,
+        headers={"content-type": "application/json"},
+        timeout=25,
+    )
 
 
 def verify_sol_transfer(txid: str, expected_amount: float, expected_to_address: str):
@@ -1707,11 +1734,16 @@ def verify_sol_transfer(txid: str, expected_amount: float, expected_to_address: 
         "getTransaction",
         [
             txid,
-            {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0, "commitment": "confirmed"},
+            {
+                "encoding": "jsonParsed",
+                "maxSupportedTransactionVersion": 0,
+                "commitment": "confirmed",
+            },
         ],
     )
     if not res["ok"]:
         return verify_result(False, "pending", f"sol rpc http {res['status_code']}")
+
     tx = res["data"].get("result")
     if not tx:
         return verify_result(False, "pending", "transaction not found yet")
@@ -1720,10 +1752,10 @@ def verify_sol_transfer(txid: str, expected_amount: float, expected_to_address: 
     if meta.get("err") is not None:
         return verify_result(False, "rejected", "solana transaction failed")
 
-    expected_lamports = int(safe_decimal(expected_amount) * Decimal("1000000000"))
     instructions = []
     message = (tx.get("transaction", {}) or {}).get("message", {}) or {}
     instructions.extend(message.get("instructions", []) or [])
+
     for inner in meta.get("innerInstructions", []) or []:
         instructions.extend(inner.get("instructions", []) or [])
 
@@ -1731,40 +1763,20 @@ def verify_sol_transfer(txid: str, expected_amount: float, expected_to_address: 
         parsed = ins.get("parsed")
         if not parsed:
             continue
+
         info = parsed.get("info", {}) or {}
         if parsed.get("type") == "transfer":
             destination = info.get("destination")
             lamports = info.get("lamports")
-            if destination == expected_to_address and int(lamports) == expected_lamports:
+
+            actual_amount = Decimal(int(lamports)) / Decimal("1000000000")
+            if (
+                destination == expected_to_address
+                and amount_within_tolerance(actual_amount, expected_amount, 0.10)
+            ):
                 return verify_result(True, "confirmed", "verified")
 
     return verify_result(False, "rejected", "no matching SOL transfer found")
-
-
-def verify_crypto_payment(network: str, txid: str, expected_amount: float, expected_to_address: str):
-    try:
-        if network == "USDT (TRC20)":
-            return verify_usdt_trc20_txid(txid, expected_amount, expected_to_address)
-        if network == "TRX (TRC20)":
-            return verify_trx_transfer(txid, expected_amount, expected_to_address)
-        if network == "USDT (ERC20)":
-            return verify_evm_token_transfer(txid, expected_amount, expected_to_address, ETH_CHAIN_ID, USDT_ERC20_CONTRACT, 6, "USDT ERC20")
-        if network == "ETH (ERC20)":
-            return verify_evm_native_transfer(txid, expected_amount, expected_to_address, ETH_CHAIN_ID, "ETH")
-        if network == "USDT (BEP20)":
-            return verify_evm_token_transfer(txid, expected_amount, expected_to_address, BSC_CHAIN_ID, USDT_BEP20_CONTRACT, 18, "USDT BEP20")
-        if network == "BNB (BEP20)":
-            return verify_evm_native_transfer(txid, expected_amount, expected_to_address, BSC_CHAIN_ID, "BNB")
-        if network == "BTC":
-            return verify_btc_transfer(txid, expected_amount, expected_to_address)
-        if network == "LTC":
-            return verify_ltc_transfer(txid, expected_amount, expected_to_address)
-        if network == "SOL":
-            return verify_sol_transfer(txid, expected_amount, expected_to_address)
-        return verify_result(False, "rejected", f"unsupported network: {network}")
-    except Exception as e:
-        return verify_result(False, "pending", f"verification error: {e}")
-
 
 # =========================
 # ACTION HELPERS
