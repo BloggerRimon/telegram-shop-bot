@@ -1111,7 +1111,7 @@ def payment_checker_keyboard():
 
 # =========================
 # PART 2 OF 10 - START
-# Paste this directly BELOW Part 1
+# Replace your OLD Part 2 fully with this
 # =========================
 
 # =========================
@@ -1121,18 +1121,16 @@ def payment_checker_keyboard():
 def render_home_text():
     return (
         "👑 <b>SupremeLeader Premium Shop</b>\n\n"
-        "Welcome to your premium digital marketplace.\n"
-        "Use the menu below to browse products, top up your wallet, "
-        "track payments, and manage your orders."
+        "Welcome. Use the menu below to buy products, top up, and track payments."
     )
 
 
 def render_wallet_text(user_id):
     balance = get_wallet_balance(user_id)
     return (
-        "💰 <b>WALLET OVERVIEW</b>\n\n"
-        f"<b>Available Balance:</b> {format_money(balance)}\n"
-        f"<b>Checked At:</b> {format_dt(now_iso())}"
+        "💰 <b>WALLET</b>\n\n"
+        f"<b>Balance:</b> {format_money(balance)}\n"
+        f"<b>Checked:</b> {format_dt(now_iso())}"
     )
 
 
@@ -1140,15 +1138,15 @@ def render_user_id_text(user_id):
     return (
         "🆔 <b>YOUR USER ID</b>\n\n"
         f"<code>{user_id}</code>\n\n"
-        "Keep this ID safe. You may need it for support or admin confirmation."
+        "Use this ID if support asks for it."
     )
 
 
 def render_support_text():
     return (
         "💬 <b>SUPPORT</b>\n\n"
-        f"If you need help, contact: {escape_html(SUPPORT_USERNAME)}\n\n"
-        f"<b>Checked At:</b> {format_dt(now_iso())}"
+        f"Contact: {escape_html(SUPPORT_USERNAME)}\n\n"
+        f"<b>Time:</b> {format_dt(now_iso())}"
     )
 
 
@@ -1156,10 +1154,8 @@ def render_refer_text(user_id):
     ref_link = f"https://t.me/{BOT_USERNAME}?start={user_id}"
     return (
         "👥 <b>REFER & EARN</b>\n\n"
-        "Invite your friends using your personal referral link.\n\n"
         f"<b>Your Link:</b>\n{escape_html(ref_link)}\n\n"
-        "Referral rewards can be expanded later.\n"
-        f"<b>Generated At:</b> {format_dt(now_iso())}"
+        f"<b>Generated:</b> {format_dt(now_iso())}"
     )
 
 
@@ -1168,14 +1164,12 @@ def render_product_card(product_id):
     if not product:
         return "❌ Product not found."
 
-    display_stock = get_display_stock(product_id)
-    stock_text = f"{display_stock} pcs" if display_stock > 0 else "Out of stock"
+    stock = get_display_stock(product_id)
+    stock_text = "In Stock" if stock > 0 else "Out of Stock"
 
     return (
         f"{escape_html(product['icon'])} <b>{escape_html(product['name'])}</b>\n"
-        f"<b>Plan:</b> {escape_html(product['month'])} month\n"
-        f"<b>Price:</b> {format_money(product['price'])}\n"
-        f"<b>Visible Stock:</b> {stock_text}"
+        f"💵 {format_money(product['price'])} | 📦 {stock_text}"
     )
 
 
@@ -1184,20 +1178,19 @@ def render_product_details(product_id):
     if not product:
         return "❌ Product not found."
 
-    detail_lines = "\n".join(product["details"]) if product["details"] else "No details available."
-    display_stock = get_display_stock(product_id)
-    real_stock = get_real_stock_count(product_id)
+    detail_lines = product["details"] if product["details"] else []
+    short_details = "\n".join(detail_lines[:3]) if detail_lines else "No extra details."
+
+    stock = get_display_stock(product_id)
 
     return (
         "📦 <b>PRODUCT DETAILS</b>\n\n"
-        f"<b>Icon:</b> {escape_html(product['icon'])}\n"
         f"<b>Name:</b> {escape_html(product['name'])}\n"
         f"<b>Plan:</b> {escape_html(product['month'])} month\n"
-        f"<b>Unit Price:</b> {format_money(product['price'])}\n"
-        f"<b>Display Stock:</b> {display_stock} pcs\n"
-        f"<b>Real Stock:</b> {real_stock} pcs\n\n"
-        f"{detail_lines}\n\n"
-        "<b>Select a quantity below:</b>"
+        f"<b>Price:</b> {format_money(product['price'])}\n"
+        f"<b>Stock:</b> {stock}\n\n"
+        f"{short_details}\n\n"
+        "Choose quantity below."
     )
 
 
@@ -1214,50 +1207,47 @@ def render_buy_summary(product_id, qty, wallet_balance):
         return (
             "🛒 <b>ORDER SUMMARY</b>\n\n"
             f"<b>Product:</b> {escape_html(product['name'])}\n"
-            f"<b>Unit Price:</b> {format_money(product['price'])}\n"
-            f"<b>Quantity:</b> {qty}\n"
+            f"<b>Qty:</b> {qty}\n"
             f"<b>Total:</b> {format_money(total)}\n"
-            f"<b>Wallet Balance:</b> {format_money(wallet_dec)}\n"
-            f"<b>Balance After Purchase:</b> {format_money(remaining)}\n\n"
-            "✅ Your wallet balance is enough for this purchase.\n"
-            "The order can be completed directly from your wallet."
+            f"<b>Wallet:</b> {format_money(wallet_dec)}\n"
+            f"<b>After Buy:</b> {format_money(remaining)}\n\n"
+            "✅ You can pay directly from wallet."
         )
 
     shortage = total - wallet_dec
     return (
         "🛒 <b>ORDER SUMMARY</b>\n\n"
         f"<b>Product:</b> {escape_html(product['name'])}\n"
-        f"<b>Unit Price:</b> {format_money(product['price'])}\n"
-        f"<b>Quantity:</b> {qty}\n"
+        f"<b>Qty:</b> {qty}\n"
         f"<b>Total:</b> {format_money(total)}\n"
-        f"<b>Wallet Balance:</b> {format_money(wallet_dec)}\n"
-        f"<b>Still Needed:</b> {format_money(shortage)}\n\n"
-        "Choose a payment method below to continue."
+        f"<b>Wallet:</b> {format_money(wallet_dec)}\n"
+        f"<b>Need:</b> {format_money(shortage)}\n\n"
+        "Choose a payment method below."
     )
 
 
 def render_deposit_text():
     return (
-        "💳 <b>TOP UP YOUR WALLET</b>\n\n"
-        "Choose a deposit amount below or enter a custom amount."
+        "💳 <b>TOP UP</b>\n\n"
+        "Choose an amount or enter custom amount."
     )
 
 
 def render_deposit_method_text(amount):
     return (
         "💳 <b>SELECT PAYMENT METHOD</b>\n\n"
-        f"<b>Requested Top-Up:</b> {format_money(amount)}\n\n"
-        "Choose how you want to complete this payment."
+        f"<b>Top-Up Amount:</b> {format_money(amount)}\n\n"
+        "Choose how you want to pay."
     )
 
 
 def render_manual_payment_text(amount, method, details):
     return (
-        "🏦 <b>MANUAL PAYMENT INSTRUCTION</b>\n\n"
+        "🏦 <b>MANUAL PAYMENT</b>\n\n"
         f"<b>Amount:</b> {format_money(amount)}\n"
-        f"<b>Method:</b> {escape_html(method)}\n\n"
-        f"{escape_html(details)}\n\n"
-        "After sending payment, contact support with proof of payment."
+        f"<b>Method:</b> {escape_html(method)}\n"
+        f"<b>Details:</b> {escape_html(details)}\n\n"
+        "After payment, contact support with proof."
     )
 
 
@@ -1266,45 +1256,36 @@ def render_buy_manual_payment_text(product_id, qty, total, method, details):
     name = product["name"] if product else "Unknown Product"
 
     return (
-        "🏦 <b>ORDER PAYMENT DETAILS</b>\n\n"
+        "🏦 <b>ORDER PAYMENT</b>\n\n"
         f"<b>Product:</b> {escape_html(name)}\n"
-        f"<b>Quantity:</b> {qty}\n"
+        f"<b>Qty:</b> {qty}\n"
         f"<b>Total:</b> {format_money(total)}\n"
-        f"<b>Method:</b> {escape_html(method)}\n\n"
-        f"{escape_html(details)}\n\n"
-        "After payment, contact support with your payment proof for manual review."
+        f"<b>Method:</b> {escape_html(method)}\n"
+        f"<b>Details:</b> {escape_html(details)}\n\n"
+        "After payment, contact support with proof."
     )
 
 
 def render_invoice_payment_text(invoice_row):
     invoice_type = invoice_row["invoice_type"]
-    header = "✅ <b>PAYMENT REQUEST CREATED</b>"
-
-    if invoice_type == "deposit":
-        purpose_text = "Wallet Top-Up"
-    else:
-        purpose_text = "Product Order"
-
+    purpose_text = "Wallet Top-Up" if invoice_type == "deposit" else "Product Order"
     eta_text = NETWORK_CONFIRMATION_GUIDE.get(invoice_row["network"], "Usually a few minutes")
 
     return (
-        f"{header}\n\n"
+        "✅ <b>PAYMENT REQUEST CREATED</b>\n\n"
         f"<b>Purpose:</b> {escape_html(purpose_text)}\n"
-        f"<b>Base Amount:</b> {format_money(invoice_row['amount_base_usd'])}\n"
-        f"<b>Service Buffer:</b> {format_money(invoice_row['amount_extra_usd'])}\n"
-        f"<b>Final Payable:</b> {format_money(invoice_row['amount_payable_usd'])}\n\n"
-        f"<b>Send This Coin Amount:</b>\n"
+        f"<b>Pay:</b> {format_money(invoice_row['amount_payable_usd'])}\n"
+        f"<b>Coin Amount:</b>\n"
         f"<code>{escape_html(invoice_row['coin_amount'])} {escape_html(invoice_row['coin_symbol'])}</code>\n\n"
         f"<b>Network:</b> {escape_html(invoice_row['network'])}\n"
         f"<b>Deposit Address:</b>\n"
         f"<code>{escape_html(invoice_row['deposit_address'])}</code>\n\n"
-        f"⚠️ <b>Important:</b>\n"
-        f"• Please send the exact coin amount shown above.\n"
-        f"• Exchange withdrawal fees are separate and must be covered by the sender.\n"
-        f"• A different amount may fail automatic detection.\n"
-        f"• This payment request expires at: {format_dt(invoice_row['expires_at'])}\n\n"
-        f"<b>Estimated Confirmation Time:</b> {escape_html(eta_text)}\n"
-        f"<b>Created At:</b> {format_dt(invoice_row['created_at'])}"
+        "⚠️ <b>Important:</b>\n"
+        "• Send the exact amount shown above\n"
+        "• Sender covers exchange withdrawal fee\n"
+        "• Wrong amount may fail auto-detection\n\n"
+        f"<b>Confirm Time:</b> {escape_html(eta_text)}\n"
+        f"<b>Created:</b> {format_dt(invoice_row['created_at'])}"
     )
 
 
@@ -1328,14 +1309,11 @@ def render_orders_text(user_id):
             f"\n<b>Order #{row['id']}</b>\n"
             f"Product: {escape_html(row['product_name'])}\n"
             f"Qty: {row['qty']}\n"
-            f"Base Total: {format_money(row['base_total_usd'])}\n"
-            f"Paid Amount: {format_money(row['payable_total_usd'])}\n"
-            f"Payment Type: {escape_html(row['payment_type'])}\n"
+            f"Paid: {format_money(row['payable_total_usd'])}\n"
             f"Status: <b>{escape_html(row['status'])}</b>\n"
             f"Created: {format_dt(row['created_at'])}\n"
             f"Paid: {format_dt(row['paid_at'])}\n"
-            f"Delivered: {format_dt(row['delivered_at'])}\n"
-            f"Updated: {format_dt(row['updated_at'])}"
+            f"Delivered: {format_dt(row['delivered_at'])}"
         )
 
     return "\n".join(lines)
@@ -1359,7 +1337,7 @@ def render_transactions_text(user_id):
     for row in rows:
         coin_part = ""
         if row["coin_amount"] and row["coin_symbol"]:
-            coin_part = f"\nCoin Amount: {escape_html(row['coin_amount'])} {escape_html(row['coin_symbol'])}"
+            coin_part = f"\nCoin: {escape_html(row['coin_amount'])} {escape_html(row['coin_symbol'])}"
 
         txid_part = ""
         if row["blockchain_txid"]:
@@ -1368,14 +1346,12 @@ def render_transactions_text(user_id):
         lines.append(
             f"\n<b>TX #{row['id']}</b>\n"
             f"Type: {escape_html(row['tx_type'])}\n"
-            f"USD Amount: {format_money(row['amount_usd'])}\n"
-            f"Network: {escape_html(row['network'] or 'N/A')}"
+            f"Amount: {format_money(row['amount_usd'])}\n"
+            f"Status: <b>{escape_html(row['status'])}</b>"
             f"{coin_part}"
-            f"\nStatus: <b>{escape_html(row['status'])}</b>"
             f"{txid_part}"
             f"\nCreated: {format_dt(row['created_at'])}\n"
-            f"Confirmed: {format_dt(row['confirmed_at'])}\n"
-            f"Updated: {format_dt(row['updated_at'])}"
+            f"Confirmed: {format_dt(row['confirmed_at'])}"
         )
 
     return "\n".join(lines)
@@ -1393,7 +1369,7 @@ def render_open_invoices_text(user_id):
     conn.close()
 
     if not rows:
-        return "📄 <b>OPEN PAYMENT REQUESTS</b>\n\nYou do not have any active payment requests."
+        return "📄 <b>OPEN PAYMENT REQUESTS</b>\n\nNo active payment requests."
 
     lines = ["📄 <b>OPEN PAYMENT REQUESTS</b>\n"]
     for row in rows:
@@ -1401,8 +1377,8 @@ def render_open_invoices_text(user_id):
             f"\n<b>{escape_html(row['invoice_id'])}</b>\n"
             f"Type: {escape_html(row['invoice_type'])}\n"
             f"Network: {escape_html(row['network'])}\n"
-            f"Final Payable: {format_money(row['amount_payable_usd'])}\n"
-            f"Coin Amount: {escape_html(row['coin_amount'])} {escape_html(row['coin_symbol'])}\n"
+            f"Pay: {format_money(row['amount_payable_usd'])}\n"
+            f"Coin: {escape_html(row['coin_amount'])} {escape_html(row['coin_symbol'])}\n"
             f"Status: <b>{escape_html(row['status'])}</b>\n"
             f"Created: {format_dt(row['created_at'])}\n"
             f"Expires: {format_dt(row['expires_at'])}"
@@ -1414,11 +1390,10 @@ def render_open_invoices_text(user_id):
 def render_payment_checker_intro():
     return (
         "🛠 <b>PAYMENT CHECKER</b>\n\n"
-        "Use this section if:\n"
-        "• you paid but left the chat,\n"
-        "• your payment is still pending,\n"
-        "• you want to check a TXID manually,\n"
-        "• you want to view your open payment requests.\n\n"
+        "Use this if:\n"
+        "• you already paid\n"
+        "• payment is still pending\n"
+        "• you want to check a TXID\n\n"
         "Choose an option below."
     )
 
@@ -1426,56 +1401,50 @@ def render_payment_checker_intro():
 def render_guideline_home():
     return (
         "📘 <b>BOT GUIDELINE</b>\n\n"
-        "If you are new, this guide will help you understand how the bot works.\n\n"
-        "Choose a topic below."
+        "Choose a topic below to understand how the bot works."
     )
 
 
 def render_guideline_text(topic):
     mapping = {
         "guide_buy": (
-            "🛍 <b>HOW TO BUY A PRODUCT</b>\n\n"
-            "1. Open <b>Shop</b>\n"
-            "2. Select a product\n"
+            "🛍 <b>HOW TO BUY</b>\n\n"
+            "1. Open Shop\n"
+            "2. Select product\n"
             "3. Choose quantity\n"
-            "4. If wallet balance is enough, the order completes instantly\n"
-            "5. If not, choose a payment method\n"
-            "6. For crypto, complete the payment request and press <b>I Have Paid (Verify)</b>\n"
-            "7. After confirmation, your product details will be delivered automatically"
+            "4. Pay from wallet or crypto\n"
+            "5. After payment, receive product automatically"
         ),
         "guide_topup": (
             "💳 <b>HOW TO TOP UP</b>\n\n"
-            "1. Open <b>Top Up</b>\n"
-            "2. Select or enter the amount\n"
-            "3. Choose crypto or manual payment\n"
-            "4. For crypto, send the exact displayed amount\n"
-            "5. Press <b>I Have Paid (Verify)</b>\n"
-            "6. Once confirmed, the balance will be added to your wallet"
+            "1. Open Top Up\n"
+            "2. Select amount\n"
+            "3. Choose payment method\n"
+            "4. Send exact amount\n"
+            "5. Press Verify"
         ),
         "guide_promo": (
-            "🎟 <b>HOW TO USE A PROMO CODE</b>\n\n"
-            "1. Open <b>Promo</b>\n"
-            "2. Send your promo code in chat\n"
-            "3. If valid, the bonus will be added to your wallet\n"
-            "4. Some promo codes may be one-time only"
+            "🎟 <b>HOW TO USE PROMO</b>\n\n"
+            "1. Open Promo\n"
+            "2. Send code in chat\n"
+            "3. If valid, bonus will be added to wallet"
         ),
         "guide_payment": (
             "🛠 <b>PAYMENT HELP</b>\n\n"
-            "• Always send the exact displayed amount\n"
-            "• The sender must cover exchange withdrawal fees\n"
-            "• Use the correct network only\n"
-            "• If verification is delayed, use <b>Payment Checker</b>\n"
-            "• If a payment is already on chain but still pending, wait for blockchain confirmations"
+            "• Send exact amount\n"
+            "• Use correct network\n"
+            "• Sender pays withdrawal fee\n"
+            "• If delayed, use Payment Checker"
         ),
         "guide_delivery": (
-            "📦 <b>ORDER DELIVERY INFO</b>\n\n"
-            "• Wallet-paid orders are completed instantly if stock is available\n"
-            "• Verified crypto orders are delivered automatically after confirmation\n"
-            "• If stock is unavailable, contact support\n"
-            "• Delivery timestamps are shown in your order history"
+            "📦 <b>DELIVERY INFO</b>\n\n"
+            "• Wallet-paid orders complete instantly if stock is available\n"
+            "• Verified crypto orders are delivered automatically\n"
+            "• If stock is unavailable, contact support"
         ),
     }
     return mapping.get(topic, "Guide not found.")
+
 
 # =========================
 # DATABASE RECORD HELPERS
@@ -1954,6 +1923,7 @@ def get_user_search_summary_text(user_id):
 
     return "\n".join(lines)
 
+
 # =========================
 # LIVE PRICE / CONVERSION HELPERS
 # =========================
@@ -1984,7 +1954,6 @@ def fetch_live_usd_rate(network):
     if not coin_id:
         return None
 
-    # USDT stays 1
     if coin_id == "tether":
         set_cached_rate(network, Decimal("1"))
         return Decimal("1")
@@ -2016,22 +1985,16 @@ def quantize_coin_amount(amount_decimal, network):
 
     if network == "BTC":
         return amount_decimal.quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
-
     if network == "LTC":
         return amount_decimal.quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
-
     if network == "ETH (ERC20)":
         return amount_decimal.quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
-
     if network == "BNB (BEP20)":
         return amount_decimal.quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
-
     if network == "SOL":
         return amount_decimal.quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
-
     if network == "TRX (TRC20)":
         return amount_decimal.quantize(Decimal("0.001"), rounding=ROUND_DOWN)
-
     if network.startswith("USDT"):
         return amount_decimal.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
 
@@ -2047,7 +2010,6 @@ def usd_to_coin_amount(usd_amount, network):
     if usd_rate is None or usd_rate <= 0:
         return None, None
 
-    # Example: if BTC price is 65000 USD, then coin = usd / 65000
     coin_amount = usd_dec / usd_rate
     coin_amount = quantize_coin_amount(coin_amount, network)
 
@@ -2057,7 +2019,6 @@ def usd_to_coin_amount(usd_amount, network):
 def build_unique_payable_amount(base_amount_usd):
     base_dec = money_2(base_amount_usd)
 
-    # avoid collision with currently active invoice amounts as much as possible
     conn = db_conn()
     rows = conn.execute("""
         SELECT amount_payable_usd
@@ -2074,7 +2035,6 @@ def build_unique_payable_amount(base_amount_usd):
         if payable not in active_amounts:
             return extra, payable
 
-    # fallback
     extra = Decimal("0.17")
     return extra, money_2(base_dec + extra)
 
@@ -2800,8 +2760,6 @@ def make_used_unique_key(network, txid, to_address, amount):
 
 
 def scan_recent_btc_matches(expected_address, expected_amount, created_after=None):
-    # mempool.space does not offer a clean "address incoming tx list with parsed filters"
-    # in the same easy way for this bot, so for button verify we ask for TXID fallback for BTC
     return verify_result(
         False,
         "manual_check_required",
@@ -2826,7 +2784,6 @@ def scan_recent_sol_matches(expected_address, expected_amount, created_after=Non
 
 
 def scan_recent_trx_matches(expected_address, expected_amount, created_after=None):
-    # TRON native scan without TXID is less reliable here with current public API usage.
     return verify_result(
         False,
         "manual_check_required",
@@ -2835,8 +2792,6 @@ def scan_recent_trx_matches(expected_address, expected_amount, created_after=Non
 
 
 def scan_recent_trc20_usdt_matches(expected_address, expected_amount, created_after=None):
-    # Public TRONGRID address event scan is possible, but response formats can vary.
-    # We keep this stable with a graceful fallback.
     return verify_result(
         False,
         "manual_check_required",
@@ -2845,8 +2800,6 @@ def scan_recent_trc20_usdt_matches(expected_address, expected_amount, created_af
 
 
 def scan_recent_evm_native_matches(network_label, chainid, expected_address, expected_amount, created_after=None):
-    # For shared-address automatic button verification, a stable address-level explorer lookup
-    # is not guaranteed in this bot version. TXID checker remains available as backup.
     return verify_result(
         False,
         "manual_check_required",
@@ -2855,7 +2808,6 @@ def scan_recent_evm_native_matches(network_label, chainid, expected_address, exp
 
 
 def scan_recent_evm_token_matches(network_label, chainid, token_contract, expected_address, expected_amount, created_after=None):
-    # Same logic: stable address event indexing varies by provider plan and endpoint.
     return verify_result(
         False,
         "manual_check_required",
@@ -2941,67 +2893,79 @@ def auto_detect_payment_for_invoice(invoice_row):
 
 def render_txid_check_result(network, txid, result):
     status = result.get("status", "unknown")
-    reason = result.get("reason", "No message available.")
-    extra = result.get("extra", {}) or {}
 
-    lines = [
-        "🛠 <b>PAYMENT CHECK RESULT</b>",
-        "",
-        f"<b>Network:</b> {escape_html(network)}",
-        f"<b>TXID:</b> <code>{escape_html(txid)}</code>",
-        f"<b>Status:</b> <b>{escape_html(status.replace('_', ' ').title())}</b>",
-        f"<b>Message:</b> {escape_html(reason)}",
-    ]
+    if status == "confirmed":
+        return (
+            "✅ <b>TRANSACTION CONFIRMED</b>\n\n"
+            f"<b>Network:</b> {escape_html(network)}\n"
+            f"<b>TXID:</b>\n<code>{escape_html(txid)}</code>"
+        )
 
-    if extra.get("amount"):
-        lines.append(f"<b>Detected Amount:</b> {escape_html(extra['amount'])}")
+    if status == "pending":
+        eta = NETWORK_CONFIRMATION_GUIDE.get(network, "1-5 minutes")
+        return (
+            "⏳ <b>TRANSACTION PENDING</b>\n\n"
+            f"<b>Network:</b> {escape_html(network)}\n"
+            f"<b>Time:</b> {escape_html(eta)}"
+        )
 
-    if extra.get("to_address"):
-        lines.append(f"<b>Receiver:</b> <code>{escape_html(extra['to_address'])}</code>")
+    if status == "amount_mismatch":
+        return (
+            "⚠️ <b>WRONG AMOUNT</b>\n\n"
+            "The amount does not match."
+        )
 
-    eta = NETWORK_CONFIRMATION_GUIDE.get(network)
-    if status == "pending" and eta:
-        lines.append(f"<b>Estimated Time:</b> {escape_html(eta)}")
-
-    lines.append(f"<b>Checked At:</b> {format_dt(now_iso())}")
-
-    if status in {"amount_mismatch", "rejected"}:
-        lines.append("")
-        lines.append("If you believe this is a mistake, contact support with your TXID and payment details.")
-
-    return "\n".join(lines)
+    return (
+        "❌ <b>TRANSACTION NOT FOUND</b>\n\n"
+        "Check TXID or wait a bit."
+    )
 
 
 def render_invoice_verify_result(invoice_row, result):
     status = result.get("status", "unknown")
-    reason = result.get("reason", "No message available.")
 
-    lines = [
-        "🔎 <b>PAYMENT STATUS</b>",
-        "",
-        f"<b>Invoice:</b> <code>{escape_html(invoice_row['invoice_id'])}</code>",
-        f"<b>Type:</b> {escape_html(invoice_row['invoice_type'])}",
-        f"<b>Network:</b> {escape_html(invoice_row['network'])}",
-        f"<b>Expected Amount:</b> {escape_html(invoice_row['coin_amount'])} {escape_html(invoice_row['coin_symbol'])}",
-        f"<b>Status:</b> <b>{escape_html(status.replace('_', ' ').title())}</b>",
-        f"<b>Message:</b> {escape_html(reason)}",
-        f"<b>Checked At:</b> {format_dt(now_iso())}",
-    ]
+    if status == "confirmed":
+        return (
+            "✅ <b>PAYMENT CONFIRMED</b>\n\n"
+            "Your payment is verified successfully."
+        )
 
     if status == "pending":
-        eta = NETWORK_CONFIRMATION_GUIDE.get(invoice_row["network"])
-        if eta:
-            lines.append(f"<b>Estimated Confirmation Time:</b> {escape_html(eta)}")
+        eta = NETWORK_CONFIRMATION_GUIDE.get(invoice_row["network"], "1-5 minutes")
+        return (
+            "⏳ <b>PAYMENT NOT FOUND YET</b>\n\n"
+            f"<b>Time:</b> {escape_html(eta)}\n"
+            "Please try again shortly."
+        )
+
+    if status == "amount_mismatch":
+        return (
+            "⚠️ <b>WRONG AMOUNT</b>\n\n"
+            "The sent amount does not match."
+        )
+
+    if status == "rejected":
+        return (
+            "❌ <b>PAYMENT FAILED</b>\n\n"
+            "Transaction failed."
+        )
 
     if status == "manual_check_required":
-        lines.append("")
-        lines.append("Please use <b>Payment Checker</b> with your TXID for manual blockchain lookup.")
+        return (
+            "🛠 <b>CHECK REQUIRED</b>\n\n"
+            "Use Payment Checker or contact support."
+        )
 
     if status == "expired":
-        lines.append("")
-        lines.append("This request is no longer active. Please create a new payment request.")
+        return (
+            "⌛ <b>REQUEST EXPIRED</b>\n\n"
+            "Create a new payment request."
+        )
 
-    return "\n".join(lines)
+    return (
+        "⚠️ <b>UNKNOWN STATUS</b>\n\n"
+        "Please try again."
+    )
 
 # =========================
 # PART 3 OF 10 - END
