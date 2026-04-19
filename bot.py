@@ -2857,29 +2857,28 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "noop":
         return
 
-    if data == "copy_address":
-        deposit = pending_crypto_deposits.get(user_id)
-        order = pending_crypto_orders.get(user_id)
-
-        if deposit:
-            address = deposit.get("address", "")
-        elif order:
-            address = order.get("address", "")
-        else:
-            await send_inline_from_callback(query, "❌ No active payment found.", close_keyboard())
-            return
-
-        await send_inline_from_callback(
-            query,
-            f"📋 <b>Copy this address:</b>\n\n<code>{escape_html(address)}</code>",
-            payment_request_keyboard(),
-        )
+    # ========= PRODUCT ADMIN =========
+    if data == "admin_products_close":
+        await send_inline_from_callback(query, "Closed products panel.", close_keyboard())
         return
 
-    if data == "i_have_paid_verify":
+    if data == "admin_products_back":
+        user_state[user_id] = {"step": "admin_products"}
+        reset_admin_temp(user_id)
+        await send_inline_from_callback(query, render_admin_products_text(), admin_products_keyboard())
+        return
+
+    if data == "admin_view_products":
+        user_state[user_id] = {"step": "admin_products"}
+        await send_inline_from_callback(query, render_admin_products_list(), admin_products_keyboard())
+        return
+
+    if data == "admin_add_product":
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "admin_add_product_icon"}
         await send_inline_from_callback(
             query,
-            "✅ <b>Payment check started.</b>\n\nPlease wait while the system checks your payment.",
+            "🧾 <b>Add Product</b>\n\nFirst send product icon (emoji)\nExample: 🔥",
             close_keyboard(),
         )
         return
