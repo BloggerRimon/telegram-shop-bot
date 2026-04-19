@@ -96,62 +96,56 @@ CRYPTO_ADDRESSES = {
 }
 
 # =========================
-# PRODUCTS + ORDER
+# PRODUCTS
 # =========================
+
 PRODUCTS = {
     "p1": {
-        "name": "Netflix Premium Account",
+        "name": "Netflix Premium",
         "icon": "🎬",
-        "month": "1",
+        "month": "1 Month",
         "price": 5.0,
         "details": [
             "✅ Private Account",
-            "✅ Auto Delivery",
-            "✅ Email:Password Delivery",
+            "✅ Full Warranty",
+            "✅ Instant Delivery"
         ],
-        "accounts": [
-            {"email": "netflix1@example.com", "password": "Pass1234", "note": "Private Account"},
-            {"email": "netflix2@example.com", "password": "Pass1234", "note": "Private Account"},
-            {"email": "netflix3@example.com", "password": "Pass1234", "note": "Private Account"},
-            {"email": "netflix4@example.com", "password": "Pass1234", "note": "Private Account"},
-            {"email": "netflix5@example.com", "password": "Pass1234", "note": "Private Account"},
-            {"email": "netflix6@example.com", "password": "Pass1234", "note": "Private Account"},
-        ],
-        "display_stock": 25,
+        "accounts": [],
+        "display_stock": 0,
     },
+
     "p2": {
-        "name": "Spotify Premium Account",
-        "icon": "🎵",
-        "month": "1",
+        "name": "Spotify Premium",
+        "icon": "🎧",
+        "month": "1 Month",
         "price": 3.0,
         "details": [
             "✅ Private Account",
-            "✅ Auto Delivery",
-            "✅ Email:Password Delivery",
+            "✅ No Ads",
+            "✅ Instant Delivery"
         ],
-        "accounts": [
-            {"email": "spotify1@example.com", "password": "Pass1234", "note": "Private Account"},
-            {"email": "spotify2@example.com", "password": "Pass1234", "note": "Private Account"},
-            {"email": "spotify3@example.com", "password": "Pass1234", "note": "Private Account"},
-            {"email": "spotify4@example.com", "password": "Pass1234", "note": "Private Account"},
-        ],
-        "display_stock": 18,
+        "accounts": [],
+        "display_stock": 0,
     },
+
     "p3": {
-        "name": "YouTube Premium Account",
-        "icon": "▶️",
-        "month": "1",
+        "name": "YouTube Premium",
+        "icon": "📺",
+        "month": "1 Month",
         "price": 4.0,
         "details": [
             "✅ Private Account",
-            "✅ Auto Delivery",
-            "✅ Email:Password Delivery",
+            "✅ No Ads",
+            "✅ Instant Delivery"
         ],
         "accounts": [],
         "display_stock": 0,
     },
 }
+
+# product order
 product_order = ["p1", "p2", "p3"]
+notify_waitlist = {product_id: set() for product_id in PRODUCTS}
 
 # =========================
 # PROMO CODES
