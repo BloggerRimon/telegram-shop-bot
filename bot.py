@@ -3398,28 +3398,53 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = user_state[user_id]
         await send_inline_from_callback(query, render_buy_manual_payment_text(state["product_id"], state["qty"], state["total"], "Bybit ID", BYBIT_ID), final_manual_keyboard("buymanual"))
         return
-
     if data == "buy_method_crypto":
         user_state[user_id]["step"] = "buy_network"
-        await send_inline_from_callback(query, "🌐 <b>SELECT NETWORK</b>\n\nChoose a cryptocurrency below:", network_keyboard("buy"))
+        await send_inline_from_callback(
+            query,
+            "🌐 <b>SELECT NETWORK</b>\n\nChoose a cryptocurrency below:",
+            network_keyboard("buy")
+        )
         return
 
     if data == "buy_back_method":
         state = user_state[user_id]
-        await send_inline_from_callback(query, render_buy_summary(state["product_id"], state["qty"], user_wallet[user_id]), payment_method_keyboard("buy"))
+        await send_inline_from_callback(
+            query,
+            render_buy_summary(state["product_id"], state["qty"], user_wallet[user_id]),
+            payment_method_keyboard("buy")
+        )
         return
 
     if data.startswith("buy_net_"):
         network_label = map_network_callback_to_label(data.replace("buy_net_", ""))
         address = CRYPTO_ADDRESSES[network_label]
         state = user_state[user_id]
-        pending_crypto_orders[user_id] = {"product_id": state["product_id"], "qty": state["qty"], "total": state["total"], "network": network_label, "address": address, "txid": "", "status": "pending", "attempts": 0}
+
+        pending_crypto_orders[user_id] = {
+            "product_id": state["product_id"],
+            "qty": state["qty"],
+            "total": state["total"],
+            "network": network_label,
+            "address": address,
+            "txid": "",
+            "status": "pending",
+            "attempts": 0,
+        }
+
         user_state[user_id] = {"step": "awaiting_crypto_txid_buy"}
-       await send_inline_from_callback(
-    query,
-    render_buy_crypto_payment_text(state["product_id"], state["qty"], state["total"], network_label, address),
-    payment_request_keyboard()
-)
+
+        await send_inline_from_callback(
+            query,
+            render_buy_crypto_payment_text(
+                state["product_id"],
+                state["qty"],
+                state["total"],
+                network_label,
+                address,
+            ),
+            payment_request_keyboard()
+        )
         return
 
     if data == "buymanual_submitted":
