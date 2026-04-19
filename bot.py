@@ -21,14 +21,14 @@ from telegram.ext import (
     filters,
 )
 
+
 # =========================
 # BASIC SETTINGS
 # =========================
 
-# 🔐 TOKEN (GitHub-এ দিবা না)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-BOT_USERNAME = "SupremeLeaderShopBot"   # @ ছাড়া
+BOT_USERNAME = "SupremeLeaderShopBot"
 SUPPORT_USERNAME = "@serpstacking"
 
 ADMIN_IDS = {6795246172}
@@ -36,16 +36,17 @@ ADMIN_IDS = {6795246172}
 BINANCE_ID = "828543482"
 BYBIT_ID = "199582741"
 
-# 🔐 API KEYS (empty রাখো এখন)
 TRONGRID_API_KEY = os.getenv("TRONGRID_API_KEY", "")
 ETHERSCAN_API_KEY = os.getenv("ETHERSCAN_API_KEY", "")
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "")
 
-# =========================
-# CHECK TOKEN (optional but good)
-# =========================
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN not set. Please set it in Railway.")
+    raise ValueError("BOT_TOKEN not set. Please set it in Railway Variables.")
+
+
+# =========================
+# API / CHAIN CONFIG
+# =========================
 
 TRONGRID_BASE = "https://api.trongrid.io"
 ETHERSCAN_V2_URL = "https://api.etherscan.io/v2/api"
@@ -56,9 +57,11 @@ LTC_API_BASE = "https://litecoinspace.org/api"
 RECHECK_INTERVAL_SECONDS = 20
 MAX_RECHECK_ATTEMPTS = 12
 
+
 # =========================
-# WALLET / TOKEN ADDRESSES
+# WALLET / RECEIVE ADDRESSES
 # =========================
+
 USDT_TRC20_RECEIVE_ADDRESS = "TFWMEL6o5Kxnh1h25XMuWG6b6HaeF7vNf1"
 USDT_ERC20_RECEIVE_ADDRESS = "0x0bf8d98f93f31b879cb72005a01f0a0f5f3f4331"
 USDT_BEP20_RECEIVE_ADDRESS = "0x0bf8d98f93f31b879cb72005a01f0a0f5f3f4331"
@@ -69,9 +72,11 @@ SOL_RECEIVE_ADDRESS = "23MdGndZ85eJR58JWHiHNFmrQDMU1Leipzhnx4wtgnWE"
 TRX_RECEIVE_ADDRESS = "TFWMEL6o5Kxnh1h25XMuWG6b6HaeF7vNf1"
 ETH_ERC20_RECEIVE_ADDRESS = "0x0bf8d98f93f31b879cb72005a01f0a0f5f3f4331"
 
+
 # =========================
-# CONTRACTS / CHAIN CONFIG
+# CONTRACTS / CHAIN DETAILS
 # =========================
+
 USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
 USDT_ERC20_CONTRACT = "0xdAC17F958D2ee523a2206206994597C13D831ec7"
 USDT_BEP20_CONTRACT = "0x55d398326f99059fF775485246999027B3197955"
@@ -80,9 +85,11 @@ ETH_CHAIN_ID = "1"
 BSC_CHAIN_ID = "56"
 ERC20_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 
+
 # =========================
-# PAYMENT ADDRESSES
+# PAYMENT ADDRESSES MAP
 # =========================
+
 CRYPTO_ADDRESSES = {
     "USDT (TRC20)": USDT_TRC20_RECEIVE_ADDRESS,
     "USDT (ERC20)": USDT_ERC20_RECEIVE_ADDRESS,
@@ -95,9 +102,11 @@ CRYPTO_ADDRESSES = {
     "ETH (ERC20)": ETH_ERC20_RECEIVE_ADDRESS,
 }
 
+
 # =========================
-# PRODUCTS + ORDER
+# PRODUCTS
 # =========================
+
 PRODUCTS = {
     "p1": {
         "name": "Netflix Premium Account",
@@ -151,11 +160,14 @@ PRODUCTS = {
         "display_stock": 0,
     },
 }
+
 product_order = ["p1", "p2", "p3"]
+
 
 # =========================
 # PROMO CODES
 # =========================
+
 PROMO_CODES = {
     "FREE5": {
         "amount": 5.0,
@@ -177,9 +189,11 @@ PROMO_CODES = {
     },
 }
 
+
 # =========================
 # IN-MEMORY STORAGE
 # =========================
+
 user_wallet = {}
 user_orders = {}
 user_transactions = {}
@@ -187,9 +201,11 @@ used_promo_codes = {}
 user_state = {}
 user_mode = {}
 notify_waitlist = {product_id: set() for product_id in PRODUCTS}
+
 pending_crypto_deposits = {}
 pending_crypto_orders = {}
 used_txids = set()
+
 admin_temp = {}
 next_product_number = len(PRODUCTS) + 1
 
@@ -200,9 +216,11 @@ all_orders = []
 all_transactions = []
 all_users = set()
 
+
 # =========================
 # TIME HELPERS
 # =========================
+
 def now_dt():
     return datetime.now()
 
@@ -218,6 +236,7 @@ def format_dt(dt_obj):
 # =========================
 # BASIC HELPERS
 # =========================
+
 def ensure_user(user_id: int):
     all_users.add(user_id)
 
@@ -260,12 +279,18 @@ def is_valid_txid_format(txid: str) -> bool:
     txid = txid.strip()
     if len(txid) < 20:
         return False
+
+    if txid.startswith("0x") and len(txid) >= 42:
+        return True
+
     hex_allowed = "0123456789abcdefABCDEF"
     if all(ch in hex_allowed for ch in txid):
         return True
+
     base58_allowed = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
     if all(ch in base58_allowed for ch in txid):
         return True
+
     return False
 
 
@@ -322,11 +347,14 @@ def parse_account_line(line: str):
     parts = [x.strip() for x in line.split("|")]
     if len(parts) < 2:
         return None
+
     email = parts[0]
     password = parts[1]
     note = parts[2] if len(parts) >= 3 else ""
+
     if not email or not password:
         return None
+
     return {"email": email, "password": password, "note": note}
 
 
@@ -412,8 +440,9 @@ def escape_html(text: str) -> str:
 
 
 # =========================
-# ADVANCED USER / PROMO HELPERS
+# ADVANCED HELPERS
 # =========================
+
 def generate_unique_promo_code(length: int = 10):
     alphabet = string.ascii_uppercase + string.digits
     while True:
@@ -439,35 +468,27 @@ def get_user_total_order_spent(user_id: int) -> float:
 
 
 def get_user_completed_orders_count(user_id: int) -> int:
-    count = 0
-    for order in user_orders.get(user_id, []):
-        if order["status"] == "Completed":
-            count += 1
-    return count
+    return sum(1 for order in user_orders.get(user_id, []) if order["status"] == "Completed")
 
 
 def get_user_pending_orders_count(user_id: int) -> int:
-    count = 0
-    for order in user_orders.get(user_id, []):
-        if order["status"] == "Waiting Manual Confirmation":
-            count += 1
-    return count
+    return sum(1 for order in user_orders.get(user_id, []) if order["status"] == "Waiting Manual Confirmation")
 
 
 def get_user_completed_deposit_count(user_id: int) -> int:
-    count = 0
-    for tx in user_transactions.get(user_id, []):
-        if tx["type"] == "Deposit" and tx["status"] == "Completed":
-            count += 1
-    return count
+    return sum(
+        1
+        for tx in user_transactions.get(user_id, [])
+        if tx["type"] == "Deposit" and tx["status"] == "Completed"
+    )
 
 
 def get_user_pending_deposit_count(user_id: int) -> int:
-    count = 0
-    for tx in user_transactions.get(user_id, []):
-        if tx["type"] == "Deposit" and tx["status"] == "Waiting Manual Confirmation":
-            count += 1
-    return count
+    return sum(
+        1
+        for tx in user_transactions.get(user_id, [])
+        if tx["type"] == "Deposit" and tx["status"] == "Waiting Manual Confirmation"
+    )
 
 
 def get_user_search_summary_text(user_id: int) -> str:
@@ -527,11 +548,10 @@ def get_user_search_summary_text(user_id: int) -> str:
             )
 
     return "\n".join(lines)
-
-
 # =========================
 # MENUS
 # =========================
+
 def main_menu() -> ReplyKeyboardMarkup:
     keyboard = [
         ["🛍 Shop", "💰 Wallet"],
@@ -631,11 +651,14 @@ def final_manual_keyboard(prefix: str) -> InlineKeyboardMarkup:
 def close_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Close", callback_data="close_inline")]])
 
+
 def payment_request_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
+    rows = [
         [InlineKeyboardButton("📋 Copy Address", callback_data="copy_address")],
         [InlineKeyboardButton("✅ I Have Paid (Verify)", callback_data="i_have_paid_verify")],
-    ])
+        [InlineKeyboardButton("⬅️ Close", callback_data="close_inline")],
+    ]
+    return InlineKeyboardMarkup(rows)
 
 
 def promo_generator_amount_keyboard() -> InlineKeyboardMarkup:
@@ -784,6 +807,8 @@ def admin_reorder_selected_keyboard(product_id: str) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton("⬇️ Move Down", callback_data=f"admin_move_down_{product_id}")])
     rows.append([InlineKeyboardButton("⬅️ Back", callback_data="admin_reorder_menu")])
     return InlineKeyboardMarkup(rows)
+
+
 def promo_select_keyboard(prefix: str) -> InlineKeyboardMarkup:
     rows = []
     if not PROMO_CODES:
@@ -913,6 +938,7 @@ async def send_inline_from_callback(query, text: str, keyboard=None):
 # =========================
 # BASE58 / TRON HELPERS
 # =========================
+
 B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
 
@@ -922,12 +948,14 @@ def b58encode(data: bytes) -> str:
     while num > 0:
         num, rem = divmod(num, 58)
         encoded = B58_ALPHABET[rem] + encoded
+
     pad = 0
     for b in data:
         if b == 0:
             pad += 1
         else:
             break
+
     return "1" * pad + (encoded or "1")
 
 
@@ -935,6 +963,7 @@ def tron_hex_to_base58(hex_addr: str) -> str:
     hex_addr = hex_addr.lower().replace("0x", "").strip()
     if len(hex_addr) == 40:
         hex_addr = "41" + hex_addr
+
     raw = bytes.fromhex(hex_addr)
     checksum = hashlib.sha256(hashlib.sha256(raw).digest()).digest()[:4]
     return b58encode(raw + checksum)
@@ -943,6 +972,7 @@ def tron_hex_to_base58(hex_addr: str) -> str:
 # =========================
 # RENDER TEXTS
 # =========================
+
 def render_home_text() -> str:
     return (
         "👑 <b>SupremeLeader Premium Shop</b>\n\n"
@@ -1020,6 +1050,7 @@ def render_product_card(product_id: str) -> str:
     stock = get_display_stock(product_id)
     stock_text = f"{stock} pcs" if stock > 0 else "Stock Out"
     icon = product.get("icon", "📦")
+
     return (
         f"{icon} <b>{product['name']}</b>\n"
         f"<b>Month:</b> {product['month']}\n"
@@ -1034,6 +1065,7 @@ def render_product_details(product_id: str) -> str:
     stock = get_display_stock(product_id)
     real_stock = get_product_stock(product_id)
     icon = product.get("icon", "📦")
+
     return (
         "📦 <b>PRODUCT DETAILS</b>\n\n"
         f"<b>Icon:</b> {icon}\n"
@@ -1051,6 +1083,7 @@ def render_buy_summary(product_id: str, qty: int, wallet_balance: float) -> str:
     product = PRODUCTS[product_id]
     total = product["price"] * qty
     remaining = wallet_balance - total
+
     if wallet_balance >= total:
         return (
             "🛒 <b>ORDER SUMMARY</b>\n\n"
@@ -1099,7 +1132,8 @@ def render_manual_payment_text(amount: float, method: str, details: str) -> str:
         "<b>Send payment screenshot to Live Support for confirmation.</b>"
     )
 
-def render_crypto_payment_text(amount: float, network: str, address: str):
+
+def render_crypto_payment_text(amount: float, network: str, address: str) -> str:
     return (
         "✅ <b>PAYMENT REQUEST GENERATED!</b>\n\n"
         "💸 <b>Amount to send:</b>\n"
@@ -1108,10 +1142,11 @@ def render_crypto_payment_text(amount: float, network: str, address: str):
         f"<code>{escape_html(address)}</code>\n\n"
         "⚠️ <b>CRITICAL:</b> Send <b>EXACTLY</b> the amount below. Do not round!\n"
         "Account for your exchange's withdrawal fee.\n\n"
-        "If you send a different amount, the system will NOT automatically recognize it."
+        "After payment, press <b>I Have Paid (Verify)</b>."
     )
 
-def render_buy_crypto_payment_text(product_id: str, qty: int, total: float, network: str, address: str):
+
+def render_buy_crypto_payment_text(product_id: str, qty: int, total: float, network: str, address: str) -> str:
     return (
         "✅ <b>PAYMENT REQUEST GENERATED!</b>\n\n"
         "💸 <b>Amount to send:</b>\n"
@@ -1120,7 +1155,7 @@ def render_buy_crypto_payment_text(product_id: str, qty: int, total: float, netw
         f"<code>{escape_html(address)}</code>\n\n"
         "⚠️ <b>CRITICAL:</b> Send <b>EXACTLY</b> the amount below. Do not round!\n"
         "Account for your exchange's withdrawal fee.\n\n"
-        "If you send a different amount, the system will NOT automatically recognize it."
+        "After payment, press <b>I Have Paid (Verify)</b>."
     )
 
 
@@ -1168,6 +1203,8 @@ def render_admin_add_product_preview(user_id: int) -> str:
         f"<b>Details:</b>\n{details_text}\n\n"
         "Confirm add product?"
     )
+
+
 def render_admin_edit_name_preview(product_id: str, new_name: str) -> str:
     product = PRODUCTS[product_id]
     return (
@@ -1259,17 +1296,20 @@ def render_admin_stock_list() -> str:
 def render_account_list_text(product_id: str, page: int = 0, page_size: int = 15) -> str:
     product = PRODUCTS[product_id]
     accounts = product["accounts"]
+
     if not accounts:
         return f"📭 <b>{product['name']}</b>\n\nNo accounts found."
 
     start = page * page_size
     end = min(start + page_size, len(accounts))
+
     lines = [
         f"👀 <b>ACCOUNT LIST</b>\n\n"
         f"<b>Product:</b> {product['name']}\n"
         f"<b>Total Accounts:</b> {len(accounts)}\n"
         f"<b>Showing:</b> {start + 1}-{end}\n"
     ]
+
     for i in range(start, end):
         acc = accounts[i]
         lines.append(
@@ -1278,6 +1318,7 @@ def render_account_list_text(product_id: str, page: int = 0, page_size: int = 15
             f"Password: <code>{escape_html(acc['password'])}</code>\n"
             f"Note: {escape_html(acc.get('note', ''))}"
         )
+
     return "\n".join(lines)
 
 
@@ -1436,11 +1477,10 @@ def render_analytics() -> str:
         f"Top Product: {top_product_text}",
     ]
     return "\n".join(lines)
-
-
 # =========================
 # REQUEST HELPERS
 # =========================
+
 def http_get_json(url: str, params=None, headers=None, timeout=25):
     try:
         res = requests.get(url, params=params, headers=headers, timeout=timeout)
@@ -1461,47 +1501,6 @@ def verify_result(ok: bool, status: str, reason: str):
     return {"ok": ok, "status": status, "reason": reason}
 
 
-def verify_crypto_payment(network, txid, expected_amount, expected_address):
-    try:
-        if network == "USDT (TRC20)":
-            return verify_usdt_trc20_txid(txid, expected_amount, expected_address)
-
-        elif network == "TRX (TRC20)":
-            return verify_trx_transfer(txid, expected_amount, expected_address)
-
-        elif network == "BTC":
-            return verify_btc_transfer(txid, expected_amount, expected_address)
-
-        elif network == "LTC":
-            return verify_ltc_transfer(txid, expected_amount, expected_address)
-
-        elif network == "SOL":
-            return verify_sol_transfer(txid, expected_amount, expected_address)
-
-        elif network == "ETH (ERC20)":
-            return verify_evm_native_transfer(txid, expected_amount, expected_address, "1", "ETH")
-
-        elif network == "BNB (BEP20)":
-            return verify_evm_native_transfer(txid, expected_amount, expected_address, "56", "BNB")
-
-        elif network == "USDT (ERC20)":
-            return verify_evm_token_transfer(
-                txid, expected_amount, expected_address,
-                "1", USDT_ERC20_CONTRACT, 6, "USDT"
-            )
-
-        elif network == "USDT (BEP20)":
-            return verify_evm_token_transfer(
-                txid, expected_amount, expected_address,
-                "56", USDT_BEP20_CONTRACT, 18, "USDT"
-            )
-
-        else:
-            return {"ok": False, "status": "rejected", "reason": "Unsupported network"}
-
-    except Exception as e:
-        return {"ok": False, "status": "pending", "reason": str(e)}
-
 def amount_within_tolerance(actual_amount, expected_amount, tolerance=0.10):
     actual_dec = safe_decimal(actual_amount)
     expected_dec = safe_decimal(expected_amount)
@@ -1511,6 +1510,32 @@ def amount_within_tolerance(actual_amount, expected_amount, tolerance=0.10):
         return False
 
     return abs(actual_dec - expected_dec) <= tolerance_dec
+
+
+def get_evm_tx_by_hash(chainid, txid):
+    return http_get_json(
+        ETHERSCAN_V2_URL,
+        params={
+            "chainid": chainid,
+            "module": "proxy",
+            "action": "eth_getTransactionByHash",
+            "txhash": txid,
+            "apikey": ETHERSCAN_API_KEY,
+        },
+    )
+
+
+def get_evm_tx_receipt(chainid, txid):
+    return http_get_json(
+        ETHERSCAN_V2_URL,
+        params={
+            "chainid": chainid,
+            "module": "proxy",
+            "action": "eth_getTransactionReceipt",
+            "txhash": txid,
+            "apikey": ETHERSCAN_API_KEY,
+        },
+    )
 
 
 def verify_usdt_trc20_txid(txid: str, expected_amount: float, expected_to_address: str):
@@ -1718,31 +1743,6 @@ def verify_evm_token_transfer(
 
     return verify_result(False, "rejected", "no matching token transfer found")
 
-def get_evm_tx_by_hash(chainid, txid):
-    return http_get_json(
-        ETHERSCAN_V2_URL,
-        params={
-            "chainid": chainid,
-            "module": "proxy",
-            "action": "eth_getTransactionByHash",
-            "txhash": txid,
-            "apikey": ETHERSCAN_API_KEY,
-        },
-    )
-
-
-def get_evm_tx_receipt(chainid, txid):
-    return http_get_json(
-        ETHERSCAN_V2_URL,
-        params={
-            "chainid": chainid,
-            "module": "proxy",
-            "action": "eth_getTransactionReceipt",
-            "txhash": txid,
-            "apikey": ETHERSCAN_API_KEY,
-        },
-    )
-
 
 def verify_btc_transfer(txid: str, expected_amount: float, expected_to_address: str):
     tx_res = http_get_json(f"{BTC_API_BASE}/tx/{txid}", timeout=20)
@@ -1750,10 +1750,10 @@ def verify_btc_transfer(txid: str, expected_amount: float, expected_to_address: 
         return verify_result(False, "pending", f"btc tx http {tx_res['status_code']}")
 
     tx = tx_res["data"]
-    status = tx.get("status", {}) or {}
     if not tx:
         return verify_result(False, "pending", "transaction not found yet")
 
+    status = tx.get("status", {}) or {}
     if not status.get("confirmed"):
         return verify_result(False, "pending", "transaction not confirmed yet")
 
@@ -1774,10 +1774,10 @@ def verify_ltc_transfer(txid: str, expected_amount: float, expected_to_address: 
         return verify_result(False, "pending", f"ltc tx http {tx_res['status_code']}")
 
     tx = tx_res["data"]
-    status = tx.get("status", {}) or {}
     if not tx:
         return verify_result(False, "pending", "transaction not found yet")
 
+    status = tx.get("status", {}) or {}
     if not status.get("confirmed"):
         return verify_result(False, "pending", "transaction not confirmed yet")
 
@@ -1851,9 +1851,52 @@ def verify_sol_transfer(txid: str, expected_amount: float, expected_to_address: 
 
     return verify_result(False, "rejected", "no matching SOL transfer found")
 
+
+def verify_crypto_payment(network, txid, expected_amount, expected_address):
+    try:
+        if network == "USDT (TRC20)":
+            return verify_usdt_trc20_txid(txid, expected_amount, expected_address)
+
+        if network == "TRX (TRC20)":
+            return verify_trx_transfer(txid, expected_amount, expected_address)
+
+        if network == "BTC":
+            return verify_btc_transfer(txid, expected_amount, expected_address)
+
+        if network == "LTC":
+            return verify_ltc_transfer(txid, expected_amount, expected_address)
+
+        if network == "SOL":
+            return verify_sol_transfer(txid, expected_amount, expected_address)
+
+        if network == "ETH (ERC20)":
+            return verify_evm_native_transfer(txid, expected_amount, expected_address, ETH_CHAIN_ID, "ETH")
+
+        if network == "BNB (BEP20)":
+            return verify_evm_native_transfer(txid, expected_amount, expected_address, BSC_CHAIN_ID, "BNB")
+
+        if network == "USDT (ERC20)":
+            return verify_evm_token_transfer(
+                txid, expected_amount, expected_address,
+                ETH_CHAIN_ID, USDT_ERC20_CONTRACT, 6, "USDT"
+            )
+
+        if network == "USDT (BEP20)":
+            return verify_evm_token_transfer(
+                txid, expected_amount, expected_address,
+                BSC_CHAIN_ID, USDT_BEP20_CONTRACT, 18, "USDT"
+            )
+
+        return verify_result(False, "rejected", "unsupported network")
+
+    except Exception as e:
+        return verify_result(False, "pending", str(e))
+
+
 # =========================
 # ACTION HELPERS
 # =========================
+
 async def notify_waiters_for_product(context: ContextTypes.DEFAULT_TYPE, product_id: str):
     waiters = list(notify_waitlist.get(product_id, set()))
     if not waiters:
@@ -1866,11 +1909,13 @@ async def notify_waiters_for_product(context: ContextTypes.DEFAULT_TYPE, product
         f"<b>Price:</b> {format_money(product['price'])}\n"
         f"<b>Available now:</b> {get_display_stock(product_id)} pcs"
     )
+
     for waiter_id in waiters:
         try:
             await context.bot.send_message(waiter_id, text, parse_mode="HTML")
         except Exception:
             pass
+
     notify_waitlist[product_id].clear()
 
 
@@ -1878,6 +1923,7 @@ async def send_shop_cards_message(source, from_callback: bool = False):
     for product_id in product_order:
         if product_id not in PRODUCTS:
             continue
+
         stock = get_display_stock(product_id)
         if stock > 0:
             keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🛒 Buy Now", callback_data=f"shop_buy_{product_id}")]])
@@ -1898,6 +1944,7 @@ async def send_shop_cards_message(source, from_callback: bool = False):
 async def deliver_accounts_to_user(bot, user_id: int, product_id: str, qty: int):
     product = PRODUCTS[product_id]
     available = product["accounts"]
+
     if len(available) < qty:
         await bot.send_message(
             chat_id=user_id,
@@ -1919,6 +1966,7 @@ async def deliver_accounts_to_user(bot, user_id: int, product_id: str, qty: int)
         "🔐 <b>Your Account Details:</b>",
         "",
     ]
+
     for idx, acc in enumerate(delivered, start=1):
         lines.append(f"{idx}. <b>Email/Username:</b> {escape_html(acc['email'])}")
         lines.append(f"   <b>Password:</b> {escape_html(acc['password'])}")
@@ -1960,6 +2008,7 @@ async def process_wallet_purchase(update_or_query, context: ContextTypes.DEFAULT
             reply_markup=main_menu() if user_mode.get(user_id) == "client" else admin_menu(),
             parse_mode="HTML",
         )
+
     return True
 
 
@@ -2065,6 +2114,7 @@ async def confirm_manual_order(context: ContextTypes.DEFAULT_TYPE, order_id: int
         ),
         parse_mode="HTML",
     )
+
     return True, "Manual order confirmed."
 
 
@@ -2101,6 +2151,7 @@ async def reject_manual_order(context: ContextTypes.DEFAULT_TYPE, order_id: int)
         ),
         parse_mode="HTML",
     )
+
     return True, "Manual order rejected."
 
 
@@ -2128,6 +2179,7 @@ async def confirm_manual_deposit(context: ContextTypes.DEFAULT_TYPE, tx_id: int)
         ),
         parse_mode="HTML",
     )
+
     return True, "Manual deposit confirmed."
 
 
@@ -2153,6 +2205,7 @@ async def reject_manual_deposit(context: ContextTypes.DEFAULT_TYPE, tx_id: int):
         ),
         parse_mode="HTML",
     )
+
     return True, "Manual deposit rejected."
 
 
@@ -2172,6 +2225,7 @@ async def background_crypto_recheck(context: ContextTypes.DEFAULT_TYPE):
         if result["status"] == "confirmed":
             await finalize_verified_deposit(context.bot, user_id, amount, txid)
             continue
+
         if result["status"] == "rejected":
             pending_crypto_deposits.pop(user_id, None)
             await context.bot.send_message(
@@ -2180,6 +2234,7 @@ async def background_crypto_recheck(context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML",
             )
             continue
+
         if attempts >= MAX_RECHECK_ATTEMPTS:
             pending_crypto_deposits.pop(user_id, None)
             await context.bot.send_message(
@@ -2205,6 +2260,7 @@ async def background_crypto_recheck(context: ContextTypes.DEFAULT_TYPE):
         if result["status"] == "confirmed":
             await finalize_verified_order(context.bot, user_id, product_id, qty, total, txid)
             continue
+
         if result["status"] == "rejected":
             pending_crypto_orders.pop(user_id, None)
             await context.bot.send_message(
@@ -2213,6 +2269,7 @@ async def background_crypto_recheck(context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML",
             )
             continue
+
         if attempts >= MAX_RECHECK_ATTEMPTS:
             pending_crypto_orders.pop(user_id, None)
             await context.bot.send_message(
@@ -2224,11 +2281,10 @@ async def background_crypto_recheck(context: ContextTypes.DEFAULT_TYPE):
 
 async def background_job(context: ContextTypes.DEFAULT_TYPE):
     await background_crypto_recheck(context)
-
-
 # =========================
 # COMMANDS
 # =========================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     ensure_user(user_id)
@@ -2239,9 +2295,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     ensure_user(user_id)
+
     if not is_admin(user_id):
         await update.message.reply_text("❌ <b>You are not allowed to open admin panel.</b>", parse_mode="HTML")
         return
+
     enter_admin_mode(user_id)
     await send_admin_main_text(update, "🛠 <b>ADMIN MODE ON</b>\n\nBottom menu now switched to admin menu.")
 
@@ -2253,9 +2311,11 @@ async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def addstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     ensure_user(user_id)
+
     if user_id not in ADMIN_IDS:
         await update.message.reply_text("❌ You are not allowed to use this command.")
         return
+
     if len(context.args) != 2:
         await update.message.reply_text("Usage: /addstock p3 5")
         return
@@ -2266,11 +2326,13 @@ async def addstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if product_id not in PRODUCTS:
         await update.message.reply_text("❌ Invalid product id. Example: p1, p2, p3")
         return
+
     try:
         qty = int(qty_text)
     except ValueError:
         await update.message.reply_text("❌ Quantity must be a number.")
         return
+
     if qty <= 0:
         await update.message.reply_text("❌ Quantity must be greater than 0.")
         return
@@ -2288,12 +2350,16 @@ async def addstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Stock added.\n\nProduct: {product['name']}\nAdded: {qty}\nCurrent Real Stock: {get_product_stock(product_id)} pcs\nDisplay Stock: {get_display_stock(product_id)} pcs"
     )
     await notify_waiters_for_product(context, product_id)
+
+
 # =========================
 # TEXT HANDLER
 # =========================
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     ensure_user(user_id)
+
     text = update.message.text.strip()
     state = user_state[user_id]
     step = state.get("step", "main")
@@ -2375,6 +2441,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("❌ <b>Invalid price.</b> Send a valid number.", parse_mode="HTML")
             return
+
         admin_temp[user_id]["price"] = price
         user_state[user_id] = {"step": "admin_add_product_display_stock"}
         await update.message.reply_text("🆕 <b>Add Product</b>\n\nNow send display stock number.", reply_markup=admin_menu(), parse_mode="HTML")
@@ -2389,6 +2456,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("❌ <b>Invalid display stock.</b> Send 0 or more.", parse_mode="HTML")
             return
+
         admin_temp[user_id]["display_stock"] = display_stock
         user_state[user_id] = {"step": "admin_add_product_details"}
         await update.message.reply_text(
@@ -2404,6 +2472,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not details:
             await update.message.reply_text("❌ <b>Please send at least one detail line.</b>", parse_mode="HTML")
             return
+
         admin_temp[user_id]["details"] = details
         user_state[user_id] = {"step": "admin_add_product_confirm"}
         await update.message.reply_text(render_admin_add_product_preview(user_id), reply_markup=admin_confirm_add_product_keyboard(), parse_mode="HTML")
@@ -2415,6 +2484,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not new_name:
             await update.message.reply_text("❌ <b>Name cannot be empty.</b>", parse_mode="HTML")
             return
+
         admin_temp[user_id]["new_name"] = new_name
         user_state[user_id] = {"step": "admin_edit_name_confirm"}
         await update.message.reply_text(
@@ -2432,6 +2502,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("❌ <b>Invalid price.</b> Send a valid number.", parse_mode="HTML")
             return
+
         admin_temp[user_id]["new_price"] = new_price
         user_state[user_id] = {"step": "admin_edit_price_confirm"}
         await update.message.reply_text(
@@ -2446,6 +2517,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not new_month:
             await update.message.reply_text("❌ <b>Month cannot be empty.</b>", parse_mode="HTML")
             return
+
         admin_temp[user_id]["new_month"] = new_month
         user_state[user_id] = {"step": "admin_edit_month_confirm"}
         await update.message.reply_text(
@@ -2460,6 +2532,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not details:
             await update.message.reply_text("❌ <b>Please send at least one detail line.</b>", parse_mode="HTML")
             return
+
         admin_temp[user_id]["new_details"] = details
         user_state[user_id] = {"step": "admin_edit_details_confirm"}
         await update.message.reply_text(
@@ -2474,6 +2547,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not new_icon:
             await update.message.reply_text("❌ <b>Icon cannot be empty.</b>", parse_mode="HTML")
             return
+
         admin_temp[user_id]["new_icon"] = new_icon
         user_state[user_id] = {"step": "admin_edit_icon_confirm"}
         await update.message.reply_text(
@@ -2491,6 +2565,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("❌ <b>Invalid display stock.</b> Send 0 or more.", parse_mode="HTML")
             return
+
         admin_temp[user_id]["new_display_stock"] = new_display_stock
         user_state[user_id] = {"step": "admin_edit_display_stock_confirm"}
         await update.message.reply_text(
@@ -2508,14 +2583,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reset_admin_temp(user_id)
             await update.message.reply_text("❌ Product not found.", reply_markup=admin_menu())
             return
+
         account = parse_account_line(text)
         if not account:
             await update.message.reply_text("❌ <b>Invalid format.</b>\n\nUse:\n<code>email@gmail.com|password123|Private Account</code>", parse_mode="HTML")
             return
+
         PRODUCTS[product_id]["accounts"].append(account)
         PRODUCTS[product_id]["display_stock"] = max(get_display_stock(product_id), get_product_stock(product_id))
         user_state[user_id] = {"step": "admin_stock"}
         reset_admin_temp(user_id)
+
         await update.message.reply_text(
             f"✅ <b>Single account added successfully.</b>\n\n<b>Product:</b> {PRODUCTS[product_id]['name']}\n<b>Real Stock:</b> {get_product_stock(product_id)} pcs\n<b>Display Stock:</b> {get_display_stock(product_id)} pcs",
             reply_markup=admin_menu(),
@@ -2531,19 +2609,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reset_admin_temp(user_id)
             await update.message.reply_text("❌ Product not found.", reply_markup=admin_menu())
             return
+
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         added = 0
+
         for line in lines:
             account = parse_account_line(line)
             if account:
                 PRODUCTS[product_id]["accounts"].append(account)
                 added += 1
+
         if added == 0:
             await update.message.reply_text("❌ <b>No valid account line found.</b>\n\nUse:\n<code>email@gmail.com|password123|Private Account</code>", parse_mode="HTML")
             return
+
         PRODUCTS[product_id]["display_stock"] = max(get_display_stock(product_id), get_product_stock(product_id))
         user_state[user_id] = {"step": "admin_stock"}
         reset_admin_temp(user_id)
+
         await update.message.reply_text(
             f"✅ <b>Bulk accounts added successfully.</b>\n\n<b>Product:</b> {PRODUCTS[product_id]['name']}\n<b>Added:</b> {added}\n<b>Real Stock:</b> {get_product_stock(product_id)} pcs\n<b>Display Stock:</b> {get_display_stock(product_id)} pcs",
             reply_markup=admin_menu(),
@@ -2560,10 +2643,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reset_admin_temp(user_id)
             await update.message.reply_text("❌ Product/account not found.", reply_markup=admin_menu())
             return
+
         account = parse_account_line(text)
         if not account:
             await update.message.reply_text("❌ <b>Invalid format.</b>\n\nUse:\n<code>email@gmail.com|password123|Private Account</code>", parse_mode="HTML")
             return
+
         PRODUCTS[product_id]["accounts"][account_index] = account
         user_state[user_id] = {"step": "admin_stock"}
         reset_admin_temp(user_id)
@@ -2577,6 +2662,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reset_admin_temp(user_id)
             await update.message.reply_text("❌ Product not found.", reply_markup=admin_menu())
             return
+
         try:
             new_display_stock = int(text)
             if new_display_stock < 0:
@@ -2584,9 +2670,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("❌ <b>Invalid number.</b> Send 0 or more.", parse_mode="HTML")
             return
+
         PRODUCTS[product_id]["display_stock"] = new_display_stock
         user_state[user_id] = {"step": "admin_stock"}
         reset_admin_temp(user_id)
+
         await update.message.reply_text(
             f"✅ <b>Display stock updated.</b>\n\n<b>Product:</b> {PRODUCTS[product_id]['name']}\n<b>Display Stock:</b> {get_display_stock(product_id)} pcs\n<b>Real Stock:</b> {get_product_stock(product_id)} pcs",
             reply_markup=admin_menu(),
@@ -2603,6 +2691,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("❌ <b>Invalid amount.</b>", parse_mode="HTML")
             return
+
         code = generate_unique_promo_code()
         PROMO_CODES[code] = {
             "amount": amount,
@@ -2613,8 +2702,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "used_by": None,
             "used_at": None,
         }
+
         user_state[user_id] = {"step": "promo_admin"}
         reset_admin_temp(user_id)
+
         await update.message.reply_text(render_generated_promo_text(code), reply_markup=admin_menu(), parse_mode="HTML")
         await update.message.reply_text("Promo actions:", reply_markup=admin_promo_keyboard(), parse_mode="HTML")
         return
@@ -2661,6 +2752,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("❌ <b>Invalid User ID.</b>", parse_mode="HTML")
             return
+
         user_state[user_id] = {"step": "orders_admin"}
         await update.message.reply_text(get_user_search_summary_text(target_user_id), reply_markup=admin_menu(), parse_mode="HTML")
         await update.message.reply_text("Orders actions:", reply_markup=admin_orders_keyboard(), parse_mode="HTML")
@@ -2672,6 +2764,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("❌ <b>Invalid User ID.</b>", parse_mode="HTML")
             return
+
         user_state[user_id] = {"step": "deposits_admin"}
         await update.message.reply_text(get_user_search_summary_text(target_user_id), reply_markup=admin_menu(), parse_mode="HTML")
         await update.message.reply_text("Deposits actions:", reply_markup=deposits_admin_keyboard(), parse_mode="HTML")
@@ -2683,6 +2776,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("❌ <b>Invalid User ID.</b>", parse_mode="HTML")
             return
+
         user_state[user_id] = {"step": "users_admin"}
         await update.message.reply_text(get_user_search_summary_text(target_user_id), reply_markup=admin_menu(), parse_mode="HTML")
         await update.message.reply_text("Users actions:", reply_markup=users_admin_keyboard(), parse_mode="HTML")
@@ -2692,6 +2786,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if step == "buy_custom_qty":
         product_id = state["product_id"]
         stock = get_display_stock(product_id)
+
         try:
             qty = int(text)
             if qty <= 0:
@@ -2699,6 +2794,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("❌ <b>Invalid quantity.</b> Please send a valid number.", parse_mode="HTML")
             return
+
         if qty > stock:
             await update.message.reply_text(f"❌ <b>Only {stock} pcs available.</b>", parse_mode="HTML")
             return
@@ -2721,17 +2817,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("❌ <b>Invalid amount.</b> Please send a valid number.", parse_mode="HTML")
             return
+
         user_state[user_id] = {"step": "deposit_payment_method", "amount": amount}
         await update.message.reply_text(render_deposit_method_text(amount), reply_markup=payment_method_keyboard("dep"), parse_mode="HTML")
         return
 
     if step == "awaiting_crypto_txid_deposit":
         txid = text.strip()
+
         if txid in used_txids:
             user_state[user_id] = {"step": "main"}
             pending_crypto_deposits.pop(user_id, None)
             await send_client_main_text(update, "❌ <b>This TXID has already been used.</b>")
             return
+
         if not is_valid_txid_format(txid):
             user_state[user_id] = {"step": "main"}
             pending_crypto_deposits.pop(user_id, None)
@@ -2749,6 +2848,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pending["attempts"] = 0
         add_transaction_record(user_id, "Deposit", pending["amount"], "Checking TXID", {"network": pending["network"], "txid": txid})
         user_state[user_id] = {"step": "main"}
+
         await update.message.reply_text("⏳ <b>TXID received.</b>\n\nYour payment is being checked automatically.", reply_markup=main_menu(), parse_mode="HTML")
 
         result = verify_crypto_payment(pending["network"], txid, pending["amount"], pending["address"])
@@ -2761,11 +2861,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if step == "awaiting_crypto_txid_buy":
         txid = text.strip()
+
         if txid in used_txids:
             user_state[user_id] = {"step": "main"}
             pending_crypto_orders.pop(user_id, None)
             await send_client_main_text(update, "❌ <b>This TXID has already been used.</b>")
             return
+
         if not is_valid_txid_format(txid):
             user_state[user_id] = {"step": "main"}
             pending_crypto_orders.pop(user_id, None)
@@ -2783,6 +2885,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pending["attempts"] = 0
         add_transaction_record(user_id, "Order Payment", pending["total"], "Checking TXID", {"network": pending["network"], "txid": txid})
         user_state[user_id] = {"step": "main"}
+
         await update.message.reply_text("⏳ <b>TXID received.</b>\n\nYour order payment is being checked automatically.", reply_markup=main_menu(), parse_mode="HTML")
 
         result = verify_crypto_payment(pending["network"], txid, pending["total"], pending["address"])
@@ -2844,48 +2947,70 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Please use the fixed menu below.",
         reply_markup=admin_menu() if user_mode[user_id] == "admin" else main_menu()
     )
+
+
 # =========================
 # CALLBACK HANDLER
 # =========================
+
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     ensure_user(user_id)
+
     await query.answer()
     data = query.data
 
     if data == "noop":
         return
 
-    # ========= PRODUCT ADMIN =========
-    if data == "admin_products_close":
-        await send_inline_from_callback(query, "Closed products panel.", close_keyboard())
-        return
+    if data == "copy_address":
+        deposit = pending_crypto_deposits.get(user_id)
+        order = pending_crypto_orders.get(user_id)
 
-    if data == "admin_products_back":
-        user_state[user_id] = {"step": "admin_products"}
-        reset_admin_temp(user_id)
-        await send_inline_from_callback(query, render_admin_products_text(), admin_products_keyboard())
-        return
+        if deposit:
+            address = deposit.get("address", "")
+        elif order:
+            address = order.get("address", "")
+        else:
+            await send_inline_from_callback(query, "❌ No active payment found.", close_keyboard())
+            return
 
-    if data == "admin_view_products":
-        user_state[user_id] = {"step": "admin_products"}
-        await send_inline_from_callback(query, render_admin_products_list(), admin_products_keyboard())
-        return
-
-    if data == "admin_add_product":
-        reset_admin_temp(user_id)
-        user_state[user_id] = {"step": "admin_add_product_icon"}
         await send_inline_from_callback(
             query,
-            "🧾 <b>Add Product</b>\n\nFirst send product icon (emoji)\nExample: 🔥",
-            close_keyboard(),
+            f"📋 <b>Copy this address:</b>\n\n<code>{escape_html(address)}</code>",
+            payment_request_keyboard(),
         )
         return
 
+    if data == "i_have_paid_verify":
+        pending_deposit = pending_crypto_deposits.get(user_id)
+        pending_order = pending_crypto_orders.get(user_id)
+
+        if pending_deposit:
+            pending_deposit["status"] = "awaiting_txid"
+            user_state[user_id] = {"step": "awaiting_crypto_txid_deposit"}
+            await send_inline_from_callback(
+                query,
+                "✅ <b>I Have Paid received.</b>\n\nNow send your TXID so the system can verify your payment.",
+                close_keyboard(),
+            )
+            return
+
+        if pending_order:
+            pending_order["status"] = "awaiting_txid"
+            user_state[user_id] = {"step": "awaiting_crypto_txid_buy"}
+            await send_inline_from_callback(
+                query,
+                "✅ <b>I Have Paid received.</b>\n\nNow send your TXID so the system can verify your order payment.",
+                close_keyboard(),
+            )
+            return
+
+        await send_inline_from_callback(query, "❌ No active payment found.", close_keyboard())
+        return
 
     # ========= PRODUCT ADMIN =========
-
     if data == "admin_products_close":
         await send_inline_from_callback(query, "Closed products panel.", close_keyboard())
         return
@@ -3334,6 +3459,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not order:
             await send_inline_from_callback(query, "❌ Order not found.", admin_orders_keyboard())
             return
+
         await send_inline_from_callback(
             query,
             f"⏳ <b>MANUAL ORDER</b>\n\nOrder ID: #{order['id']}\nUser: {order['user_id']}\nProduct: {order['product']}\nQty: {order['qty']}\nTotal: {format_money(order['total'])}\nStatus: {order['status']}",
@@ -3385,6 +3511,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not tx:
             await send_inline_from_callback(query, "❌ Deposit not found.", deposits_admin_keyboard())
             return
+
         await send_inline_from_callback(query, f"💳 <b>MANUAL DEPOSIT</b>\n\nTX ID: #{tx['id']}\nUser: {tx['user_id']}\nAmount: {format_money(tx['amount'])}\nStatus: {tx['status']}", manual_deposit_action_keyboard(tx_id))
         return
 
@@ -3430,6 +3557,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if get_display_stock(product_id) <= 0:
             await send_inline_from_callback(query, "❌ <b>This product is currently out of stock.</b>", close_keyboard())
             return
+
         user_state[user_id] = {"step": "buy_qty_select", "product_id": product_id}
         await send_inline_from_callback(query, render_product_details(product_id), buy_qty_keyboard(product_id))
         return
@@ -3445,14 +3573,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, _, product_id, qty_str = data.split("_")
         qty = int(qty_str)
         stock = get_display_stock(product_id)
+
         if qty > stock:
             await send_inline_from_callback(query, f"❌ <b>Only {stock} pcs available.</b>", buy_qty_keyboard(product_id))
             return
+
         total = PRODUCTS[product_id]["price"] * qty
         if user_wallet[user_id] >= total:
             await process_wallet_purchase(query, context, user_id, product_id, qty, total)
             user_state[user_id] = {"step": "main"}
             return
+
         user_state[user_id] = {"step": "buy_payment_method", "product_id": product_id, "qty": qty, "total": total}
         await send_inline_from_callback(query, render_buy_summary(product_id, qty, user_wallet[user_id]), payment_method_keyboard("buy"))
         return
@@ -3487,13 +3618,24 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         network_label = map_network_callback_to_label(data.replace("buy_net_", ""))
         address = CRYPTO_ADDRESSES[network_label]
         state = user_state[user_id]
-        pending_crypto_orders[user_id] = {"product_id": state["product_id"], "qty": state["qty"], "total": state["total"], "network": network_label, "address": address, "txid": "", "status": "pending", "attempts": 0}
+
+        pending_crypto_orders[user_id] = {
+            "product_id": state["product_id"],
+            "qty": state["qty"],
+            "total": state["total"],
+            "network": network_label,
+            "address": address,
+            "txid": "",
+            "status": "pending",
+            "attempts": 0,
+        }
+
         user_state[user_id] = {"step": "awaiting_crypto_txid_buy"}
-       await send_inline_from_callback(
-    query,
-    render_buy_crypto_payment_text(state["product_id"], state["qty"], state["total"], network_label, address),
-    payment_request_keyboard()
-)
+        await send_inline_from_callback(
+            query,
+            render_buy_crypto_payment_text(state["product_id"], state["qty"], state["total"], network_label, address),
+            payment_request_keyboard(),
+        )
         return
 
     if data == "buymanual_submitted":
@@ -3501,9 +3643,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         product_id = state.get("product_id")
         qty = state.get("qty")
         total = state.get("total")
+
         if product_id and qty and total:
             add_order_record(user_id, product_id, qty, total, "Waiting Manual Confirmation", "Manual")
             add_transaction_record(user_id, "Order Payment", total, "Waiting Manual Confirmation", {"product_id": product_id, "qty": qty})
+
         user_state[user_id] = {"step": "main"}
         await send_inline_from_callback(query, "✅ <b>Submitted.</b>\n\nSend payment screenshot to Live Support for confirmation.", close_keyboard())
         return
@@ -3552,13 +3696,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         network_label = map_network_callback_to_label(data.replace("dep_net_", ""))
         address = CRYPTO_ADDRESSES[network_label]
         amount = user_state[user_id]["amount"]
-        pending_crypto_deposits[user_id] = {"amount": amount, "network": network_label, "address": address, "txid": "", "status": "pending", "attempts": 0}
+
+        pending_crypto_deposits[user_id] = {
+            "amount": amount,
+            "network": network_label,
+            "address": address,
+            "txid": "",
+            "status": "pending",
+            "attempts": 0,
+        }
+
         user_state[user_id] = {"step": "awaiting_crypto_txid_deposit"}
         await send_inline_from_callback(
-    query,
-    render_crypto_payment_text(amount, network_label, address),
-    payment_request_keyboard()
-)
+            query,
+            render_crypto_payment_text(amount, network_label, address),
+            payment_request_keyboard(),
+        )
         return
 
     if data == "depmanual_submitted":
@@ -3572,11 +3725,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[user_id] = {"step": "main"}
         await send_inline_from_callback(query, "❌ <b>Deposit cancelled.</b>", close_keyboard())
         return
-
-
 # =========================
 # MAIN APP
 # =========================
+
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
@@ -3588,7 +3740,12 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    app.job_queue.run_repeating(background_job, interval=20, first=20)
+    if app.job_queue:
+        app.job_queue.run_repeating(
+            background_job,
+            interval=RECHECK_INTERVAL_SECONDS,
+            first=RECHECK_INTERVAL_SECONDS,
+        )
 
     print("✅ Bot started...")
     app.run_polling()
