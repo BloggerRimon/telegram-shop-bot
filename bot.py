@@ -3,7 +3,7 @@ import hashlib
 import random
 import string
 import requests
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_UP
 from datetime import datetime
 
 from telegram import (
@@ -94,6 +94,23 @@ CRYPTO_ADDRESSES = {
     "TRX (TRC20)": TRX_RECEIVE_ADDRESS,
     "ETH (ERC20)": ETH_ERC20_RECEIVE_ADDRESS,
 }
+
+COINGECKO_SIMPLE_PRICE_URL = "https://api.coingecko.com/api/v3/simple/price"
+
+NETWORK_PRICE_CONFIG = {
+    "USDT (TRC20)": {"kind": "stable", "symbol": "USDT", "display": "USDT (TRC-20)", "decimals": 2},
+    "USDT (ERC20)": {"kind": "stable", "symbol": "USDT", "display": "USDT (ERC-20)", "decimals": 2},
+    "USDT (BEP20)": {"kind": "stable", "symbol": "USDT", "display": "USDT (BEP-20)", "decimals": 2},
+    "BTC": {"kind": "coingecko", "id": "bitcoin", "symbol": "BTC", "display": "BTC (Bitcoin)", "decimals": 6},
+    "LTC": {"kind": "coingecko", "id": "litecoin", "symbol": "LTC", "display": "LTC (Litecoin)", "decimals": 6},
+    "ETH (ERC20)": {"kind": "coingecko", "id": "ethereum", "symbol": "ETH", "display": "ETH (ERC-20)", "decimals": 6},
+    "BNB (BEP20)": {"kind": "coingecko", "id": "binancecoin", "symbol": "BNB", "display": "BNB (BEP-20)", "decimals": 6},
+    "SOL": {"kind": "coingecko", "id": "solana", "symbol": "SOL", "display": "SOL", "decimals": 6},
+    "TRX (TRC20)": {"kind": "coingecko", "id": "tron", "symbol": "TRX", "display": "TRX (TRC-20)", "decimals": 4},
+}
+
+PAYMENT_BUFFER_PERCENT = Decimal("0.01")
+PAYMENT_BUFFER_FIXED_USD = Decimal("0.10")
 
 # =========================
 # PRODUCTS + ORDER
@@ -254,6 +271,82 @@ def safe_decimal(value):
         return Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError):
         return None
+
+
+def decimal_to_float(value, default=0.0):
+    dec = safe_decimal(value)
+    if dec is None:
+        return float(default)
+    return float(dec)
+
+
+def calculate_buffered_usd_amount(amount_usd):
+    amount_dec = safe_decimal(amount_usd)
+    if amount_dec is None:
+        return Decimal("0")
+    buffered = amount_dec + PAYMENT_BUFFER_FIXED_USD + (amount_dec * PAYMENT_BUFFER_PERCENT)
+    return buffered.quantize(Decimal("0.01"), rounding=ROUND_UP)
+
+
+def get_network_price_usd(network: str):
+    config = NETWORK_PRICE_CONFIG.get(network)
+    if not config:
+        return None
+
+    if config["kind"] == "stable":
+        return Decimal("1")
+
+    coin_id = config.get("id")
+    if not coin_id:
+        return None
+
+    res = http_get_json(
+        COINGECKO_SIMPLE_PRICE_URL,
+        params={"ids": coin_id, "vs_currencies": "usd"},
+        timeout=20,
+    )
+    if not res["ok"]:
+        return None
+
+    try:
+        price = res["data"][coin_id]["usd"]
+        return safe_decimal(price)
+    except Exception:
+        return None
+
+
+def quantize_crypto_amount(amount_dec: Decimal, decimals: int):
+    quantum = Decimal("1") / (Decimal("10") ** decimals)
+    return amount_dec.quantize(quantum, rounding=ROUND_UP)
+
+
+def calculate_crypto_amount_to_send(amount_usd, network: str):
+    price_usd = get_network_price_usd(network)
+    config = NETWORK_PRICE_CONFIG.get(network, {})
+    decimals = int(config.get("decimals", 6))
+
+    if price_usd is None or price_usd <= 0:
+        return None
+
+    buffered_usd = calculate_buffered_usd_amount(amount_usd)
+    crypto_amount = buffered_usd / price_usd
+    return quantize_crypto_amount(crypto_amount, decimals)
+
+
+def get_network_display_name(network: str) -> str:
+    config = NETWORK_PRICE_CONFIG.get(network, {})
+    return config.get("display", network)
+
+
+def format_network_amount(amount, network: str) -> str:
+    config = NETWORK_PRICE_CONFIG.get(network, {})
+    symbol = config.get("symbol", network)
+    decimals = int(config.get("decimals", 6))
+    amount_dec = safe_decimal(amount)
+    if amount_dec is None:
+        amount_dec = Decimal("0")
+    amount_text = f"{amount_dec:.{decimals}f}"
+    return f"{amount_text} {get_network_display_name(network)}"
 
 
 def is_valid_txid_format(txid: str) -> bool:
@@ -638,6 +731,11 @@ def final_manual_keyboard(prefix: str) -> InlineKeyboardMarkup:
 
 def close_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Close", callback_data="close_inline")]])
+
+
+def payment_verify_keyboard(kind: str) -> InlineKeyboardMarkup:
+    callback_data = "verify_paid_deposit" if kind == "deposit" else "verify_paid_buy"
+    return InlineKeyboardMarkup([[InlineKeyboardButton("✅ I Have Paid (Verify)", callback_data=callback_data)]])
 
 
 def promo_generator_amount_keyboard() -> InlineKeyboardMarkup:
@@ -1102,32 +1200,29 @@ def render_manual_payment_text(amount: float, method: str, details: str) -> str:
     )
 
 
-def render_crypto_payment_text(amount: float, network: str, address: str) -> str:
+def render_crypto_payment_text(crypto_amount, network: str, address: str) -> str:
     return (
         "✅ <b>PAYMENT REQUEST GENERATED!</b>\n\n"
         "🪙 <b>Amount to send:</b>\n"
-        f"<code>{amount:.8f}</code> {escape_html(network)}\n\n"
+        f"<code>{escape_html(format_network_amount(crypto_amount, network))}</code>\n\n"
         "🏦 <b>Deposit Address:</b>\n"
         f"<code>{escape_html(address)}</code>\n\n"
-        "⚠️ <b>IMPORTANT:</b> Send this amount carefully. Small network fee differences are allowed.\n"
-        "Do not send from the wrong network.\n\n"
-        "After payment, send your <b>TXID</b> in chat for automatic verification."
+        "⚠️ <b>CRITICAL:</b> Send <b>EXACTLY</b> the amount below. Do not round!\n"
+        "Account for your exchange's withdrawal fee.\n\n"
+        "If you send a different amount, the system will NOT automatically recognize it."
     )
 
 
-def render_buy_crypto_payment_text(product_id: str, qty: int, total: float, network: str, address: str) -> str:
-    product = PRODUCTS[product_id]
+def render_buy_crypto_payment_text(product_id: str, qty: int, crypto_amount, network: str, address: str) -> str:
     return (
         "✅ <b>PAYMENT REQUEST GENERATED!</b>\n\n"
-        f"📦 <b>Product:</b> {product['name']}\n"
-        f"🧾 <b>Quantity:</b> {qty}\n\n"
         "🪙 <b>Amount to send:</b>\n"
-        f"<code>{total:.8f}</code> {escape_html(network)}\n\n"
+        f"<code>{escape_html(format_network_amount(crypto_amount, network))}</code>\n\n"
         "🏦 <b>Deposit Address:</b>\n"
         f"<code>{escape_html(address)}</code>\n\n"
-        "⚠️ <b>IMPORTANT:</b> Send this amount carefully. Small network fee differences are allowed.\n"
-        "Do not send from the wrong network.\n\n"
-        "After payment, send your <b>TXID</b> in chat for automatic verification."
+        "⚠️ <b>CRITICAL:</b> Send <b>EXACTLY</b> the amount below. Do not round!\n"
+        "Account for your exchange's withdrawal fee.\n\n"
+        "If you send a different amount, the system will NOT automatically recognize it."
     )
 
 
@@ -1969,18 +2064,18 @@ async def process_wallet_purchase(update_or_query, context: ContextTypes.DEFAULT
     return True
 
 
-async def finalize_verified_deposit(bot, user_id: int, amount: float, txid: str):
+async def finalize_verified_deposit(bot, user_id: int, wallet_credit_amount: float, txid: str):
     used_txids.add(txid)
-    user_wallet[user_id] = user_wallet.get(user_id, 0) + amount
+    user_wallet[user_id] = user_wallet.get(user_id, 0) + wallet_credit_amount
 
     for tx in reversed(user_transactions.get(user_id, [])):
-        if tx["type"] == "Deposit" and tx["status"] == "Checking TXID" and tx["amount"] == amount:
+        if tx["type"] == "Deposit" and tx["status"] == "Checking TXID" and tx["amount"] == wallet_credit_amount:
             set_tx_status(tx, "Completed")
             tx["meta"]["txid"] = txid
             break
 
     for tx in reversed(all_transactions):
-        if tx["user_id"] == user_id and tx["type"] == "Deposit" and tx["status"] == "Checking TXID" and tx["amount"] == amount:
+        if tx["user_id"] == user_id and tx["type"] == "Deposit" and tx["status"] == "Checking TXID" and tx["amount"] == wallet_credit_amount:
             set_tx_status(tx, "Completed")
             tx["meta"]["txid"] = txid
             break
@@ -1991,7 +2086,7 @@ async def finalize_verified_deposit(bot, user_id: int, amount: float, txid: str)
         chat_id=user_id,
         text=(
             f"✅ <b>Payment confirmed.</b>\n\n"
-            f"<b>{format_money(amount)}</b> added to your wallet.\n"
+            f"<b>{format_money(wallet_credit_amount)}</b> added to your wallet.\n"
             f"{get_wallet_balance_text(user_id)}"
         ),
         parse_mode="HTML",
@@ -2168,15 +2263,16 @@ async def background_crypto_recheck(context: ContextTypes.DEFAULT_TYPE):
             continue
 
         txid = pending.get("txid", "")
-        amount = pending.get("amount", 0)
+        crypto_amount = pending.get("crypto_amount", pending.get("amount", 0))
+        wallet_credit_amount = pending.get("wallet_credit_amount", pending.get("amount", 0))
         address = pending.get("address", "")
         network = pending.get("network", "")
         attempts = pending.get("attempts", 0) + 1
         pending["attempts"] = attempts
 
-        result = verify_crypto_payment(network, txid, amount, address)
+        result = verify_crypto_payment(network, txid, crypto_amount, address)
         if result["status"] == "confirmed":
-            await finalize_verified_deposit(context.bot, user_id, amount, txid)
+            await finalize_verified_deposit(context.bot, user_id, wallet_credit_amount, txid)
             continue
         if result["status"] == "rejected":
             pending_crypto_deposits.pop(user_id, None)
@@ -2200,6 +2296,7 @@ async def background_crypto_recheck(context: ContextTypes.DEFAULT_TYPE):
 
         txid = pending.get("txid", "")
         total = pending.get("total", 0)
+        crypto_amount = pending.get("crypto_amount", total)
         address = pending.get("address", "")
         network = pending.get("network", "")
         product_id = pending.get("product_id")
@@ -2207,7 +2304,7 @@ async def background_crypto_recheck(context: ContextTypes.DEFAULT_TYPE):
         attempts = pending.get("attempts", 0) + 1
         pending["attempts"] = attempts
 
-        result = verify_crypto_payment(network, txid, total, address)
+        result = verify_crypto_payment(network, txid, crypto_amount, address)
         if result["status"] == "confirmed":
             await finalize_verified_order(context.bot, user_id, product_id, qty, total, txid)
             continue
@@ -2753,13 +2850,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pending["txid"] = txid
         pending["status"] = "checking"
         pending["attempts"] = 0
-        add_transaction_record(user_id, "Deposit", pending["amount"], "Checking TXID", {"network": pending["network"], "txid": txid})
+        add_transaction_record(user_id, "Deposit", pending["wallet_credit_amount"], "Checking TXID", {"network": pending["network"], "txid": txid, "crypto_amount": str(pending["crypto_amount"])})
         user_state[user_id] = {"step": "main"}
         await update.message.reply_text("⏳ <b>TXID received.</b>\n\nYour payment is being checked automatically.", reply_markup=main_menu(), parse_mode="HTML")
 
-        result = verify_crypto_payment(pending["network"], txid, pending["amount"], pending["address"])
+        result = verify_crypto_payment(pending["network"], txid, pending["crypto_amount"], pending["address"])
         if result["status"] == "confirmed":
-            await finalize_verified_deposit(context.bot, user_id, pending["amount"], txid)
+            await finalize_verified_deposit(context.bot, user_id, pending["wallet_credit_amount"], txid)
         elif result["status"] == "rejected":
             pending_crypto_deposits.pop(user_id, None)
             await context.bot.send_message(chat_id=user_id, text=f"❌ <b>Payment rejected.</b>\n\n{escape_html(result['reason'])}", parse_mode="HTML")
@@ -2787,11 +2884,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pending["txid"] = txid
         pending["status"] = "checking"
         pending["attempts"] = 0
-        add_transaction_record(user_id, "Order Payment", pending["total"], "Checking TXID", {"network": pending["network"], "txid": txid})
+        add_transaction_record(user_id, "Order Payment", pending["total"], "Checking TXID", {"network": pending["network"], "txid": txid, "crypto_amount": str(pending["crypto_amount"])})
         user_state[user_id] = {"step": "main"}
         await update.message.reply_text("⏳ <b>TXID received.</b>\n\nYour order payment is being checked automatically.", reply_markup=main_menu(), parse_mode="HTML")
 
-        result = verify_crypto_payment(pending["network"], txid, pending["total"], pending["address"])
+        result = verify_crypto_payment(pending["network"], txid, pending["crypto_amount"], pending["address"])
         if result["status"] == "confirmed":
             await finalize_verified_order(context.bot, user_id, pending["product_id"], pending["qty"], pending["total"], txid)
         elif result["status"] == "rejected":
@@ -3393,6 +3490,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # ========= CLIENT FLOWS =========
+    if data == "verify_paid_deposit":
+        user_state[user_id] = {"step": "awaiting_crypto_txid_deposit"}
+        await send_inline_from_callback(query, "✅ <b>Send your TXID now.</b>", close_keyboard())
+        return
+
+    if data == "verify_paid_buy":
+        user_state[user_id] = {"step": "awaiting_crypto_txid_buy"}
+        await send_inline_from_callback(query, "✅ <b>Send your TXID now.</b>", close_keyboard())
+        return
+
     if data == "close_inline":
         await send_inline_from_callback(query, "Closed.", close_keyboard())
         return
@@ -3465,9 +3572,24 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         network_label = map_network_callback_to_label(data.replace("buy_net_", ""))
         address = CRYPTO_ADDRESSES[network_label]
         state = user_state[user_id]
-        pending_crypto_orders[user_id] = {"product_id": state["product_id"], "qty": state["qty"], "total": state["total"], "network": network_label, "address": address, "txid": "", "status": "pending", "attempts": 0}
+        crypto_amount = calculate_crypto_amount_to_send(state["total"], network_label)
+        if crypto_amount is None:
+            await send_inline_from_callback(query, "❌ <b>Could not generate payment amount right now.</b>\n\nPlease try again in a moment.", close_keyboard())
+            return
+
+        pending_crypto_orders[user_id] = {
+            "product_id": state["product_id"],
+            "qty": state["qty"],
+            "total": state["total"],
+            "crypto_amount": decimal_to_float(crypto_amount),
+            "network": network_label,
+            "address": address,
+            "txid": "",
+            "status": "pending",
+            "attempts": 0,
+        }
         user_state[user_id] = {"step": "awaiting_crypto_txid_buy"}
-        await send_inline_from_callback(query, render_buy_crypto_payment_text(state["product_id"], state["qty"], state["total"], network_label, address))
+        await send_inline_from_callback(query, render_buy_crypto_payment_text(state["product_id"], state["qty"], crypto_amount, network_label, address), payment_verify_keyboard("buy"))
         return
 
     if data == "buymanual_submitted":
@@ -3525,10 +3647,23 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("dep_net_"):
         network_label = map_network_callback_to_label(data.replace("dep_net_", ""))
         address = CRYPTO_ADDRESSES[network_label]
-        amount = user_state[user_id]["amount"]
-        pending_crypto_deposits[user_id] = {"amount": amount, "network": network_label, "address": address, "txid": "", "status": "pending", "attempts": 0}
+        wallet_credit_amount = user_state[user_id]["amount"]
+        crypto_amount = calculate_crypto_amount_to_send(wallet_credit_amount, network_label)
+        if crypto_amount is None:
+            await send_inline_from_callback(query, "❌ <b>Could not generate payment amount right now.</b>\n\nPlease try again in a moment.", close_keyboard())
+            return
+
+        pending_crypto_deposits[user_id] = {
+            "wallet_credit_amount": wallet_credit_amount,
+            "crypto_amount": decimal_to_float(crypto_amount),
+            "network": network_label,
+            "address": address,
+            "txid": "",
+            "status": "pending",
+            "attempts": 0,
+        }
         user_state[user_id] = {"step": "awaiting_crypto_txid_deposit"}
-        await send_inline_from_callback(query, render_crypto_payment_text(amount, network_label, address))
+        await send_inline_from_callback(query, render_crypto_payment_text(crypto_amount, network_label, address), payment_verify_keyboard("deposit"))
         return
 
     if data == "depmanual_submitted":
