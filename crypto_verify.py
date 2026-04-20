@@ -1,7 +1,7 @@
 import hashlib
 import requests
 from decimal import Decimal, InvalidOperation
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 
 def safe_decimal(value):
@@ -22,6 +22,25 @@ def amount_within_tolerance(actual_amount, expected_amount, tolerance=0.10):
     if actual_dec is None or expected_dec is None or tolerance_dec is None:
         return False
     return abs(actual_dec - expected_dec) <= tolerance_dec
+
+
+def network_tolerance(network: str, expected_amount=None):
+    n = str(network or "")
+    if n.startswith("USDT"):
+        return Decimal("0.20")
+    if n == "TRX (TRC20)":
+        return Decimal("1.0")
+    if n == "BTC":
+        return Decimal("0.00001000")
+    if n == "LTC":
+        return Decimal("0.00050000")
+    if n == "ETH (ERC20)":
+        return Decimal("0.00100000")
+    if n == "BNB (BEP20)":
+        return Decimal("0.00100000")
+    if n == "SOL":
+        return Decimal("0.01000000")
+    return Decimal("0.10")
 
 
 def is_valid_txid_format(txid: str) -> bool:
@@ -70,7 +89,10 @@ def tx_is_after_request(tx_time, request_created_at) -> bool:
     req_dt = normalize_dt(request_created_at)
     if tx_dt is None or req_dt is None:
         return False
-    return tx_dt >= req_dt
+
+    # Allow a small backward window to handle explorer/API/server time mismatch
+    allowed_start = req_dt - timedelta(minutes=15)
+    return tx_dt >= allowed_start
 
 
 def http_get_json(url: str, params=None, headers=None, timeout=25):
@@ -285,7 +307,7 @@ def verify_evm_token_transfer(txid: str, expected_amount, expected_to_address: s
         except Exception:
             continue
         actual_amount = Decimal(value_raw) / unit
-        if amount_within_tolerance(actual_amount, expected_amount, 0.10):
+        if amount_within_tolerance(actual_amount, expected_amount, network_tolerance(network_name or symbol, expected_amount)):
             return verify_result(True, "confirmed", "verified", {"actual_amount": str(actual_amount), "txid": txid})
     return verify_result(False, "rejected", "no matching token transfer found")
 
@@ -549,7 +571,7 @@ def auto_scan_sol_by_address(expected_amount, expected_to_address: str, request_
                 if destination != expected_to_address:
                     continue
                 actual_amount = Decimal(int(lamports)) / Decimal("1000000000")
-                if amount_within_tolerance(actual_amount, expected_amount, 0.10):
+                if amount_within_tolerance(actual_amount, expected_amount, network_tolerance("SOL", expected_amount)):
                     return verify_result(True, "confirmed", "matched by address scan", {"actual_amount": str(actual_amount), "txid": txid})
     return verify_result(False, "pending", "no matching SOL transfer found yet")
 
