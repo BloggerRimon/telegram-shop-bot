@@ -2697,6 +2697,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Users actions:", reply_markup=users_admin_keyboard(), parse_mode="HTML")
         return
 
+    # ========= MAIN MENU OVERRIDE =========
+    client_main_menu_texts = {
+        "🛍 Shop",
+        "💰 Wallet",
+        "💳 Top Up",
+        "🎟 Promo",
+        "📦 Orders",
+        "🆔 User ID",
+        "🧾 Transactions",
+        "👥 Refer & Earn",
+        "💬 Support",
+    }
+
+    if user_mode[user_id] != "admin" and text in client_main_menu_texts:
+        user_state[user_id] = {"step": "main"}
+        reset_admin_temp(user_id)
+        state = user_state[user_id]
+        step = "main"
+
     # ========= CLIENT BUY =========
     if step == "buy_custom_qty":
         product_id = state["product_id"]
