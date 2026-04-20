@@ -1200,9 +1200,11 @@ def render_manual_payment_text(amount: float, method: str, details: str) -> str:
     )
 
 
-def render_crypto_payment_text(crypto_amount, network: str, address: str) -> str:
+def render_crypto_payment_text(usd_amount, crypto_amount, network: str, address: str) -> str:
     return (
         "✅ <b>PAYMENT REQUEST GENERATED!</b>\n\n"
+        "💵 <b>Amount:</b>\n"
+        f"<code>${usd_amount:.2f}</code>\n\n"
         "🪙 <b>Amount to send:</b>\n"
         f"<code>{escape_html(format_network_amount(crypto_amount, network))}</code>\n\n"
         "🏦 <b>Deposit Address:</b>\n"
@@ -1213,9 +1215,11 @@ def render_crypto_payment_text(crypto_amount, network: str, address: str) -> str
     )
 
 
-def render_buy_crypto_payment_text(product_id: str, qty: int, crypto_amount, network: str, address: str) -> str:
+def render_buy_crypto_payment_text(product_id: str, qty: int, usd_amount, crypto_amount, network: str, address: str) -> str:
     return (
         "✅ <b>PAYMENT REQUEST GENERATED!</b>\n\n"
+        "💵 <b>Amount:</b>\n"
+        f"<code>${usd_amount:.2f}</code>\n\n"
         "🪙 <b>Amount to send:</b>\n"
         f"<code>{escape_html(format_network_amount(crypto_amount, network))}</code>\n\n"
         "🏦 <b>Deposit Address:</b>\n"
