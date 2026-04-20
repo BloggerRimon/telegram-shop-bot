@@ -314,9 +314,14 @@ def try_auto_verify_record(record: dict, auto_scan_callable: Callable) -> dict:
         return checker_result(False, "error", "Auto scan callable returned invalid result.")
 
     status = result.get("status", "pending")
+    txid = result.get("meta", {}).get("txid") or result.get("txid")
+
+    if txid and is_txid_already_used(txid):
+        set_pending_status(record, "awaiting_blockchain_match")
+        return checker_result(False, "pending", "Matched transaction was already used before.", result)
 
     if status == "confirmed":
-        attach_detected_txid(record, result.get("meta", {}).get("txid") or result.get("txid"))
+        attach_detected_txid(record, txid)
         set_pending_status(record, "matched")
         return checker_result(True, "confirmed", "Payment matched automatically.", result)
 
