@@ -40,16 +40,23 @@ ADMIN_IDS = {6795246172}
 BINANCE_ID = "828543482"
 BYBIT_ID = "199582741"
 
-# 🔐 API KEYS (empty রাখো এখন)
-TRONGRID_API_KEY = ""
-ETHERSCAN_API_KEY = ""
-HELIUS_API_KEY = ""
+# 🔐 API KEYS (Railway Variables / Environment থেকে নাও)
+TRONGRID_API_KEY = os.getenv("TRONGRID_API_KEY", "").strip()
+ETHERSCAN_API_KEY = os.getenv("ETHERSCAN_API_KEY", "").strip()
+HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "").strip()
 
 # =========================
 # CHECK TOKEN (optional but good)
 # =========================
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN not set. Please set it in Railway.")
+
+if not TRONGRID_API_KEY:
+    print("⚠️ TRONGRID_API_KEY not set")
+if not ETHERSCAN_API_KEY:
+    print("⚠️ ETHERSCAN_API_KEY not set")
+if not HELIUS_API_KEY:
+    print("⚠️ HELIUS_API_KEY not set")
 
 TRONGRID_BASE = "https://api.trongrid.io"
 ETHERSCAN_V2_URL = "https://api.etherscan.io/v2/api"
@@ -3588,7 +3595,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    app.job_queue.run_repeating(background_job, interval=20, first=20)
+    app.job_queue.run_repeating(background_job, interval=60, first=30)
 
     print("✅ Bot started...")
     app.run_polling()
