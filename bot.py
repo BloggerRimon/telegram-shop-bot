@@ -125,6 +125,9 @@ def build_unique_crypto_amount(usd_amount: float, network: str, user_id: int, re
     )
 
 RECHECK_INTERVAL_SECONDS = 20
+VERIFY_RETRY_SECONDS = 10
+VERIFY_MAX_SECONDS_FAST = 300
+VERIFY_MAX_SECONDS_SLOW = 600
 MAX_RECHECK_ATTEMPTS = 12
 
 # =========================
