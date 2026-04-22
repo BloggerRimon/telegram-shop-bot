@@ -1,4 +1,5 @@
 import os
+import asyncio
 import hashlib
 import random
 import string
@@ -2231,6 +2232,51 @@ async def background_crypto_recheck(context: ContextTypes.DEFAULT_TYPE):
         send_rejected_message_async=send_auto_rejected_message,
         send_completed_message_async=send_auto_completed_message,
     )
+
+
+
+def build_verify_countdown_text(seconds_left: int) -> str:
+    mins = max(seconds_left, 0) // 60
+    secs = max(seconds_left, 0) % 60
+    return (
+        "⏳ <b>Payment checking started</b>\n\n"
+        "The bot is checking the blockchain automatically.\n"
+        "Please do not tap multiple times.\n\n"
+        f"⏱ Time left: <b>{mins:02d}:{secs:02d}</b>"
+    )
+
+
+async def start_verify_countdown(bot, chat_id: int, message_id: int, user_id: int):
+    for seconds_left in range(VERIFY_COUNTDOWN_SECONDS, 0, -VERIFY_RETRY_SECONDS):
+        state = user_state.get(user_id, {})
+        if not state.get("verify_countdown_active"):
+            return
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=build_verify_countdown_text(seconds_left),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+        await asyncio.sleep(VERIFY_RETRY_SECONDS)
+
+    state = user_state.get(user_id, {})
+    if state.get("verify_countdown_active"):
+        state["verify_countdown_active"] = False
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=(
+                    "⏳ <b>Checking window finished</b>\n\n"
+                    "If payment was not found yet, tap verify again."
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
 
 
 async def background_job(context: ContextTypes.DEFAULT_TYPE):
