@@ -1,6 +1,6 @@
 from decimal import Decimal, InvalidOperation, ROUND_UP, ROUND_DOWN
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-import random
+import hashlib
 
 
 # =========================
@@ -61,11 +61,11 @@ NETWORK_LABELS = {
     "USDT (TRC20)": "USDT (TRC20)",
     "USDT (ERC20)": "USDT (ERC20)",
     "USDT (BEP20)": "USDT (BEP20)",
-    "BTC": "BTC (Bitcoin)",
-    "LTC": "LTC (Litecoin)",
+    "BTC": "BTC",
+    "LTC": "LTC",
     "ETH (ERC20)": "ETH (ERC20)",
     "BNB (BEP20)": "BNB (BEP20)",
-    "SOL": "SOL (Solana)",
+    "SOL": "SOL",
     "TRX (TRC20)": "TRX (TRC20)",
 }
 
@@ -103,20 +103,37 @@ def format_network_amount(crypto_amount, network: str) -> str:
     return f"{fmt.format(dec)} {NETWORK_LABELS.get(network, network)}"
 
 
-def amount_within_tolerance(actual_amount, expected_amount, tolerance=0.10):
-    actual_dec = safe_decimal(actual_amount)
-    expected_dec = safe_decimal(expected_amount)
-    tolerance_dec = safe_decimal(tolerance)
-
-    if actual_dec is None or expected_dec is None or tolerance_dec is None:
-        return False
-
-    return abs(actual_dec - expected_dec) <= tolerance_dec
-
-
 # =========================
-# PAYMENT AMOUNT GENERATION
+# UNIQUE AMOUNT LOGIC
 # =========================
+def _stable_pick_1_to_20(*parts) -> int:
+    """
+    Returns a stable integer from 1 to 20.
+    Same request gets same suffix, different users/orders likely get different suffix.
+    """
+    raw = "|".join(map(str, parts)).encode("utf-8")
+    digest = hashlib.sha256(raw).hexdigest()
+    return (int(digest[:12], 16) % 20) + 1
+
+
+def generate_unique_amount(base_amount: Decimal, network: str, user_id: int, ref: str = "") -> Decimal:
+    """
+    Final displayed amount == final backend verify amount.
+    Unique step is 1..20 smallest-unit steps per network.
+    """
+    decimals = NETWORK_DECIMALS.get(network, 8)
+    n = _stable_pick_1_to_20(network, user_id, ref or "default")
+
+    if network.startswith("USDT"):
+        # 0.01 to 0.20
+        step = Decimal("0.01")
+        return quantize_down(base_amount + (step * Decimal(n)), 2)
+
+    # 8-decimal coins: 0.00000001 to 0.00000020
+    step = Decimal("1") / (Decimal(10) ** decimals)
+    return quantize_down(base_amount + (step * Decimal(n)), decimals)
+
+
 def normalize_rate_value(rate_value):
     rate_dec = safe_decimal(rate_value)
     if rate_dec is None or rate_dec <= 0:
@@ -124,31 +141,11 @@ def normalize_rate_value(rate_value):
     return rate_dec
 
 
-def generate_unique_amount(base_amount: Decimal, network: str) -> Decimal:
+def calculate_exact_crypto_amount_from_rate(usd_amount, network: str, usd_rate, user_id: int = 0, ref: str = ""):
     """
-    Unique amount for reliable auto-detection.
-    Stablecoins get 2 decimals.
-    Volatile coins keep more decimals.
-    """
-    decimals = NETWORK_DECIMALS.get(network, 8)
-
-    if network.startswith("USDT"):
-        # keep stablecoin display human-friendly but still unique
-        extra = Decimal(str(random.choice([0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09])))
-    elif network in {"BTC", "LTC", "ETH (ERC20)", "BNB (BEP20)", "SOL", "TRX (TRC20)"}:
-        extra = Decimal(str(random.uniform(0.000001, 0.000099)))
-    else:
-        extra = Decimal("0")
-
-    final_amount = safe_decimal(base_amount) or Decimal("0")
-    final_amount += extra
-    return quantize_down(final_amount, decimals)
-
-
-def calculate_exact_crypto_amount_from_rate(usd_amount, network: str, usd_rate):
-    """
-    This is the IMPORTANT function:
-    displayed amount == backend expected amount
+    IMPORTANT:
+    - displayed amount == saved amount
+    - verify should use this exact amount
     """
     usd_dec = safe_decimal(usd_amount)
     rate_dec = normalize_rate_value(usd_rate)
@@ -157,13 +154,13 @@ def calculate_exact_crypto_amount_from_rate(usd_amount, network: str, usd_rate):
         raise ValueError("Invalid USD amount")
 
     base_amount = usd_dec / rate_dec
-    return generate_unique_amount(base_amount, network)
+    return generate_unique_amount(base_amount, network, user_id=user_id, ref=ref)
 
 
 def calculate_buffered_amount(crypto_amount, network: str):
     """
-    Kept for compatibility. Do NOT show this separately to users.
-    Prefer calculate_exact_crypto_amount_from_rate() for real payment requests.
+    Compatibility helper only.
+    Do not use as final displayed amount for auto verify.
     """
     amount_dec = safe_decimal(crypto_amount)
     if amount_dec is None:
@@ -177,8 +174,14 @@ def calculate_buffered_amount(crypto_amount, network: str):
     return quantize_up(buffered, NETWORK_DECIMALS.get(network, 8))
 
 
-def create_payment_request(user_id: int, usd_amount: float, network: str, address: str, usd_rate):
-    crypto_amount = calculate_exact_crypto_amount_from_rate(usd_amount, network, usd_rate)
+def create_payment_request(user_id: int, usd_amount: float, network: str, address: str, usd_rate, ref: str = ""):
+    crypto_amount = calculate_exact_crypto_amount_from_rate(
+        usd_amount=usd_amount,
+        network=network,
+        usd_rate=usd_rate,
+        user_id=user_id,
+        ref=ref,
+    )
     return {
         "user_id": user_id,
         "usd_amount": float(usd_amount),
@@ -188,10 +191,7 @@ def create_payment_request(user_id: int, usd_amount: float, network: str, addres
     }
 
 
-def create_payment_request_from_key(user_id: int, usd_amount: float, network_key: str, wallet_addresses: dict, usd_rates: dict):
-    """
-    Convenience wrapper if bot stores addresses/rates by short keys.
-    """
+def create_payment_request_from_key(user_id: int, usd_amount: float, network_key: str, wallet_addresses: dict, usd_rates: dict, ref: str = ""):
     if network_key not in COIN_KEY_TO_NETWORK:
         raise ValueError("Invalid network key")
 
@@ -202,11 +202,19 @@ def create_payment_request_from_key(user_id: int, usd_amount: float, network_key
 
     coin = NETWORK_TO_COIN[network]
     usd_rate = usd_rates[coin]
-    return create_payment_request(user_id, usd_amount, network, address, usd_rate)
+
+    return create_payment_request(
+        user_id=user_id,
+        usd_amount=usd_amount,
+        network=network,
+        address=address,
+        usd_rate=usd_rate,
+        ref=ref,
+    )
 
 
 # =========================
-# ORIGINAL KEYBOARDS (RETAINED)
+# KEYBOARDS
 # =========================
 def deposit_amount_keyboard() -> InlineKeyboardMarkup:
     rows = [
@@ -316,7 +324,7 @@ def map_network_callback_to_label(network_callback_tail: str) -> str:
 
 
 # =========================
-# ORIGINAL TEXT RENDERERS (RETAINED + FIXED)
+# TEXT RENDERERS
 # =========================
 def render_buy_summary(product_id: str, qty: int, wallet_balance: float, products: dict) -> str:
     product = products[product_id]
@@ -418,9 +426,6 @@ def render_buy_manual_payment_text(product_id: str, qty: int, total: float, meth
     )
 
 
-# =========================
-# AUTOMATIC VERIFY UI MESSAGES
-# =========================
 def render_auto_verify_wait_text() -> str:
     return (
         "⏳ <b>Checking payment automatically...</b>\n\n"
