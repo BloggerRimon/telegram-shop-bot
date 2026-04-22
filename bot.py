@@ -3,7 +3,7 @@ import hashlib
 import random
 import string
 import requests
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from datetime import datetime
 
 from telegram import (
@@ -110,36 +110,20 @@ def fetch_live_rates_usd():
     }
 
 
-def build_unique_crypto_amount(usd_amount: float, network: str, user_id: int):
-    """
-    IMPORTANT:
-    - displayed amount == saved verify amount
-    - different users should get different amounts
-    - stablecoin networks need stronger uniqueness than old mod-3 logic
-    """
+def build_unique_crypto_amount(usd_amount: float, network: str, user_id: int, ref: str = ""):
     rates = fetch_live_rates_usd()
     rate = rates.get(network, Decimal("1"))
     if rate <= 0:
         rate = Decimal("1")
+    return paymod.calculate_exact_crypto_amount_from_rate(
+        usd_amount=usd_amount,
+        network=network,
+        usd_rate=rate,
+        user_id=user_id,
+        ref=ref,
+    )
 
-    base_amount = Decimal(str(usd_amount)) / rate
-    decimals = paymod.NETWORK_DECIMALS.get(network, 8)
-
-    if network.startswith("USDT"):
-        # 49 possible unique cent values: 0.01 .. 0.49
-        cents = ((user_id * 37) % 49) + 1
-        unique_amount = base_amount.quantize(Decimal("1.00"), rounding=ROUND_DOWN) + (Decimal(cents) / Decimal("100"))
-        return unique_amount.quantize(Decimal("1.00"), rounding=ROUND_DOWN)
-
-    if decimals >= 6:
-        suffix_step = Decimal("1") / (Decimal(10) ** decimals)
-        suffix = suffix_step * Decimal(((user_id * 37) % 999) + 1)
-        return (base_amount + suffix).quantize(Decimal("1." + ("0" * decimals)), rounding=ROUND_DOWN)
-
-    buffered = paymod.calculate_buffered_amount(base_amount, network)
-    return buffered
-
-RECHECK_INTERVAL_SECONDS = 60
+RECHECK_INTERVAL_SECONDS = 20
 MAX_RECHECK_ATTEMPTS = 12
 
 # =========================
@@ -3446,7 +3430,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         network_label = paymod.map_network_callback_to_label(data.replace("buy_net_", ""))
         address = CRYPTO_ADDRESSES[network_label]
         state = user_state[user_id]
-        crypto_amount = build_unique_crypto_amount(state["total"], network_label, user_id)
+        ref = f"order:{user_id}:{state['product_id']}:{state['qty']}:{state['total']}"
+        crypto_amount = build_unique_crypto_amount(state["total"], network_label, user_id, ref)
         wc.create_or_update_pending_order(
             user_id,
             state["product_id"],
@@ -3544,7 +3529,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         network_label = paymod.map_network_callback_to_label(data.replace("dep_net_", ""))
         address = CRYPTO_ADDRESSES[network_label]
         amount = user_state[user_id]["amount"]
-        crypto_amount = build_unique_crypto_amount(amount, network_label, user_id)
+        ref = f"deposit:{user_id}:{amount}"
+        crypto_amount = build_unique_crypto_amount(amount, network_label, user_id, ref)
         wc.create_or_update_pending_deposit(
             user_id,
             amount,
