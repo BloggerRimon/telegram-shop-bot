@@ -2234,51 +2234,6 @@ async def background_crypto_recheck(context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-
-def build_verify_countdown_text(seconds_left: int) -> str:
-    mins = max(seconds_left, 0) // 60
-    secs = max(seconds_left, 0) % 60
-    return (
-        "⏳ <b>Payment checking started</b>\n\n"
-        "The bot is checking the blockchain automatically.\n"
-        "Please do not tap multiple times.\n\n"
-        f"⏱ Time left: <b>{mins:02d}:{secs:02d}</b>"
-    )
-
-
-async def start_verify_countdown(bot, chat_id: int, message_id: int, user_id: int):
-    for seconds_left in range(VERIFY_COUNTDOWN_SECONDS, 0, -VERIFY_RETRY_SECONDS):
-        state = user_state.get(user_id, {})
-        if not state.get("verify_countdown_active"):
-            return
-        try:
-            await bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=build_verify_countdown_text(seconds_left),
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
-        await asyncio.sleep(VERIFY_RETRY_SECONDS)
-
-    state = user_state.get(user_id, {})
-    if state.get("verify_countdown_active"):
-        state["verify_countdown_active"] = False
-        try:
-            await bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=(
-                    "⏳ <b>Checking window finished</b>\n\n"
-                    "If payment was not found yet, tap verify again."
-                ),
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
-
-
 async def background_job(context: ContextTypes.DEFAULT_TYPE):
     await background_crypto_recheck(context)
 
@@ -2864,6 +2819,101 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 # CALLBACK HANDLER
 # =========================
+
+def estimate_verify_timeout(network: str) -> int:
+    if network in {"BTC", "LTC"}:
+        return VERIFY_MAX_SECONDS_SLOW
+    return VERIFY_MAX_SECONDS_FAST
+
+
+def build_verify_status_text(network: str, seconds_left: int) -> str:
+    mins = max(seconds_left, 0) // 60
+    secs = max(seconds_left, 0) % 60
+    return (
+        "⏳ <b>Payment verification in progress</b>\n\n"
+        f"<b>Network:</b> {network}\n"
+        "Please wait while the bot checks your payment.\n\n"
+        f"⏱ <b>Time left:</b> {mins:02d}:{secs:02d}"
+    )
+
+
+async def run_verify_countdown_flow(query, context, user_id: int, record_kind: str):
+    state = user_state.setdefault(user_id, {})
+    if state.get("verify_in_progress"):
+        await query.answer("⏳ Verification already in progress. Please wait.", show_alert=False)
+        return
+
+    record = wc.get_user_pending_order(user_id) if record_kind == "order" else wc.get_user_pending_deposit(user_id)
+    if not record:
+        await send_inline_from_callback(query, "❌ <b>No pending payment found.</b>", close_keyboard())
+        return
+
+    network = record.get("network", "Unknown")
+    max_seconds = estimate_verify_timeout(network)
+    state["verify_in_progress"] = True
+
+    try:
+        await query.edit_message_text(
+            build_verify_status_text(network, max_seconds),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("⏳ Checking...", callback_data="verify_waiting")]]
+            ),
+        )
+    except Exception:
+        pass
+
+    while max_seconds > 0:
+        result = wc.on_verify_clicked(user_id, auto_scan_callable_from_record)
+
+        if result.get("status") == "confirmed":
+            state["verify_in_progress"] = False
+            if record_kind == "order":
+                record = wc.get_user_pending_order(user_id)
+                if record:
+                    await finalize_auto_order_record(record)
+                total = user_state.get(user_id, {}).get("total", 0)
+                await send_inline_from_callback(query, paymod.render_auto_verify_success_text(total), close_keyboard())
+            else:
+                record = wc.get_user_pending_deposit(user_id)
+                if record:
+                    await finalize_auto_deposit_record(record)
+                amount = user_state.get(user_id, {}).get("amount", 0)
+                await send_inline_from_callback(query, paymod.render_auto_verify_success_text(amount), close_keyboard())
+            return
+
+        await asyncio.sleep(VERIFY_RETRY_SECONDS)
+        max_seconds -= VERIFY_RETRY_SECONDS
+
+        if max_seconds > 0:
+            try:
+                await query.edit_message_text(
+                    build_verify_status_text(network, max_seconds),
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(
+                        [[InlineKeyboardButton("⏳ Checking...", callback_data="verify_waiting")]]
+                    ),
+                )
+            except Exception:
+                pass
+
+    state["verify_in_progress"] = False
+    fallback_text = (
+        "❌ Your payment is taking longer than expected or there may be an issue with detection.\n\n"
+        "Please contact live support: @serpstacking"
+    )
+    try:
+        await query.edit_message_text(
+            fallback_text,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("✅ I Have Paid (Verify)", callback_data="retry_verify_after_timeout")]]
+            ),
+        )
+    except Exception:
+        await send_inline_from_callback(query, fallback_text, close_keyboard())
+
+
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
@@ -3509,14 +3559,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "buypay_verify":
-        result = wc.on_verify_clicked(user_id, auto_scan_callable_from_record)
-        if result["status"] == "confirmed":
-            record = wc.get_user_pending_order(user_id)
-            if record:
-                await finalize_auto_order_record(record)
-            await send_inline_from_callback(query, paymod.render_auto_verify_success_text(user_state[user_id].get("total", 0)), close_keyboard())
-        else:
-            await send_inline_from_callback(query, paymod.render_auto_verify_pending_text(), paymod.payment_request_keyboard("buypay"))
+        await run_verify_countdown_flow(query, context, user_id, "order")
         return
 
     if data == "buymanual_submitted":
@@ -3592,20 +3635,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if data == "verify_waiting":
+        await query.answer("⏳ Please wait. Verification is in progress.", show_alert=False)
+        return
+
+    if data == "retry_verify_after_timeout":
+        record = wc.get_user_pending_any(user_id)
+        if record and record.get("kind") == "order":
+            await run_verify_countdown_flow(query, context, user_id, "order")
+        else:
+            await run_verify_countdown_flow(query, context, user_id, "deposit")
+        return
+
     if data == "deppay_change_network":
         user_state[user_id]["step"] = "deposit_network"
         await send_inline_from_callback(query, "🌐 <b>SELECT NETWORK</b>\n\nChoose a cryptocurrency below:", paymod.network_keyboard("dep"))
         return
 
     if data == "deppay_verify":
-        result = wc.on_verify_clicked(user_id, auto_scan_callable_from_record)
-        if result["status"] == "confirmed":
-            record = wc.get_user_pending_deposit(user_id)
-            if record:
-                await finalize_auto_deposit_record(record)
-            await send_inline_from_callback(query, paymod.render_auto_verify_success_text(user_state[user_id].get("amount", 0)), close_keyboard())
-        else:
-            await send_inline_from_callback(query, paymod.render_auto_verify_pending_text(), paymod.payment_request_keyboard("deppay"))
+        await run_verify_countdown_flow(query, context, user_id, "deposit")
         return
 
     if data == "depmanual_submitted":
