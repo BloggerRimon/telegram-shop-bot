@@ -128,6 +128,7 @@ RECHECK_INTERVAL_SECONDS = 20
 VERIFY_RETRY_SECONDS = 10
 VERIFY_MAX_SECONDS_FAST = 300
 VERIFY_MAX_SECONDS_SLOW = 600
+VERIFY_UI_REFRESH_SECONDS = 1
 MAX_RECHECK_ATTEMPTS = 12
 
 # =========================
@@ -2852,12 +2853,12 @@ async def run_verify_countdown_flow(query, context, user_id: int, record_kind: s
         return
 
     network = record.get("network", "Unknown")
-    max_seconds = estimate_verify_timeout(network)
+    seconds_left = estimate_verify_timeout(network)
     state["verify_in_progress"] = True
 
     try:
         await query.edit_message_text(
-            build_verify_status_text(network, max_seconds),
+            build_verify_status_text(network, seconds_left),
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(
                 [[InlineKeyboardButton("⏳ Checking...", callback_data="verify_waiting")]]
@@ -2866,32 +2867,37 @@ async def run_verify_countdown_flow(query, context, user_id: int, record_kind: s
     except Exception:
         pass
 
-    while max_seconds > 0:
-        result = wc.on_verify_clicked(user_id, auto_scan_callable_from_record)
+    verify_tick = 0
 
-        if result.get("status") == "confirmed":
-            state["verify_in_progress"] = False
-            if record_kind == "order":
-                record = wc.get_user_pending_order(user_id)
-                if record:
-                    await finalize_auto_order_record(record)
-                total = user_state.get(user_id, {}).get("total", 0)
-                await send_inline_from_callback(query, paymod.render_auto_verify_success_text(total), close_keyboard())
-            else:
-                record = wc.get_user_pending_deposit(user_id)
-                if record:
-                    await finalize_auto_deposit_record(record)
-                amount = user_state.get(user_id, {}).get("amount", 0)
-                await send_inline_from_callback(query, paymod.render_auto_verify_success_text(amount), close_keyboard())
-            return
+    while seconds_left > 0:
+        # verify only every VERIFY_RETRY_SECONDS, but UI refresh every second
+        if verify_tick == 0:
+            result = wc.on_verify_clicked(user_id, auto_scan_callable_from_record)
 
-        await asyncio.sleep(VERIFY_RETRY_SECONDS)
-        max_seconds -= VERIFY_RETRY_SECONDS
+            if result.get("status") == "confirmed":
+                state["verify_in_progress"] = False
+                if record_kind == "order":
+                    record = wc.get_user_pending_order(user_id)
+                    if record:
+                        await finalize_auto_order_record(record)
+                    total = user_state.get(user_id, {}).get("total", 0)
+                    await send_inline_from_callback(query, paymod.render_auto_verify_success_text(total), close_keyboard())
+                else:
+                    record = wc.get_user_pending_deposit(user_id)
+                    if record:
+                        await finalize_auto_deposit_record(record)
+                    amount = user_state.get(user_id, {}).get("amount", 0)
+                    await send_inline_from_callback(query, paymod.render_auto_verify_success_text(amount), close_keyboard())
+                return
 
-        if max_seconds > 0:
+        await asyncio.sleep(VERIFY_UI_REFRESH_SECONDS)
+        seconds_left -= VERIFY_UI_REFRESH_SECONDS
+        verify_tick = (verify_tick + VERIFY_UI_REFRESH_SECONDS) % VERIFY_RETRY_SECONDS
+
+        if seconds_left > 0:
             try:
                 await query.edit_message_text(
-                    build_verify_status_text(network, max_seconds),
+                    build_verify_status_text(network, seconds_left),
                     parse_mode="HTML",
                     reply_markup=InlineKeyboardMarkup(
                         [[InlineKeyboardButton("⏳ Checking...", callback_data="verify_waiting")]]
@@ -2915,7 +2921,6 @@ async def run_verify_countdown_flow(query, context, user_id: int, record_kind: s
         )
     except Exception:
         await send_inline_from_callback(query, fallback_text, close_keyboard())
-
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
