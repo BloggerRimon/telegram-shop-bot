@@ -1,8 +1,8 @@
+
 import hashlib
 import requests
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone, timedelta
-
 
 def safe_decimal(value):
     try:
@@ -10,10 +10,8 @@ def safe_decimal(value):
     except (InvalidOperation, TypeError, ValueError):
         return None
 
-
 def verify_result(ok: bool, status: str, reason: str, meta=None):
     return {"ok": ok, "status": status, "reason": reason, "meta": meta or {}}
-
 
 def normalize_dt(value):
     if value is None:
@@ -43,26 +41,12 @@ def normalize_dt(value):
     except Exception:
         return None
 
-
 def tx_is_within_request_window(tx_time, request_created_at, backward_minutes: int = 15, forward_hours: int = 24) -> bool:
     tx_dt = normalize_dt(tx_time)
     req_dt = normalize_dt(request_created_at)
     if tx_dt is None or req_dt is None:
         return False
     return (req_dt - timedelta(minutes=backward_minutes)) <= tx_dt <= (req_dt + timedelta(hours=forward_hours))
-
-
-def is_valid_txid_format(txid: str) -> bool:
-    txid = txid.strip()
-    if len(txid) < 20:
-        return False
-    if txid.startswith("0x") and len(txid) == 66:
-        return all(ch in "0123456789abcdefABCDEF" for ch in txid[2:])
-    if len(txid) == 64 and all(ch in "0123456789abcdefABCDEF" for ch in txid):
-        return True
-    base58_allowed = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-    return all(ch in base58_allowed for ch in txid)
-
 
 def get_network_tolerance(network: str):
     mapping = {
@@ -78,7 +62,6 @@ def get_network_tolerance(network: str):
     }
     return mapping.get(network, Decimal("0.10"))
 
-
 def amount_within_tolerance(actual_amount, expected_amount, tolerance):
     actual_dec = safe_decimal(actual_amount)
     expected_dec = safe_decimal(expected_amount)
@@ -87,14 +70,12 @@ def amount_within_tolerance(actual_amount, expected_amount, tolerance):
         return False
     return abs(actual_dec - expected_dec) <= tolerance_dec
 
-
 def http_get_json(url: str, params=None, headers=None, timeout=25):
     try:
         res = requests.get(url, params=params, headers=headers, timeout=timeout)
         return {"ok": res.ok, "status_code": res.status_code, "data": res.json() if res.content else {}, "text": getattr(res, "text", "")[:500]}
     except Exception as e:
         return {"ok": False, "status_code": 0, "data": {"error": str(e)}, "text": str(e)}
-
 
 def http_post_json(url: str, payload=None, headers=None, timeout=25):
     try:
@@ -103,9 +84,7 @@ def http_post_json(url: str, payload=None, headers=None, timeout=25):
     except Exception as e:
         return {"ok": False, "status_code": 0, "data": {"error": str(e)}, "text": str(e)}
 
-
 B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-
 
 def b58encode(data: bytes) -> str:
     num = int.from_bytes(data, "big")
@@ -121,7 +100,6 @@ def b58encode(data: bytes) -> str:
             break
     return "1" * pad + (encoded or "1")
 
-
 def tron_hex_to_base58(hex_addr: str) -> str:
     hex_addr = hex_addr.lower().replace("0x", "").strip()
     if len(hex_addr) == 40:
@@ -130,39 +108,104 @@ def tron_hex_to_base58(hex_addr: str) -> str:
     checksum = hashlib.sha256(hashlib.sha256(raw).digest()).digest()[:4]
     return b58encode(raw + checksum)
 
-
 def trongrid_headers(trongrid_api_key: str):
     return {"accept": "application/json", "content-type": "application/json", "TRON-PRO-API-KEY": trongrid_api_key}
-
 
 def normalize_evm_address(addr: str) -> str:
     return str(addr or "").strip().lower()
 
+def normalize_etherscan_v2_url(raw_url: str = "") -> str:
+    raw = str(raw_url or "").strip()
+    if not raw:
+        return "https://api.etherscan.io/v2/api"
+    lower = raw.lower()
+    if "/v2/api" in lower:
+        return raw
+    if lower.endswith("/api"):
+        return raw[:-4] + "/v2/api"
+    if lower.endswith("/"):
+        return raw + "v2/api"
+    return raw + "/v2/api"
 
 def get_evm_tx_by_hash(etherscan_v2_url: str, api_key: str, chainid: str, txid: str):
-    return http_get_json(etherscan_v2_url, params={"chainid": chainid, "module": "proxy", "action": "eth_getTransactionByHash", "txhash": txid, "apikey": api_key}, timeout=20)
-
+    return http_get_json(normalize_etherscan_v2_url(etherscan_v2_url), params={"chainid": chainid, "module": "proxy", "action": "eth_getTransactionByHash", "txhash": txid, "apikey": api_key}, timeout=20)
 
 def get_evm_tx_receipt(etherscan_v2_url: str, api_key: str, chainid: str, txid: str):
-    return http_get_json(etherscan_v2_url, params={"chainid": chainid, "module": "proxy", "action": "eth_getTransactionReceipt", "txhash": txid, "apikey": api_key}, timeout=20)
+    return http_get_json(normalize_etherscan_v2_url(etherscan_v2_url), params={"chainid": chainid, "module": "proxy", "action": "eth_getTransactionReceipt", "txhash": txid, "apikey": api_key}, timeout=20)
 
-
-def get_evm_token_transfers_to_address(etherscan_v2_url: str, api_key: str, chainid: str, address: str, contract_address: str, page: int = 1, offset: int = 50):
-    return http_get_json(etherscan_v2_url, params={"chainid": chainid, "module": "account", "action": "tokentx", "address": address, "contractaddress": contract_address, "page": page, "offset": offset, "sort": "desc", "apikey": api_key}, timeout=20)
-
+def get_evm_token_transfers_to_address(etherscan_v2_url: str, api_key: str, chainid: str, address: str, contract_address: str, page: int = 1, offset: int = 100):
+    return http_get_json(normalize_etherscan_v2_url(etherscan_v2_url), params={"chainid": chainid, "module": "account", "action": "tokentx", "address": address, "contractaddress": contract_address, "page": page, "offset": offset, "sort": "desc", "apikey": api_key}, timeout=20)
 
 def get_evm_native_transactions_to_address(etherscan_v2_url: str, api_key: str, chainid: str, address: str, page: int = 1, offset: int = 50):
-    return http_get_json(etherscan_v2_url, params={"chainid": chainid, "module": "account", "action": "txlist", "address": address, "page": page, "offset": offset, "sort": "desc", "apikey": api_key}, timeout=20)
-
+    return http_get_json(normalize_etherscan_v2_url(etherscan_v2_url), params={"chainid": chainid, "module": "account", "action": "txlist", "address": address, "page": page, "offset": offset, "sort": "desc", "apikey": api_key}, timeout=20)
 
 def helius_rpc(helius_rpc_url: str, method: str, params):
     payload = {"jsonrpc": "2.0", "id": "1", "method": method, "params": params}
     return http_post_json(helius_rpc_url, payload=payload, headers={"content-type": "application/json"}, timeout=25)
 
-
 def get_sol_signatures_for_address(helius_rpc_url: str, address: str, limit: int = 50):
     return helius_rpc(helius_rpc_url, "getSignaturesForAddress", [address, {"limit": limit}])
 
+def verify_evm_token_transfer(txid, expected_amount, expected_to_address, chainid, token_contract, decimals, network_label, etherscan_v2_url, api_key):
+    tolerance = get_network_tolerance(network_label)
+    receipt_res = get_evm_tx_receipt(etherscan_v2_url, api_key, chainid, txid)
+    if not receipt_res["ok"]:
+        return verify_result(False, "pending", f"{network_label} receipt request failed", {"http": receipt_res["status_code"], "raw": receipt_res.get("text", "")})
+    receipt = receipt_res["data"].get("result")
+    if not receipt:
+        return verify_result(False, "pending", "transaction not confirmed yet", {"raw": str(receipt_res["data"])[:300]})
+    if str(receipt.get("status", "")).lower() not in {"0x1", "1"}:
+        return verify_result(False, "rejected", "transaction failed")
+    expected_contract = normalize_evm_address(token_contract)
+    expected_to = normalize_evm_address(expected_to_address)
+    unit = Decimal(10) ** Decimal(decimals)
+    for log in receipt.get("logs", []) or []:
+        log_contract = normalize_evm_address(log.get("address"))
+        if log_contract != expected_contract:
+            continue
+        topics = log.get("topics", []) or []
+        if len(topics) < 3:
+            continue
+        actual_to = "0x" + str(topics[2]).lower()[-40:]
+        if normalize_evm_address(actual_to) != expected_to:
+            continue
+        try:
+            value_raw = int(str(log.get("data", "0x0")), 16)
+        except Exception:
+            continue
+        actual_amount = Decimal(value_raw) / unit
+        if amount_within_tolerance(actual_amount, expected_amount, tolerance):
+            return verify_result(True, "confirmed", "verified", {"network": network_label, "txid": txid, "actual_amount": str(actual_amount), "expected_amount": str(expected_amount), "to_address": expected_to, "contract": expected_contract})
+    return verify_result(False, "rejected", "No matching token transfer found", {"network": network_label, "expected_amount": str(expected_amount), "expected_to": expected_to, "expected_contract": expected_contract})
+
+def verify_evm_native_transfer(txid, expected_amount, expected_to_address, chainid, network_label, etherscan_v2_url, api_key):
+    tolerance = get_network_tolerance(network_label)
+    tx_res = get_evm_tx_by_hash(etherscan_v2_url, api_key, chainid, txid)
+    if not tx_res["ok"]:
+        return verify_result(False, "pending", f"{network_label} tx request failed", {"http": tx_res["status_code"], "raw": tx_res.get("text", "")})
+    tx_data = tx_res["data"].get("result")
+    if not tx_data:
+        return verify_result(False, "pending", "transaction not found yet", {"raw": str(tx_res["data"])[:300]})
+    receipt_res = get_evm_tx_receipt(etherscan_v2_url, api_key, chainid, txid)
+    if not receipt_res["ok"]:
+        return verify_result(False, "pending", f"{network_label} receipt request failed", {"http": receipt_res["status_code"], "raw": receipt_res.get("text", "")})
+    receipt = receipt_res["data"].get("result")
+    if not receipt:
+        return verify_result(False, "pending", "transaction not confirmed yet", {"raw": str(receipt_res["data"])[:300]})
+    if str(receipt.get("status", "")).lower() not in {"0x1", "1"}:
+        return verify_result(False, "rejected", "transaction failed")
+    actual_to = normalize_evm_address(tx_data.get("to"))
+    expected_to = normalize_evm_address(expected_to_address)
+    if actual_to != expected_to:
+        return verify_result(False, "rejected", "Destination address mismatch", {"actual_to": actual_to, "expected_to": expected_to})
+    try:
+        value_wei = int(str(tx_data.get("value", "0")), 16)
+    except Exception:
+        return verify_result(False, "rejected", "Invalid value in tx")
+    actual_amount = Decimal(value_wei) / Decimal("1000000000000000000")
+    if not amount_within_tolerance(actual_amount, expected_amount, tolerance):
+        return verify_result(False, "rejected", "Amount mismatch", {"network": network_label, "actual_amount": str(actual_amount), "expected_amount": str(expected_amount)})
+    return verify_result(True, "confirmed", "verified", {"network": network_label, "txid": txid, "actual_amount": str(actual_amount), "expected_amount": str(expected_amount), "to_address": actual_to})
 
 def verify_usdt_trc20_txid(txid, expected_amount, expected_to_address, trongrid_base, trongrid_api_key, usdt_trc20_contract):
     tolerance = get_network_tolerance("USDT (TRC20)")
@@ -192,7 +235,6 @@ def verify_usdt_trc20_txid(txid, expected_amount, expected_to_address, trongrid_
             return verify_result(True, "confirmed", "verified", {"network": "USDT (TRC20)", "txid": txid, "actual_amount": str(actual_amount), "expected_amount": str(expected_amount)})
     return verify_result(False, "rejected", "No matching USDT TRC20 transfer found")
 
-
 def verify_trx_transfer(txid, expected_amount, expected_to_address, trongrid_base, trongrid_api_key):
     tolerance = get_network_tolerance("TRX (TRC20)")
     tx_res = http_post_json(f"{trongrid_base}/wallet/gettransactionbyid", payload={"value": txid}, headers=trongrid_headers(trongrid_api_key), timeout=20)
@@ -216,70 +258,6 @@ def verify_trx_transfer(txid, expected_amount, expected_to_address, trongrid_bas
         return verify_result(False, "rejected", "Amount mismatch", {"actual_amount": str(actual_amount), "expected_amount": str(expected_amount)})
     return verify_result(True, "confirmed", "verified", {"network": "TRX (TRC20)", "txid": txid, "actual_amount": str(actual_amount), "expected_amount": str(expected_amount)})
 
-
-def verify_evm_native_transfer(txid, expected_amount, expected_to_address, chainid, network_label, etherscan_v2_url, api_key):
-    tolerance = get_network_tolerance(network_label)
-    tx_res = get_evm_tx_by_hash(etherscan_v2_url, api_key, chainid, txid)
-    if not tx_res["ok"]:
-        return verify_result(False, "pending", f"{network_label} tx request failed", {"http": tx_res["status_code"]})
-    tx_data = tx_res["data"].get("result")
-    if not tx_data:
-        return verify_result(False, "pending", "transaction not found yet")
-    receipt_res = get_evm_tx_receipt(etherscan_v2_url, api_key, chainid, txid)
-    if not receipt_res["ok"]:
-        return verify_result(False, "pending", f"{network_label} receipt request failed", {"http": receipt_res["status_code"]})
-    receipt = receipt_res["data"].get("result")
-    if not receipt:
-        return verify_result(False, "pending", "transaction not confirmed yet")
-    if str(receipt.get("status", "")).lower() not in {"0x1", "1"}:
-        return verify_result(False, "rejected", "transaction failed")
-    actual_to = normalize_evm_address(tx_data.get("to"))
-    expected_to = normalize_evm_address(expected_to_address)
-    if actual_to != expected_to:
-        return verify_result(False, "rejected", "Destination address mismatch", {"actual_to": actual_to, "expected_to": expected_to})
-    try:
-        value_wei = int(str(tx_data.get("value", "0")), 16)
-    except Exception:
-        return verify_result(False, "rejected", "Invalid value in tx")
-    actual_amount = Decimal(value_wei) / Decimal("1000000000000000000")
-    if not amount_within_tolerance(actual_amount, expected_amount, tolerance):
-        return verify_result(False, "rejected", "Amount mismatch", {"actual_amount": str(actual_amount), "expected_amount": str(expected_amount)})
-    return verify_result(True, "confirmed", "verified", {"network": network_label, "txid": txid, "actual_amount": str(actual_amount), "expected_amount": str(expected_amount)})
-
-
-def verify_evm_token_transfer(txid, expected_amount, expected_to_address, chainid, token_contract, decimals, network_label, etherscan_v2_url, api_key):
-    tolerance = get_network_tolerance(network_label)
-    receipt_res = get_evm_tx_receipt(etherscan_v2_url, api_key, chainid, txid)
-    if not receipt_res["ok"]:
-        return verify_result(False, "pending", f"{network_label} receipt request failed", {"http": receipt_res["status_code"]})
-    receipt = receipt_res["data"].get("result")
-    if not receipt:
-        return verify_result(False, "pending", "transaction not confirmed yet")
-    if str(receipt.get("status", "")).lower() not in {"0x1", "1"}:
-        return verify_result(False, "rejected", "transaction failed")
-    expected_contract = normalize_evm_address(token_contract)
-    expected_to = normalize_evm_address(expected_to_address)
-    unit = Decimal(10) ** Decimal(decimals)
-    for log in receipt.get("logs", []) or []:
-        log_contract = normalize_evm_address(log.get("address"))
-        if log_contract != expected_contract:
-            continue
-        topics = log.get("topics", []) or []
-        if len(topics) < 3:
-            continue
-        actual_to = "0x" + str(topics[2]).lower()[-40:]
-        if normalize_evm_address(actual_to) != expected_to:
-            continue
-        try:
-            value_raw = int(str(log.get("data", "0x0")), 16)
-        except Exception:
-            continue
-        actual_amount = Decimal(value_raw) / unit
-        if amount_within_tolerance(actual_amount, expected_amount, tolerance):
-            return verify_result(True, "confirmed", "verified", {"network": network_label, "txid": txid, "actual_amount": str(actual_amount), "expected_amount": str(expected_amount), "contract": expected_contract})
-    return verify_result(False, "rejected", "No matching token transfer found", {"network": network_label, "expected_amount": str(expected_amount), "expected_contract": expected_contract})
-
-
 def verify_btc_transfer(txid, expected_amount, expected_to_address, api_base):
     tolerance = get_network_tolerance("BTC")
     tx_res = http_get_json(f"{api_base}/tx/{txid}", timeout=20)
@@ -298,7 +276,6 @@ def verify_btc_transfer(txid, expected_amount, expected_to_address, api_base):
             return verify_result(True, "confirmed", "verified", {"network": "BTC", "txid": txid, "actual_amount": str(actual_amount), "expected_amount": str(expected_amount)})
     return verify_result(False, "rejected", "No matching BTC output found")
 
-
 def verify_ltc_transfer(txid, expected_amount, expected_to_address, api_base):
     tolerance = get_network_tolerance("LTC")
     tx_res = http_get_json(f"{api_base}/tx/{txid}", timeout=20)
@@ -316,7 +293,6 @@ def verify_ltc_transfer(txid, expected_amount, expected_to_address, api_base):
         if amount_within_tolerance(actual_amount, expected_amount, tolerance):
             return verify_result(True, "confirmed", "verified", {"network": "LTC", "txid": txid, "actual_amount": str(actual_amount), "expected_amount": str(expected_amount)})
     return verify_result(False, "rejected", "No matching LTC output found")
-
 
 def verify_sol_transfer(txid, expected_amount, expected_to_address, helius_rpc_url):
     tolerance = get_network_tolerance("SOL")
@@ -345,6 +321,57 @@ def verify_sol_transfer(txid, expected_amount, expected_to_address, helius_rpc_u
                 return verify_result(True, "confirmed", "verified", {"network": "SOL", "txid": txid, "actual_amount": str(actual_amount), "expected_amount": str(expected_amount)})
     return verify_result(False, "rejected", "No matching SOL transfer found")
 
+def auto_scan_evm_token_by_address(expected_amount, expected_to_address, request_created_at, chainid, token_contract, decimals, network_label, etherscan_v2_url, api_key):
+    tolerance = get_network_tolerance(network_label)
+    res = get_evm_token_transfers_to_address(etherscan_v2_url, api_key, chainid, expected_to_address, token_contract, page=1, offset=100)
+    if not res["ok"]:
+        return verify_result(False, "pending", f"{network_label} token scan failed", {"http": res["status_code"], "raw": res.get("text", "")})
+    rows = res["data"].get("result", [])
+    if not isinstance(rows, list):
+        return verify_result(False, "pending", f"{network_label} no token list yet", {"raw": str(res["data"])[:400]})
+    expected_to = normalize_evm_address(expected_to_address)
+    expected_contract = normalize_evm_address(token_contract)
+    unit = Decimal(10) ** Decimal(decimals)
+    for row in rows:
+        if not tx_is_within_request_window(row.get("timeStamp"), request_created_at):
+            continue
+        if normalize_evm_address(row.get("to")) != expected_to:
+            continue
+        if normalize_evm_address(row.get("contractAddress")) != expected_contract:
+            continue
+        try:
+            value_raw = int(str(row.get("value", "0")))
+        except Exception:
+            continue
+        actual_amount = Decimal(value_raw) / unit
+        if amount_within_tolerance(actual_amount, expected_amount, tolerance):
+            return verify_result(True, "confirmed", "matched by address scan", {"network": network_label, "txid": row.get("hash"), "actual_amount": str(actual_amount), "expected_amount": str(expected_amount), "tx_time": str(normalize_dt(row.get("timeStamp"))), "contract": expected_contract, "from_address": normalize_evm_address(row.get("from"))})
+    return verify_result(False, "pending", f"No matching {network_label} payment found yet", {"expected_amount": str(expected_amount), "expected_to": expected_to, "expected_contract": expected_contract, "hint": "Check API key, chainid, contract, and amount"})
+
+def auto_scan_evm_native_by_address(expected_amount, expected_to_address, request_created_at, chainid, network_label, etherscan_v2_url, api_key):
+    tolerance = get_network_tolerance(network_label)
+    res = get_evm_native_transactions_to_address(etherscan_v2_url, api_key, chainid, expected_to_address, page=1, offset=50)
+    if not res["ok"]:
+        return verify_result(False, "pending", f"{network_label} address scan failed", {"http": res["status_code"], "raw": res.get("text", "")})
+    rows = res["data"].get("result", [])
+    if not isinstance(rows, list):
+        return verify_result(False, "pending", f"{network_label} no tx list yet", {"raw": str(res["data"])[:300]})
+    expected_to = normalize_evm_address(expected_to_address)
+    for row in rows:
+        if not tx_is_within_request_window(row.get("timeStamp"), request_created_at):
+            continue
+        if normalize_evm_address(row.get("to")) != expected_to:
+            continue
+        if str(row.get("isError", "0")) not in {"0", ""}:
+            continue
+        try:
+            value_raw = int(str(row.get("value", "0")))
+        except Exception:
+            continue
+        actual_amount = Decimal(value_raw) / Decimal("1000000000000000000")
+        if amount_within_tolerance(actual_amount, expected_amount, tolerance):
+            return verify_result(True, "confirmed", "matched by address scan", {"network": network_label, "txid": row.get("hash"), "actual_amount": str(actual_amount), "expected_amount": str(expected_amount), "tx_time": str(normalize_dt(row.get("timeStamp")))})
+    return verify_result(False, "pending", f"No matching {network_label} payment found yet")
 
 def auto_scan_trx_by_address(expected_amount, expected_to_address, request_created_at, trongrid_base, trongrid_api_key):
     tolerance = get_network_tolerance("TRX (TRC20)")
@@ -352,7 +379,8 @@ def auto_scan_trx_by_address(expected_amount, expected_to_address, request_creat
     if not res["ok"]:
         return verify_result(False, "pending", "TRX address scan failed", {"http": res["status_code"]})
     for tx in res["data"].get("data", []):
-        if not tx_is_within_request_window(tx.get("block_timestamp"), request_created_at):
+        tx_time = tx.get("block_timestamp")
+        if not tx_is_within_request_window(tx_time, request_created_at):
             continue
         contracts = (((tx.get("raw_data") or {}).get("contract")) or [])
         if not contracts:
@@ -366,9 +394,8 @@ def auto_scan_trx_by_address(expected_amount, expected_to_address, request_creat
             continue
         actual_amount = Decimal(int(param_value.get("amount", 0))) / Decimal("1000000")
         if amount_within_tolerance(actual_amount, expected_amount, tolerance):
-            return verify_result(True, "confirmed", "matched by address scan", {"network": "TRX (TRC20)", "txid": tx.get("txID"), "actual_amount": str(actual_amount), "expected_amount": str(expected_amount), "tx_time": str(normalize_dt(tx.get("block_timestamp")))})
+            return verify_result(True, "confirmed", "matched by address scan", {"network": "TRX (TRC20)", "txid": tx.get("txID"), "actual_amount": str(actual_amount), "expected_amount": str(expected_amount), "tx_time": str(normalize_dt(tx_time))})
     return verify_result(False, "pending", "No matching TRX payment found yet")
-
 
 def auto_scan_usdt_trc20_by_address(expected_amount, expected_to_address, request_created_at, trongrid_base, trongrid_api_key, usdt_trc20_contract):
     tolerance = get_network_tolerance("USDT (TRC20)")
@@ -394,61 +421,6 @@ def auto_scan_usdt_trc20_by_address(expected_amount, expected_to_address, reques
             return verify_result(True, "confirmed", "matched by address scan", {"network": "USDT (TRC20)", "txid": tx.get("transaction_id"), "actual_amount": str(actual_amount), "expected_amount": str(expected_amount), "tx_time": str(normalize_dt(tx_time))})
     return verify_result(False, "pending", "No matching USDT TRC20 payment found yet")
 
-
-def auto_scan_evm_native_by_address(expected_amount, expected_to_address, request_created_at, chainid, network_label, etherscan_v2_url, api_key):
-    tolerance = get_network_tolerance(network_label)
-    res = get_evm_native_transactions_to_address(etherscan_v2_url, api_key, chainid, expected_to_address, page=1, offset=50)
-    if not res["ok"]:
-        return verify_result(False, "pending", f"{network_label} address scan failed", {"http": res["status_code"]})
-    rows = res["data"].get("result", [])
-    if not isinstance(rows, list):
-        return verify_result(False, "pending", f"{network_label} no tx list yet", {"raw": str(res["data"])[:200]})
-    expected_to = normalize_evm_address(expected_to_address)
-    for row in rows:
-        if not tx_is_within_request_window(row.get("timeStamp"), request_created_at):
-            continue
-        if normalize_evm_address(row.get("to")) != expected_to:
-            continue
-        if str(row.get("isError", "0")) not in {"0", ""}:
-            continue
-        try:
-            value_raw = int(str(row.get("value", "0")))
-        except Exception:
-            continue
-        actual_amount = Decimal(value_raw) / Decimal("1000000000000000000")
-        if amount_within_tolerance(actual_amount, expected_amount, tolerance):
-            return verify_result(True, "confirmed", "matched by address scan", {"network": network_label, "txid": row.get("hash"), "actual_amount": str(actual_amount), "expected_amount": str(expected_amount), "tx_time": str(normalize_dt(row.get("timeStamp")))})
-    return verify_result(False, "pending", f"No matching {network_label} payment found yet")
-
-
-def auto_scan_evm_token_by_address(expected_amount, expected_to_address, request_created_at, chainid, token_contract, decimals, network_label, etherscan_v2_url, api_key):
-    tolerance = get_network_tolerance(network_label)
-    res = get_evm_token_transfers_to_address(etherscan_v2_url, api_key, chainid, expected_to_address, token_contract, page=1, offset=50)
-    if not res["ok"]:
-        return verify_result(False, "pending", f"{network_label} token scan failed", {"http": res["status_code"]})
-    rows = res["data"].get("result", [])
-    if not isinstance(rows, list):
-        return verify_result(False, "pending", f"{network_label} no token list yet", {"raw": str(res["data"])[:200]})
-    expected_to = normalize_evm_address(expected_to_address)
-    expected_contract = normalize_evm_address(token_contract)
-    unit = Decimal(10) ** Decimal(decimals)
-    for row in rows:
-        if not tx_is_within_request_window(row.get("timeStamp"), request_created_at):
-            continue
-        if normalize_evm_address(row.get("to")) != expected_to:
-            continue
-        if normalize_evm_address(row.get("contractAddress")) != expected_contract:
-            continue
-        try:
-            value_raw = int(str(row.get("value", "0")))
-        except Exception:
-            continue
-        actual_amount = Decimal(value_raw) / unit
-        if amount_within_tolerance(actual_amount, expected_amount, tolerance):
-            return verify_result(True, "confirmed", "matched by address scan", {"network": network_label, "txid": row.get("hash"), "actual_amount": str(actual_amount), "expected_amount": str(expected_amount), "tx_time": str(normalize_dt(row.get("timeStamp"))), "contract": expected_contract})
-    return verify_result(False, "pending", f"No matching {network_label} payment found yet", {"expected_amount": str(expected_amount), "expected_contract": expected_contract})
-
-
 def auto_scan_btc_by_address(expected_amount, expected_to_address, request_created_at, api_base):
     tolerance = get_network_tolerance("BTC")
     res = http_get_json(f"{api_base}/address/{expected_to_address}/txs", timeout=20)
@@ -471,7 +443,6 @@ def auto_scan_btc_by_address(expected_amount, expected_to_address, request_creat
                 return verify_result(True, "confirmed", "matched by address scan", {"network": "BTC", "txid": tx.get("txid"), "actual_amount": str(actual_amount), "expected_amount": str(expected_amount), "tx_time": str(normalize_dt(tx_time))})
     return verify_result(False, "pending", "No matching BTC payment found yet")
 
-
 def auto_scan_ltc_by_address(expected_amount, expected_to_address, request_created_at, api_base):
     tolerance = get_network_tolerance("LTC")
     res = http_get_json(f"{api_base}/address/{expected_to_address}/txs", timeout=20)
@@ -493,7 +464,6 @@ def auto_scan_ltc_by_address(expected_amount, expected_to_address, request_creat
             if amount_within_tolerance(actual_amount, expected_amount, tolerance):
                 return verify_result(True, "confirmed", "matched by address scan", {"network": "LTC", "txid": tx.get("txid"), "actual_amount": str(actual_amount), "expected_amount": str(expected_amount), "tx_time": str(normalize_dt(tx_time))})
     return verify_result(False, "pending", "No matching LTC payment found yet")
-
 
 def auto_scan_sol_by_address(expected_amount, expected_to_address, request_created_at, helius_rpc_url):
     tolerance = get_network_tolerance("SOL")
@@ -534,20 +504,19 @@ def auto_scan_sol_by_address(expected_amount, expected_to_address, request_creat
                     return verify_result(True, "confirmed", "matched by address scan", {"network": "SOL", "txid": txid, "actual_amount": str(actual_amount), "expected_amount": str(expected_amount), "tx_time": str(normalize_dt(sig_item.get("blockTime")))})
     return verify_result(False, "pending", "No matching SOL payment found yet")
 
-
 def verify_crypto_payment(network: str, txid: str, expected_amount, expected_to_address: str, config: dict):
     if network == "USDT (TRC20)":
         return verify_usdt_trc20_txid(txid, expected_amount, expected_to_address, config["TRONGRID_BASE"], config["TRONGRID_API_KEY"], config["USDT_TRC20_CONTRACT"])
     if network == "TRX (TRC20)":
         return verify_trx_transfer(txid, expected_amount, expected_to_address, config["TRONGRID_BASE"], config["TRONGRID_API_KEY"])
     if network == "ETH (ERC20)":
-        return verify_evm_native_transfer(txid, expected_amount, expected_to_address, config["ETH_CHAIN_ID"], "ETH (ERC20)", config["ETHERSCAN_V2_URL"], config["ETHERSCAN_API_KEY"])
+        return verify_evm_native_transfer(txid, expected_amount, expected_to_address, config["ETH_CHAIN_ID"], "ETH (ERC20)", config.get("ETHERSCAN_V2_URL", ""), config["ETHERSCAN_API_KEY"])
     if network == "BNB (BEP20)":
-        return verify_evm_native_transfer(txid, expected_amount, expected_to_address, config["BSC_CHAIN_ID"], "BNB (BEP20)", config["ETHERSCAN_V2_URL"], config["ETHERSCAN_API_KEY"])
+        return verify_evm_native_transfer(txid, expected_amount, expected_to_address, config["BSC_CHAIN_ID"], "BNB (BEP20)", config.get("ETHERSCAN_V2_URL", ""), config["ETHERSCAN_API_KEY"])
     if network == "USDT (ERC20)":
-        return verify_evm_token_transfer(txid, expected_amount, expected_to_address, config["ETH_CHAIN_ID"], config["USDT_ERC20_CONTRACT"], 6, "USDT (ERC20)", config["ETHERSCAN_V2_URL"], config["ETHERSCAN_API_KEY"])
+        return verify_evm_token_transfer(txid, expected_amount, expected_to_address, config["ETH_CHAIN_ID"], config["USDT_ERC20_CONTRACT"], 6, "USDT (ERC20)", config.get("ETHERSCAN_V2_URL", ""), config["ETHERSCAN_API_KEY"])
     if network == "USDT (BEP20)":
-        return verify_evm_token_transfer(txid, expected_amount, expected_to_address, config["BSC_CHAIN_ID"], config["USDT_BEP20_CONTRACT"], 18, "USDT (BEP20)", config["ETHERSCAN_V2_URL"], config["ETHERSCAN_API_KEY"])
+        return verify_evm_token_transfer(txid, expected_amount, expected_to_address, config["BSC_CHAIN_ID"], config["USDT_BEP20_CONTRACT"], 18, "USDT (BEP20)", config.get("ETHERSCAN_V2_URL", ""), config["ETHERSCAN_API_KEY"])
     if network == "BTC":
         return verify_btc_transfer(txid, expected_amount, expected_to_address, config["BTC_API_BASE"])
     if network == "LTC":
@@ -555,7 +524,6 @@ def verify_crypto_payment(network: str, txid: str, expected_amount, expected_to_
     if network == "SOL":
         return verify_sol_transfer(txid, expected_amount, expected_to_address, config["HELIUS_RPC_URL"])
     return verify_result(False, "rejected", f"Unsupported network: {network}")
-
 
 def auto_verify_by_record(record: dict, config: dict):
     network = record["network"]
@@ -567,13 +535,13 @@ def auto_verify_by_record(record: dict, config: dict):
     if network == "TRX (TRC20)":
         return auto_scan_trx_by_address(expected_amount, expected_to_address, request_created_at, config["TRONGRID_BASE"], config["TRONGRID_API_KEY"])
     if network == "ETH (ERC20)":
-        return auto_scan_evm_native_by_address(expected_amount, expected_to_address, request_created_at, config["ETH_CHAIN_ID"], "ETH (ERC20)", config["ETHERSCAN_V2_URL"], config["ETHERSCAN_API_KEY"])
+        return auto_scan_evm_native_by_address(expected_amount, expected_to_address, request_created_at, config["ETH_CHAIN_ID"], "ETH (ERC20)", config.get("ETHERSCAN_V2_URL", ""), config["ETHERSCAN_API_KEY"])
     if network == "BNB (BEP20)":
-        return auto_scan_evm_native_by_address(expected_amount, expected_to_address, request_created_at, config["BSC_CHAIN_ID"], "BNB (BEP20)", config["ETHERSCAN_V2_URL"], config["ETHERSCAN_API_KEY"])
+        return auto_scan_evm_native_by_address(expected_amount, expected_to_address, request_created_at, config["BSC_CHAIN_ID"], "BNB (BEP20)", config.get("ETHERSCAN_V2_URL", ""), config["ETHERSCAN_API_KEY"])
     if network == "USDT (ERC20)":
-        return auto_scan_evm_token_by_address(expected_amount, expected_to_address, request_created_at, config["ETH_CHAIN_ID"], config["USDT_ERC20_CONTRACT"], 6, "USDT (ERC20)", config["ETHERSCAN_V2_URL"], config["ETHERSCAN_API_KEY"])
+        return auto_scan_evm_token_by_address(expected_amount, expected_to_address, request_created_at, config["ETH_CHAIN_ID"], config["USDT_ERC20_CONTRACT"], 6, "USDT (ERC20)", config.get("ETHERSCAN_V2_URL", ""), config["ETHERSCAN_API_KEY"])
     if network == "USDT (BEP20)":
-        return auto_scan_evm_token_by_address(expected_amount, expected_to_address, request_created_at, config["BSC_CHAIN_ID"], config["USDT_BEP20_CONTRACT"], 18, "USDT (BEP20)", config["ETHERSCAN_V2_URL"], config["ETHERSCAN_API_KEY"])
+        return auto_scan_evm_token_by_address(expected_amount, expected_to_address, request_created_at, config["BSC_CHAIN_ID"], config["USDT_BEP20_CONTRACT"], 18, "USDT (BEP20)", config.get("ETHERSCAN_V2_URL", ""), config["ETHERSCAN_API_KEY"])
     if network == "BTC":
         return auto_scan_btc_by_address(expected_amount, expected_to_address, request_created_at, config["BTC_API_BASE"])
     if network == "LTC":
