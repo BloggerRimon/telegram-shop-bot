@@ -8,6 +8,9 @@ from typing import Callable, Dict, Optional
 # =========================
 pending_crypto_deposits: Dict[int, dict] = {}
 pending_crypto_orders: Dict[int, dict] = {}
+
+# In-memory used tx cache
+# For production, database storage is better.
 used_txids = set()
 
 
@@ -25,17 +28,6 @@ def safe_decimal(value):
         return None
 
 
-def amount_equal_or_close(actual_amount, expected_amount, tolerance=0.10) -> bool:
-    actual_dec = safe_decimal(actual_amount)
-    expected_dec = safe_decimal(expected_amount)
-    tolerance_dec = safe_decimal(tolerance)
-
-    if actual_dec is None or expected_dec is None or tolerance_dec is None:
-        return False
-
-    return abs(actual_dec - expected_dec) <= tolerance_dec
-
-
 def checker_result(ok: bool, status: str, message: str, data=None):
     return {
         "ok": ok,
@@ -49,12 +41,17 @@ def checker_result(ok: bool, status: str, message: str, data=None):
 # TXID / DUPLICATE HELPERS
 # =========================
 def is_txid_already_used(txid: str) -> bool:
-    return txid in used_txids
+    return bool(txid) and txid in used_txids
 
 
 def mark_txid_used(txid: str):
     if txid:
         used_txids.add(txid)
+
+
+def unmark_txid_used(txid: str):
+    if txid and txid in used_txids:
+        used_txids.remove(txid)
 
 
 def clear_user_pending_payment(user_id: int):
@@ -63,20 +60,12 @@ def clear_user_pending_payment(user_id: int):
 
 
 # =========================
-# CREATE / UPDATE PENDING DEPOSIT
+# CREATE / UPDATE PENDING RECORDS
 # =========================
-def create_or_update_pending_deposit(
-    user_id: int,
-    usd_amount,
-    crypto_amount,
-    network: str,
-    address: str,
-):
-    pending_crypto_orders.pop(user_id, None)
-
-    record = {
+def _base_pending_record(user_id: int, usd_amount, crypto_amount, network: str, address: str, kind: str):
+    return {
         "user_id": user_id,
-        "kind": "deposit",
+        "kind": kind,
         "usd_amount": float(usd_amount),
         "crypto_amount": float(crypto_amount),
         "network": network,
@@ -88,14 +77,26 @@ def create_or_update_pending_deposit(
         "auto_check_attempts": 0,
         "matched_txid": None,
         "last_result": None,
+        "last_reason": None,
+        "last_scan_meta": {},
+        "auto_verified": False,
     }
+
+
+def create_or_update_pending_deposit(
+    user_id: int,
+    usd_amount,
+    crypto_amount,
+    network: str,
+    address: str,
+):
+    pending_crypto_orders.pop(user_id, None)
+
+    record = _base_pending_record(user_id, usd_amount, crypto_amount, network, address, "deposit")
     pending_crypto_deposits[user_id] = record
     return record
 
 
-# =========================
-# CREATE / UPDATE PENDING ORDER
-# =========================
 def create_or_update_pending_order(
     user_id: int,
     product_id: str,
@@ -107,23 +108,9 @@ def create_or_update_pending_order(
 ):
     pending_crypto_deposits.pop(user_id, None)
 
-    record = {
-        "user_id": user_id,
-        "kind": "order",
-        "product_id": product_id,
-        "qty": int(qty),
-        "usd_amount": float(usd_amount),
-        "crypto_amount": float(crypto_amount),
-        "network": network,
-        "address": address,
-        "status": "awaiting_payment",
-        "created_at": now_dt(),
-        "updated_at": now_dt(),
-        "verify_clicks": 0,
-        "auto_check_attempts": 0,
-        "matched_txid": None,
-        "last_result": None,
-    }
+    record = _base_pending_record(user_id, usd_amount, crypto_amount, network, address, "order")
+    record["product_id"] = product_id
+    record["qty"] = int(qty)
     pending_crypto_orders[user_id] = record
     return record
 
@@ -160,10 +147,12 @@ def get_all_pending_records():
 
 
 # =========================
-# STATUS / TOUCH HELPERS
+# STATE HELPERS
 # =========================
-def set_pending_status(record: dict, status: str):
+def set_pending_status(record: dict, status: str, reason: Optional[str] = None):
     record["status"] = status
+    if reason is not None:
+        record["last_reason"] = reason
     record["updated_at"] = now_dt()
 
 
@@ -184,6 +173,16 @@ def attach_detected_txid(record: dict, txid: Optional[str]):
     record["updated_at"] = now_dt()
 
 
+def attach_scan_result(record: dict, result: dict):
+    record["last_result"] = result
+    record["updated_at"] = now_dt()
+
+    if isinstance(result, dict):
+        record["last_reason"] = result.get("reason")
+        meta = result.get("meta", {}) or {}
+        record["last_scan_meta"] = meta
+
+
 # =========================
 # COMPLETE DEPOSIT
 # =========================
@@ -199,7 +198,8 @@ def complete_deposit_record(
     usd_amount = float(record["usd_amount"])
 
     user_wallet[user_id] = user_wallet.get(user_id, 0) + usd_amount
-    set_pending_status(record, "completed")
+    record["auto_verified"] = True
+    set_pending_status(record, "completed", "Deposit completed automatically.")
 
     if add_transaction_record:
         add_transaction_record(
@@ -212,6 +212,7 @@ def complete_deposit_record(
                 "crypto_amount": record["crypto_amount"],
                 "txid": record.get("matched_txid"),
                 "auto_verified": True,
+                "scan_meta": record.get("last_scan_meta", {}),
             },
         )
 
@@ -222,6 +223,7 @@ def complete_deposit_record(
                 tx.setdefault("meta", {})
                 tx["meta"]["auto_verified"] = True
                 tx["meta"]["txid"] = record.get("matched_txid")
+                tx["meta"]["scan_meta"] = record.get("last_scan_meta", {})
                 break
 
     if set_tx_status and all_transactions is not None:
@@ -231,6 +233,7 @@ def complete_deposit_record(
                 tx.setdefault("meta", {})
                 tx["meta"]["auto_verified"] = True
                 tx["meta"]["txid"] = record.get("matched_txid")
+                tx["meta"]["scan_meta"] = record.get("last_scan_meta", {})
                 break
 
     pending_crypto_deposits.pop(user_id, None)
@@ -257,6 +260,7 @@ async def complete_order_record_async(
 
     ok, delivered = await deliver_accounts_to_user_async(bot, user_id, product_id, qty)
     if not ok:
+        set_pending_status(record, "delivery_failed", "Not enough real stock to deliver.")
         return checker_result(False, "failed", "Not enough real stock to deliver.")
 
     add_order_record(user_id, product_id, qty, usd_amount, "Completed", "Crypto Auto")
@@ -274,6 +278,7 @@ async def complete_order_record_async(
                 "auto_verified": True,
                 "product_id": product_id,
                 "qty": qty,
+                "scan_meta": record.get("last_scan_meta", {}),
             },
         )
 
@@ -284,6 +289,7 @@ async def complete_order_record_async(
                 tx.setdefault("meta", {})
                 tx["meta"]["auto_verified"] = True
                 tx["meta"]["txid"] = record.get("matched_txid")
+                tx["meta"]["scan_meta"] = record.get("last_scan_meta", {})
                 break
 
     if set_tx_status and all_transactions is not None:
@@ -293,10 +299,13 @@ async def complete_order_record_async(
                 tx.setdefault("meta", {})
                 tx["meta"]["auto_verified"] = True
                 tx["meta"]["txid"] = record.get("matched_txid")
+                tx["meta"]["scan_meta"] = record.get("last_scan_meta", {})
                 break
 
-    set_pending_status(record, "completed")
+    record["auto_verified"] = True
+    set_pending_status(record, "completed", "Order completed automatically.")
     pending_crypto_orders.pop(user_id, None)
+
     return checker_result(True, "completed", "Order completed automatically.", {"delivered": delivered})
 
 
@@ -307,30 +316,34 @@ def try_auto_verify_record(record: dict, auto_scan_callable: Callable) -> dict:
     touch_auto_attempt(record)
 
     result = auto_scan_callable(record)
-    record["last_result"] = result
-    record["updated_at"] = now_dt()
+    attach_scan_result(record, result)
 
     if not isinstance(result, dict):
+        set_pending_status(record, "error", "Auto scan callable returned invalid result.")
         return checker_result(False, "error", "Auto scan callable returned invalid result.")
 
     status = result.get("status", "pending")
-    txid = result.get("meta", {}).get("txid") or result.get("txid")
+    reason = result.get("reason", "")
+    meta = result.get("meta", {}) or {}
+    txid = meta.get("txid") or result.get("txid")
 
     if txid and is_txid_already_used(txid):
-        set_pending_status(record, "awaiting_blockchain_match")
-        return checker_result(False, "pending", "Matched transaction was already used before.", result)
+        # If the same record already holds this txid, allow it
+        if record.get("matched_txid") != txid:
+            set_pending_status(record, "awaiting_blockchain_match", "Matched transaction already used before.")
+            return checker_result(False, "pending", "Matched transaction was already used before.", result)
 
     if status == "confirmed":
         attach_detected_txid(record, txid)
-        set_pending_status(record, "matched")
-        return checker_result(True, "confirmed", "Payment matched automatically.", result)
+        set_pending_status(record, "matched", reason or "Payment matched automatically.")
+        return checker_result(True, "confirmed", reason or "Payment matched automatically.", result)
 
     if status == "rejected":
-        set_pending_status(record, "rejected")
-        return checker_result(False, "rejected", result.get("reason", "Payment rejected."), result)
+        set_pending_status(record, "rejected", reason or "Payment rejected.")
+        return checker_result(False, "rejected", reason or "Payment rejected.", result)
 
-    set_pending_status(record, "awaiting_blockchain_match")
-    return checker_result(False, "pending", result.get("reason", "No matching payment found yet."), result)
+    set_pending_status(record, "awaiting_blockchain_match", reason or "No matching payment found yet.")
+    return checker_result(False, "pending", reason or "No matching payment found yet.", result)
 
 
 def on_verify_clicked(user_id: int, auto_scan_callable: Callable) -> dict:
@@ -339,7 +352,7 @@ def on_verify_clicked(user_id: int, auto_scan_callable: Callable) -> dict:
         return checker_result(False, "not_found", "No pending payment request found.")
 
     touch_verify_click(record)
-    set_pending_status(record, "checking")
+    set_pending_status(record, "checking", "User clicked verify.")
     return try_auto_verify_record(record, auto_scan_callable)
 
 
@@ -359,7 +372,7 @@ async def background_auto_recheck(
     order_items = list(pending_crypto_orders.items())
 
     for user_id, record in deposit_items + order_items:
-        if record.get("status") in {"completed", "rejected"}:
+        if record.get("status") in {"completed", "rejected", "delivery_failed"}:
             continue
 
         result = try_auto_verify_record(record, auto_scan_callable)
@@ -384,7 +397,7 @@ async def background_auto_recheck(
 
 
 # =========================
-# OPTIONAL FALLBACK TXID SUPPORT
+# OPTIONAL TXID FALLBACK
 # =========================
 def verify_manual_txid_for_record(
     user_id: int,
@@ -405,17 +418,22 @@ def verify_manual_txid_for_record(
         record["address"],
     )
 
+    attach_scan_result(record, result)
+
     if not isinstance(result, dict):
+        set_pending_status(record, "error", "TXID verify callable returned invalid result.")
         return checker_result(False, "error", "TXID verify callable returned invalid result.")
 
     if result.get("status") == "confirmed":
         attach_detected_txid(record, txid)
-        set_pending_status(record, "matched")
-        return checker_result(True, "confirmed", "TXID verified successfully.", result)
+        set_pending_status(record, "matched", result.get("reason", "TXID verified successfully."))
+        return checker_result(True, "confirmed", result.get("reason", "TXID verified successfully."), result)
 
     if result.get("status") == "rejected":
+        set_pending_status(record, "rejected", result.get("reason", "TXID rejected."))
         return checker_result(False, "rejected", result.get("reason", "TXID rejected."), result)
 
+    set_pending_status(record, "awaiting_blockchain_match", result.get("reason", "TXID still pending."))
     return checker_result(False, "pending", result.get("reason", "TXID still pending."), result)
 
 
@@ -423,8 +441,8 @@ def verify_manual_txid_for_record(
 # MAINTENANCE / DEBUG
 # =========================
 def cleanup_completed_or_rejected():
-    remove_dep = [uid for uid, rec in pending_crypto_deposits.items() if rec.get("status") in {"completed", "rejected"}]
-    remove_ord = [uid for uid, rec in pending_crypto_orders.items() if rec.get("status") in {"completed", "rejected"}]
+    remove_dep = [uid for uid, rec in pending_crypto_deposits.items() if rec.get("status") in {"completed", "rejected", "delivery_failed"}]
+    remove_ord = [uid for uid, rec in pending_crypto_orders.items() if rec.get("status") in {"completed", "rejected", "delivery_failed"}]
 
     for uid in remove_dep:
         pending_crypto_deposits.pop(uid, None)
@@ -442,6 +460,7 @@ def format_pending_record_text(record: dict) -> str:
     lines = [
         f"Kind: {record.get('kind', 'unknown')}",
         f"Status: {record.get('status', 'unknown')}",
+        f"Reason: {record.get('last_reason')}",
         f"USD Amount: {record.get('usd_amount')}",
         f"Crypto Amount: {record.get('crypto_amount')}",
         f"Network: {record.get('network')}",
@@ -452,6 +471,10 @@ def format_pending_record_text(record: dict) -> str:
         f"Created: {record.get('created_at')}",
         f"Updated: {record.get('updated_at')}",
     ]
+
+    meta = record.get("last_scan_meta", {}) or {}
+    if meta:
+        lines.append(f"Last Scan Meta: {meta}")
 
     if record.get("kind") == "order":
         lines.insert(1, f"Product ID: {record.get('product_id')}")
