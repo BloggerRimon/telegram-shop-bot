@@ -3567,7 +3567,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "buypay_verify":
-        await run_verify_countdown_flow(query, context, user_id, "order")
+        context.application.create_task(run_verify_countdown_flow(query, context, user_id, "order"))
         return
 
     if data == "buymanual_submitted":
@@ -3650,9 +3650,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "retry_verify_after_timeout":
         record = wc.get_user_pending_any(user_id)
         if record and record.get("kind") == "order":
-            await run_verify_countdown_flow(query, context, user_id, "order")
+            context.application.create_task(run_verify_countdown_flow(query, context, user_id, "order"))
         else:
-            await run_verify_countdown_flow(query, context, user_id, "deposit")
+            context.application.create_task(run_verify_countdown_flow(query, context, user_id, "deposit"))
         return
 
     if data == "deppay_change_network":
@@ -3661,7 +3661,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "deppay_verify":
-        await run_verify_countdown_flow(query, context, user_id, "deposit")
+        context.application.create_task(run_verify_countdown_flow(query, context, user_id, "deposit"))
         return
 
     if data == "depmanual_submitted":
