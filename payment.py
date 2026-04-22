@@ -1,5 +1,6 @@
-from decimal import Decimal, InvalidOperation, ROUND_UP
+from decimal import Decimal, InvalidOperation, ROUND_UP, ROUND_DOWN
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+import random
 
 
 # =========================
@@ -33,8 +34,16 @@ def quantize_up(value, decimals: int) -> Decimal:
     return dec.quantize(q, rounding=ROUND_UP)
 
 
+def quantize_down(value, decimals: int) -> Decimal:
+    dec = safe_decimal(value)
+    if dec is None:
+        return Decimal("0")
+    q = Decimal("1." + ("0" * decimals))
+    return dec.quantize(q, rounding=ROUND_DOWN)
+
+
 # =========================
-# ORIGINAL PAYMENT HELPERS + REQUIRED UPGRADE HELPERS
+# NETWORK / DISPLAY CONFIG
 # =========================
 NETWORK_DECIMALS = {
     "USDT (TRC20)": 2,
@@ -60,6 +69,30 @@ NETWORK_LABELS = {
     "TRX (TRC20)": "TRX (TRC20)",
 }
 
+NETWORK_TO_COIN = {
+    "USDT (TRC20)": "USDT",
+    "USDT (ERC20)": "USDT",
+    "USDT (BEP20)": "USDT",
+    "BTC": "BTC",
+    "LTC": "LTC",
+    "ETH (ERC20)": "ETH",
+    "BNB (BEP20)": "BNB",
+    "SOL": "SOL",
+    "TRX (TRC20)": "TRX",
+}
+
+COIN_KEY_TO_NETWORK = {
+    "BTC": "BTC",
+    "LTC": "LTC",
+    "ETH": "ETH (ERC20)",
+    "BNB": "BNB (BEP20)",
+    "SOL": "SOL",
+    "TRX": "TRX (TRC20)",
+    "USDT_TRC20": "USDT (TRC20)",
+    "USDT_ERC20": "USDT (ERC20)",
+    "USDT_BEP20": "USDT (BEP20)",
+}
+
 
 def format_network_amount(crypto_amount, network: str) -> str:
     dec = safe_decimal(crypto_amount)
@@ -68,19 +101,6 @@ def format_network_amount(crypto_amount, network: str) -> str:
     decimals = NETWORK_DECIMALS.get(network, 8)
     fmt = f"{{0:.{decimals}f}}"
     return f"{fmt.format(dec)} {NETWORK_LABELS.get(network, network)}"
-
-
-def calculate_buffered_amount(crypto_amount, network: str):
-    amount_dec = safe_decimal(crypto_amount)
-    if amount_dec is None:
-        return Decimal("0")
-
-    if network.startswith("USDT"):
-        buffered = amount_dec + Decimal("0.10")
-    else:
-        buffered = amount_dec * Decimal("1.01")
-
-    return quantize_up(buffered, NETWORK_DECIMALS.get(network, 8))
 
 
 def amount_within_tolerance(actual_amount, expected_amount, tolerance=0.10):
@@ -94,20 +114,95 @@ def amount_within_tolerance(actual_amount, expected_amount, tolerance=0.10):
     return abs(actual_dec - expected_dec) <= tolerance_dec
 
 
-def map_network_callback_to_label(network_callback_tail: str) -> str:
-    network = network_callback_tail.replace("_", " ")
-    network_map = {
-        "USDT TRC20": "USDT (TRC20)",
-        "USDT ERC20": "USDT (ERC20)",
-        "USDT BEP20": "USDT (BEP20)",
-        "TRX TRC20": "TRX (TRC20)",
-        "BTC": "BTC",
-        "LTC": "LTC",
-        "ETH ERC20": "ETH (ERC20)",
-        "BNB BEP20": "BNB (BEP20)",
-        "SOL": "SOL",
+# =========================
+# PAYMENT AMOUNT GENERATION
+# =========================
+def normalize_rate_value(rate_value):
+    rate_dec = safe_decimal(rate_value)
+    if rate_dec is None or rate_dec <= 0:
+        raise ValueError("Invalid rate value")
+    return rate_dec
+
+
+def generate_unique_amount(base_amount: Decimal, network: str) -> Decimal:
+    """
+    Unique amount for reliable auto-detection.
+    Stablecoins get 2 decimals.
+    Volatile coins keep more decimals.
+    """
+    decimals = NETWORK_DECIMALS.get(network, 8)
+
+    if network.startswith("USDT"):
+        # keep stablecoin display human-friendly but still unique
+        extra = Decimal(str(random.choice([0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09])))
+    elif network in {"BTC", "LTC", "ETH (ERC20)", "BNB (BEP20)", "SOL", "TRX (TRC20)"}:
+        extra = Decimal(str(random.uniform(0.000001, 0.000099)))
+    else:
+        extra = Decimal("0")
+
+    final_amount = safe_decimal(base_amount) or Decimal("0")
+    final_amount += extra
+    return quantize_down(final_amount, decimals)
+
+
+def calculate_exact_crypto_amount_from_rate(usd_amount, network: str, usd_rate):
+    """
+    This is the IMPORTANT function:
+    displayed amount == backend expected amount
+    """
+    usd_dec = safe_decimal(usd_amount)
+    rate_dec = normalize_rate_value(usd_rate)
+
+    if usd_dec is None or usd_dec <= 0:
+        raise ValueError("Invalid USD amount")
+
+    base_amount = usd_dec / rate_dec
+    return generate_unique_amount(base_amount, network)
+
+
+def calculate_buffered_amount(crypto_amount, network: str):
+    """
+    Kept for compatibility. Do NOT show this separately to users.
+    Prefer calculate_exact_crypto_amount_from_rate() for real payment requests.
+    """
+    amount_dec = safe_decimal(crypto_amount)
+    if amount_dec is None:
+        return Decimal("0")
+
+    if network.startswith("USDT"):
+        buffered = amount_dec + Decimal("0.10")
+    else:
+        buffered = amount_dec * Decimal("1.01")
+
+    return quantize_up(buffered, NETWORK_DECIMALS.get(network, 8))
+
+
+def create_payment_request(user_id: int, usd_amount: float, network: str, address: str, usd_rate):
+    crypto_amount = calculate_exact_crypto_amount_from_rate(usd_amount, network, usd_rate)
+    return {
+        "user_id": user_id,
+        "usd_amount": float(usd_amount),
+        "crypto_amount": float(crypto_amount),
+        "network": network,
+        "address": address,
     }
-    return network_map[network]
+
+
+def create_payment_request_from_key(user_id: int, usd_amount: float, network_key: str, wallet_addresses: dict, usd_rates: dict):
+    """
+    Convenience wrapper if bot stores addresses/rates by short keys.
+    """
+    if network_key not in COIN_KEY_TO_NETWORK:
+        raise ValueError("Invalid network key")
+
+    network = COIN_KEY_TO_NETWORK[network_key]
+    address = wallet_addresses.get(network_key) or wallet_addresses.get(network)
+    if not address:
+        raise ValueError("Wallet address not found")
+
+    coin = NETWORK_TO_COIN[network]
+    usd_rate = usd_rates[coin]
+    return create_payment_request(user_id, usd_amount, network, address, usd_rate)
 
 
 # =========================
@@ -192,9 +287,6 @@ def close_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Close", callback_data="close_inline")]])
 
 
-# =========================
-# REQUIRED NEW KEYBOARD FOR YOUR EXACT FLOW
-# =========================
 def payment_request_keyboard(prefix: str) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton("✅ I Have Paid (Verify)", callback_data=f"{prefix}_verify")],
@@ -205,12 +297,32 @@ def payment_request_keyboard(prefix: str) -> InlineKeyboardMarkup:
 
 
 # =========================
-# ORIGINAL TEXT RENDERERS (UPGRADED WHERE REQUIRED)
+# FLOW HELPERS
+# =========================
+def map_network_callback_to_label(network_callback_tail: str) -> str:
+    network = network_callback_tail.replace("_", " ")
+    network_map = {
+        "USDT TRC20": "USDT (TRC20)",
+        "USDT ERC20": "USDT (ERC20)",
+        "USDT BEP20": "USDT (BEP20)",
+        "TRX TRC20": "TRX (TRC20)",
+        "BTC": "BTC",
+        "LTC": "LTC",
+        "ETH ERC20": "ETH (ERC20)",
+        "BNB BEP20": "BNB (BEP20)",
+        "SOL": "SOL",
+    }
+    return network_map[network]
+
+
+# =========================
+# ORIGINAL TEXT RENDERERS (RETAINED + FIXED)
 # =========================
 def render_buy_summary(product_id: str, qty: int, wallet_balance: float, products: dict) -> str:
     product = products[product_id]
     total = product["price"] * qty
     remaining = wallet_balance - total
+
     if wallet_balance >= total:
         return (
             "🛒 <b>ORDER SUMMARY</b>\n\n"
@@ -270,8 +382,8 @@ def render_crypto_payment_text(usd_amount: float, crypto_amount, network: str, a
         "🏦 <b>Deposit Address:</b>\n"
         f"<code>{escape_html(address)}</code>\n\n"
         "⚠️ <b>CRITICAL:</b> Send <b>EXACTLY</b> the amount below. Do not round!\n"
-        "Account for your exchange's withdrawal fee.\n\n"
-        "If you send a different amount, the system will NOT automatically recognize it."
+        "Use the correct network only.\n\n"
+        "If you send a different amount or wrong network, the system may not automatically recognize it."
     )
 
 
@@ -288,8 +400,8 @@ def render_buy_crypto_payment_text(product_id: str, qty: int, usd_amount: float,
         "🏦 <b>Deposit Address:</b>\n"
         f"<code>{escape_html(address)}</code>\n\n"
         "⚠️ <b>CRITICAL:</b> Send <b>EXACTLY</b> the amount below. Do not round!\n"
-        "Account for your exchange's withdrawal fee.\n\n"
-        "If you send a different amount, the system will NOT automatically recognize it."
+        "Use the correct network only.\n\n"
+        "If you send a different amount or wrong network, the system may not automatically recognize it."
     )
 
 
@@ -307,7 +419,7 @@ def render_buy_manual_payment_text(product_id: str, qty: int, total: float, meth
 
 
 # =========================
-# FULLY AUTOMATIC UI MESSAGES
+# AUTOMATIC VERIFY UI MESSAGES
 # =========================
 def render_auto_verify_wait_text() -> str:
     return (
