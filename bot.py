@@ -2872,9 +2872,7 @@ async def run_simple_verify_flow(query, context, user_id: int, record_kind: str)
                 await query.message.reply_text(f"🎉 PAYMENT VERIFIED! Amount added: ${float(amount):.2f}")
         else:
             await query.message.reply_text(
-                "⌛ Transaction not found on the network yet. Please wait 1–2 minutes and click Verify again.
-
-"
+                "⌛ Transaction not found on the network yet. Please wait 1–2 minutes and click Verify again.\n\n"
                 "If it still fails after 10–15 minutes, please contact live support: @serpstacking"
             )
     finally:
@@ -3600,7 +3598,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             paymod.render_crypto_payment_text(amount, crypto_amount, network_label, address),
             paymod.payment_request_keyboard("deppay"),
         )
-        return    if data == "retry_verify_after_timeout":
+        return
+
+    if data == "retry_verify_after_timeout":
         record = wc.get_user_pending_any(user_id)
         if record and record.get("kind") == "order":
             context.application.create_task(run_simple_verify_flow(query, context, user_id, "order"))
