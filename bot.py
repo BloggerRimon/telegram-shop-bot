@@ -2368,7 +2368,6 @@ def create_nowpayments_payment(user_id: int, kind: str, usd_amount: float, netwo
         raise RuntimeError(f"Unsupported NOWPayments network: {network_label}")
 
     price_amount = stable_unique_usd_amount(usd_amount, user_id, ref)
-    order_id = f"{kind}:{user_id}:{int(datetime.utcnow().timestamp())}:{random.randint(1000, 9999)}"
     payload = {
         "price_amount": float(price_amount),
         "price_currency": "usd",
