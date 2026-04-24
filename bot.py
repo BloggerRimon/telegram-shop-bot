@@ -2457,8 +2457,8 @@ def format_nowpayments_display_amount(value, pay_currency: str = "") -> str:
 def render_nowpayments_payment_text(record: dict) -> str:
     network = record.get("network", "")
     pay_amount = record.get("pay_amount")
-    pay_amount_display = format_nowpayments_display_amount(pay_amount, pay_currency)
     pay_currency = str(record.get("pay_currency") or "").upper()
+    pay_amount_display = format_nowpayments_display_amount(pay_amount, pay_currency)
     pay_address = record.get("pay_address") or "Not generated"
     usd_amount = float(record.get("usd_amount", 0))
     price_amount = float(record.get("price_amount", usd_amount))
