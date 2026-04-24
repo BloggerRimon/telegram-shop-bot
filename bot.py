@@ -4047,12 +4047,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "dep_method_binance":
-        amount = user_state[user_id]["amount"]
+        amount = user_state.get(user_id, {}).get("amount")
+        if amount is None:
+            await query.answer("Please start a new deposit request.", show_alert=True)
+            return
         await send_inline_from_callback(query, render_manual_payment_text(amount, "Binance ID", BINANCE_ID), final_manual_keyboard("depmanual"))
         return
 
     if data == "dep_method_bybit":
-        amount = user_state[user_id]["amount"]
+        amount = user_state.get(user_id, {}).get("amount")
+        if amount is None:
+            await query.answer("Please start a new deposit request.", show_alert=True)
+            return
         await send_inline_from_callback(query, render_manual_payment_text(amount, "Bybit ID", BYBIT_ID), final_manual_keyboard("depmanual"))
         return
 
@@ -4062,13 +4068,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "dep_back_method":
-        amount = user_state[user_id]["amount"]
+        amount = user_state.get(user_id, {}).get("amount")
+        if amount is None:
+            await query.answer("Please start a new deposit request.", show_alert=True)
+            return
         await send_inline_from_callback(query, render_deposit_method_text(amount), payment_method_keyboard("dep"))
         return
 
     if data.startswith("dep_net_"):
         network_label = paymod.map_network_callback_to_label(data.replace("dep_net_", ""))
-        amount = user_state[user_id]["amount"]
+        amount = user_state.get(user_id, {}).get("amount")
+        if amount is None:
+            await query.answer("Please start a new deposit request.", show_alert=True)
+            return
         ref = f"deposit:{user_id}:{amount}"
         try:
             np_record = create_nowpayments_payment(
