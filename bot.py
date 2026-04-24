@@ -2422,9 +2422,42 @@ def create_nowpayments_payment(user_id: int, kind: str, usd_amount: float, netwo
     return record
 
 
+def format_nowpayments_display_amount(value, pay_currency: str = "") -> str:
+    """
+    User-facing display only.
+    Backend keeps NOWPayments original pay_amount/payment_id for verification.
+    """
+    try:
+        from decimal import Decimal, ROUND_UP
+
+        amount = Decimal(str(value))
+        cur = str(pay_currency or "").upper()
+
+        if cur.startswith("USDT") or cur in {"USDC", "BUSD", "DAI"}:
+            decimals = 2
+        elif cur == "BTC":
+            decimals = 8
+        elif cur == "LTC":
+            decimals = 6
+        elif cur in {"SOL", "TRX", "ETH", "BNB"} or cur.startswith("BNB"):
+            decimals = 6
+        else:
+            decimals = 6
+
+        q = Decimal("1." + ("0" * decimals))
+        formatted = amount.quantize(q, rounding=ROUND_UP)
+
+        if decimals > 2:
+            return format(formatted.normalize(), "f")
+
+        return f"{formatted:.2f}"
+    except Exception:
+        return str(value)
+
 def render_nowpayments_payment_text(record: dict) -> str:
     network = record.get("network", "")
     pay_amount = record.get("pay_amount")
+    pay_amount_display = format_nowpayments_display_amount(pay_amount, pay_currency)
     pay_currency = str(record.get("pay_currency") or "").upper()
     pay_address = record.get("pay_address") or "Not generated"
     usd_amount = float(record.get("usd_amount", 0))
@@ -2433,7 +2466,7 @@ def render_nowpayments_payment_text(record: dict) -> str:
     return (
         "✅ <b>PAYMENT REQUEST GENERATED!</b>\n\n"
         f"💵 <b>Amount:</b>\n${usd_amount:.2f}\n\n"
-        f"🪙 <b>Amount to send:</b>\n<code>{pay_amount} {pay_currency}</code>\n\n"
+        f"🪙 <b>Amount to send:</b>\n<code>{pay_amount_display} {pay_currency}</code>\n\n"
         f"🌐 <b>Network:</b>\n{network}\n\n"
         f"🏦 <b>Payment Address:</b>\n<code>{escape_html(str(pay_address))}</code>\n\n"
         "⚠️ <b>CRITICAL:</b> Send EXACTLY the amount above. Do not round!\n"
