@@ -1,6 +1,10 @@
 import os
 import asyncio
 import hashlib
+import hmac
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import random
 import string
 import requests
@@ -46,6 +50,19 @@ TRONGRID_API_KEY = os.getenv("TRONGRID_API_KEY", "").strip()
 ETHERSCAN_API_KEY = os.getenv("ETHERSCAN_API_KEY", "").strip()
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "").strip()
 
+# 🔐 NOWPayments settings (set these in Railway Variables)
+NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY", "").strip()
+NOWPAYMENTS_IPN_SECRET = os.getenv("NOWPAYMENTS_IPN_SECRET", "").strip()
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+NOWPAYMENTS_WEBHOOK_PATH = os.getenv("NOWPAYMENTS_WEBHOOK_PATH", "/nowpayments/webhook").strip() or "/nowpayments/webhook"
+NOWPAYMENTS_API_BASE = "https://api.nowpayments.io/v1"
+
+# Fee/margin in USD payment amount before creating NOWPayments invoice.
+# If you already use NOWPayments dashboard markup, set this Railway variable to 0.
+NOWPAYMENTS_FEE_MARGIN_PERCENT = Decimal(os.getenv("NOWPAYMENTS_FEE_MARGIN_PERCENT", "1.0"))
+NOWPAYMENTS_UNIQUE_SUFFIX_MAX_CENTS = int(os.getenv("NOWPAYMENTS_UNIQUE_SUFFIX_MAX_CENTS", "20"))
+
+
 # =========================
 # CHECK TOKEN (optional but good)
 # =========================
@@ -58,6 +75,12 @@ if not ETHERSCAN_API_KEY:
     print("⚠️ ETHERSCAN_API_KEY not set")
 if not HELIUS_API_KEY:
     print("⚠️ HELIUS_API_KEY not set")
+if not NOWPAYMENTS_API_KEY:
+    print("⚠️ NOWPAYMENTS_API_KEY not set")
+if not NOWPAYMENTS_IPN_SECRET:
+    print("⚠️ NOWPAYMENTS_IPN_SECRET not set")
+if not PUBLIC_BASE_URL:
+    print("⚠️ PUBLIC_BASE_URL not set")
 
 TRONGRID_BASE = "https://api.trongrid.io"
 ETHERSCAN_V2_URL = "https://api.etherscan.io/v2/api"
@@ -2241,6 +2264,430 @@ async def background_crypto_recheck(context: ContextTypes.DEFAULT_TYPE):
 async def background_job(context: ContextTypes.DEFAULT_TYPE):
     await background_crypto_recheck(context)
 
+
+# =========================
+# NOWPAYMENTS INTEGRATION
+# =========================
+app_loop = None
+webhook_server_started = False
+NOWPAYMENTS_PENDING_FILE = "nowpayments_pending.json"
+NOWPAYMENTS_PAYMENTS = {}
+NOWPAYMENTS_PROCESSED = set()
+
+NOWPAYMENTS_CURRENCY_MAP = {
+    "USDT (TRC20)": "usdttrc20",
+    "USDT (ERC20)": "usdterc20",
+    "USDT (BEP20)": "usdtbsc",
+    "TRX (TRC20)": "trx",
+    "BTC": "btc",
+    "LTC": "ltc",
+    "ETH (ERC20)": "eth",
+    "BNB (BEP20)": "bnbbsc",
+    "SOL": "sol",
+}
+
+
+def nowpayments_callback_url() -> str:
+    if not PUBLIC_BASE_URL:
+        return ""
+    return f"{PUBLIC_BASE_URL}{NOWPAYMENTS_WEBHOOK_PATH}"
+
+
+def nowpayments_headers() -> dict:
+    return {
+        "x-api-key": NOWPAYMENTS_API_KEY,
+        "Content-Type": "application/json",
+    }
+
+
+def stable_unique_usd_amount(base_amount: float, user_id: int, ref: str = "") -> Decimal:
+    base = Decimal(str(base_amount)).quantize(Decimal("0.01"))
+    fee_multiplier = Decimal("1") + (NOWPAYMENTS_FEE_MARGIN_PERCENT / Decimal("100"))
+    with_fee = (base * fee_multiplier).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+
+    max_cents = max(1, min(99, NOWPAYMENTS_UNIQUE_SUFFIX_MAX_CENTS))
+    seed = f"{user_id}:{ref}".encode("utf-8")
+    cents = (int(hashlib.sha256(seed).hexdigest(), 16) % max_cents) + 1
+    return (with_fee + (Decimal(cents) / Decimal("100"))).quantize(Decimal("0.01"))
+
+
+def save_nowpayments_pending():
+    try:
+        data = {
+            "payments": NOWPAYMENTS_PAYMENTS,
+            "processed": list(NOWPAYMENTS_PROCESSED),
+        }
+        with open(NOWPAYMENTS_PENDING_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print("⚠️ Failed to save NOWPayments pending:", e)
+
+
+def load_nowpayments_pending():
+    global NOWPAYMENTS_PAYMENTS, NOWPAYMENTS_PROCESSED
+    try:
+        if not os.path.exists(NOWPAYMENTS_PENDING_FILE):
+            return
+        with open(NOWPAYMENTS_PENDING_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        NOWPAYMENTS_PAYMENTS = data.get("payments", {}) or {}
+        NOWPAYMENTS_PROCESSED = set(data.get("processed", []) or [])
+        print(f"✅ Loaded NOWPayments pending: {len(NOWPAYMENTS_PAYMENTS)} payments")
+    except Exception as e:
+        print("⚠️ Failed to load NOWPayments pending:", e)
+
+
+def sort_object_for_ipn(obj):
+    if isinstance(obj, dict):
+        return {k: sort_object_for_ipn(obj[k]) for k in sorted(obj.keys())}
+    if isinstance(obj, list):
+        return [sort_object_for_ipn(x) for x in obj]
+    return obj
+
+
+def verify_nowpayments_signature(payload: dict, signature: str) -> bool:
+    if not NOWPAYMENTS_IPN_SECRET:
+        print("⚠️ NOWPAYMENTS_IPN_SECRET missing; rejecting IPN")
+        return False
+    if not signature:
+        return False
+    sorted_payload = sort_object_for_ipn(payload)
+    body = json.dumps(sorted_payload, separators=(",", ":"), ensure_ascii=False)
+    expected = hmac.new(
+        NOWPAYMENTS_IPN_SECRET.encode("utf-8"),
+        body.encode("utf-8"),
+        hashlib.sha512,
+    ).hexdigest()
+    return hmac.compare_digest(expected, signature)
+
+
+def create_nowpayments_payment(user_id: int, kind: str, usd_amount: float, network_label: str, ref: str, product_id=None, qty=None) -> dict:
+    if not NOWPAYMENTS_API_KEY:
+        raise RuntimeError("NOWPAYMENTS_API_KEY is not set in Railway Variables.")
+    if network_label not in NOWPAYMENTS_CURRENCY_MAP:
+        raise RuntimeError(f"Unsupported NOWPayments network: {network_label}")
+
+    price_amount = stable_unique_usd_amount(usd_amount, user_id, ref)
+    order_id = f"{kind}:{user_id}:{int(datetime.utcnow().timestamp())}:{random.randint(1000, 9999)}"
+    payload = {
+        "price_amount": float(price_amount),
+        "price_currency": "usd",
+        "pay_currency": NOWPAYMENTS_CURRENCY_MAP[network_label],
+        "order_id": order_id,
+        "order_description": f"Supreme Leader Shop {kind} for user {user_id}",
+    }
+    callback_url = nowpayments_callback_url()
+    if callback_url:
+        payload["ipn_callback_url"] = callback_url
+
+    res = requests.post(
+        f"{NOWPAYMENTS_API_BASE}/payment",
+        headers=nowpayments_headers(),
+        json=payload,
+        timeout=30,
+    )
+
+    try:
+        data = res.json()
+    except Exception:
+        data = {"raw": res.text[:1000]}
+
+    if not res.ok:
+        raise RuntimeError(f"NOWPayments create payment failed: {data}")
+
+    payment_id = str(data.get("payment_id") or "")
+    if not payment_id:
+        raise RuntimeError(f"NOWPayments did not return payment_id: {data}")
+
+    record = {
+        "provider": "NOWPayments",
+        "payment_id": payment_id,
+        "order_id": order_id,
+        "kind": kind,
+        "user_id": user_id,
+        "usd_amount": float(usd_amount),
+        "price_amount": float(price_amount),
+        "network": network_label,
+        "pay_currency": data.get("pay_currency") or payload["pay_currency"],
+        "pay_amount": data.get("pay_amount"),
+        "pay_address": data.get("pay_address"),
+        "payment_status": data.get("payment_status", "waiting"),
+        "product_id": product_id,
+        "qty": qty,
+        "created_at": data.get("created_at") or datetime.utcnow().isoformat(),
+        "raw": data,
+    }
+    NOWPAYMENTS_PAYMENTS[payment_id] = record
+    save_nowpayments_pending()
+    return record
+
+
+def render_nowpayments_payment_text(record: dict) -> str:
+    network = record.get("network", "")
+    pay_amount = record.get("pay_amount")
+    pay_currency = str(record.get("pay_currency") or "").upper()
+    pay_address = record.get("pay_address") or "Not generated"
+    usd_amount = float(record.get("usd_amount", 0))
+    price_amount = float(record.get("price_amount", usd_amount))
+
+    return (
+        "✅ <b>PAYMENT REQUEST GENERATED!</b>\n\n"
+        f"💵 <b>Amount:</b>\n${usd_amount:.2f}\n\n"
+        f"🪙 <b>Amount to send:</b>\n<code>{pay_amount} {pay_currency}</code>\n\n"
+        f"🌐 <b>Network:</b>\n{network}\n\n"
+        f"🏦 <b>Payment Address:</b>\n<code>{escape_html(str(pay_address))}</code>\n\n"
+        "⚠️ <b>CRITICAL:</b> Send EXACTLY the amount above. Do not round!\n"
+        "Use the correct network only.\n\n"
+        "After payment, tap <b>I Have Paid (Verify)</b>."
+    )
+
+
+def get_nowpayments_status(payment_id: str) -> dict:
+    res = requests.get(
+        f"{NOWPAYMENTS_API_BASE}/payment/{payment_id}",
+        headers=nowpayments_headers(),
+        timeout=30,
+    )
+    try:
+        return res.json()
+    except Exception:
+        return {"error": res.text[:1000], "status_code": res.status_code}
+
+
+def is_nowpayments_success_status(status: str) -> bool:
+    return str(status or "").lower() in {"confirmed", "finished", "sending"}
+
+
+def is_nowpayments_failed_status(status: str) -> bool:
+    return str(status or "").lower() in {"failed", "refunded", "expired"}
+
+
+def find_latest_nowpayments_record(user_id: int, kind: str = None):
+    records = []
+    for rec in NOWPAYMENTS_PAYMENTS.values():
+        if int(rec.get("user_id", 0)) != int(user_id):
+            continue
+        if kind and rec.get("kind") != kind:
+            continue
+        if str(rec.get("payment_id")) in NOWPAYMENTS_PROCESSED:
+            continue
+        records.append(rec)
+    if not records:
+        return None
+    return records[-1]
+
+
+async def finalize_nowpayments_record(record: dict, payload: dict = None):
+    payment_id = str(record.get("payment_id"))
+    if payment_id in NOWPAYMENTS_PROCESSED:
+        return
+
+    user_id = int(record["user_id"])
+    amount = float(record["usd_amount"])
+    kind = record.get("kind")
+    txid = ""
+    if payload:
+        txid = str(payload.get("purchase_id") or payload.get("outcome_hash") or payload.get("payin_hash") or payload.get("payment_id") or payment_id)
+    else:
+        txid = payment_id
+
+    if kind == "deposit":
+        user_wallet[user_id] = user_wallet.get(user_id, 0.0) + amount
+        add_transaction_record(
+            user_id,
+            "Deposit",
+            amount,
+            "Completed",
+            {"provider": "NOWPayments", "payment_id": payment_id, "txid": txid},
+        )
+        await app_instance.bot.send_message(
+            chat_id=user_id,
+            text=(
+                "🎉 <b>PAYMENT VERIFIED!</b>\n\n"
+                f"<b>{format_money(amount)}</b> added to your wallet.\n"
+                f"{get_wallet_balance_text(user_id)}"
+            ),
+            parse_mode="HTML",
+        )
+
+    elif kind == "order":
+        product_id = record.get("product_id")
+        qty = int(record.get("qty") or 1)
+        ok, _ = await deliver_accounts_to_user(app_instance.bot, user_id, product_id, qty)
+        if ok:
+            add_order_record(user_id, product_id, qty, amount, "Completed", "NOWPayments")
+            add_transaction_record(
+                user_id,
+                "Order Payment",
+                amount,
+                "Completed",
+                {"provider": "NOWPayments", "payment_id": payment_id, "product_id": product_id, "qty": qty, "txid": txid},
+            )
+            await app_instance.bot.send_message(
+                chat_id=user_id,
+                text=(
+                    "🎉 <b>PAYMENT VERIFIED!</b>\n\n"
+                    f"<b>Order completed</b> for {PRODUCTS[product_id]['name']}.\n"
+                    f"<b>Quantity:</b> {qty}\n"
+                    f"<b>Total:</b> {format_money(amount)}"
+                ),
+                parse_mode="HTML",
+            )
+        else:
+            await app_instance.bot.send_message(
+                chat_id=user_id,
+                text="✅ Payment received, but stock delivery failed. Please contact live support.",
+                parse_mode="HTML",
+            )
+
+    NOWPAYMENTS_PROCESSED.add(payment_id)
+    record["payment_status"] = "completed"
+    record["completed_at"] = datetime.utcnow().isoformat()
+    save_nowpayments_pending()
+
+
+async def handle_nowpayments_ipn(payload: dict):
+    payment_id = str(payload.get("payment_id") or "")
+    order_id = str(payload.get("order_id") or "")
+    status = str(payload.get("payment_status") or "").lower()
+
+    record = NOWPAYMENTS_PAYMENTS.get(payment_id)
+    if not record and order_id:
+        for rec in NOWPAYMENTS_PAYMENTS.values():
+            if str(rec.get("order_id")) == order_id:
+                record = rec
+                break
+
+    if not record:
+        print("⚠️ NOWPayments IPN received for unknown payment:", payload)
+        return
+
+    record["payment_status"] = status
+    record["last_ipn"] = payload
+    save_nowpayments_pending()
+
+    if is_nowpayments_success_status(status):
+        await finalize_nowpayments_record(record, payload)
+    elif is_nowpayments_failed_status(status):
+        user_id = int(record.get("user_id", 0))
+        await app_instance.bot.send_message(
+            chat_id=user_id,
+            text=f"❌ <b>Payment failed or expired.</b>\n\nStatus: <code>{escape_html(status)}</code>",
+            parse_mode="HTML",
+        )
+
+
+async def run_nowpayments_manual_verify(query, user_id: int, kind: str):
+    state = user_state.setdefault(user_id, {})
+    if state.get("verify_in_progress"):
+        await query.answer("⏳ Verification already in progress. Please wait.", show_alert=False)
+        return
+
+    record = find_latest_nowpayments_record(user_id, kind)
+    if not record:
+        await query.message.reply_text("❌ No pending NOWPayments payment found.")
+        return
+
+    state["verify_in_progress"] = True
+    try:
+        await query.message.reply_text("⏳ Checking NOWPayments payment status...")
+        status_payload = get_nowpayments_status(str(record["payment_id"]))
+        status = str(status_payload.get("payment_status") or "").lower()
+        record["payment_status"] = status
+        record["last_status_check"] = status_payload
+        save_nowpayments_pending()
+
+        if is_nowpayments_success_status(status):
+            await finalize_nowpayments_record(record, status_payload)
+        elif is_nowpayments_failed_status(status):
+            await query.message.reply_text(
+                f"❌ Payment status: {status}\n\nPlease create a new payment request or contact live support: {SUPPORT_USERNAME}"
+            )
+        else:
+            await query.message.reply_text(
+                "⌛ Payment not confirmed yet.\n\n"
+                "Please wait 1–2 minutes and tap Verify again.\n"
+                f"If it still fails after 10–15 minutes, contact live support: {SUPPORT_USERNAME}"
+            )
+    except Exception as e:
+        print("NOWPayments manual verify error:", e)
+        await query.message.reply_text(
+            f"❌ Could not check payment right now.\n\nPlease contact live support: {SUPPORT_USERNAME}"
+        )
+    finally:
+        state["verify_in_progress"] = False
+
+
+class NowPaymentsWebhookHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        return
+
+    def _send_json(self, code: int, payload: dict):
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path in {"/", NOWPAYMENTS_WEBHOOK_PATH}:
+            self._send_json(200, {"ok": True, "service": "telegram-shop-bot"})
+        else:
+            self._send_json(404, {"ok": False, "error": "not found"})
+
+    def do_POST(self):
+        if self.path.split("?")[0] != NOWPAYMENTS_WEBHOOK_PATH:
+            self._send_json(404, {"ok": False, "error": "not found"})
+            return
+
+        raw = self.rfile.read(int(self.headers.get("Content-Length", "0") or "0"))
+        try:
+            payload = json.loads(raw.decode("utf-8") or "{}")
+        except Exception:
+            self._send_json(400, {"ok": False, "error": "invalid json"})
+            return
+
+        signature = self.headers.get("x-nowpayments-sig", "")
+        if not verify_nowpayments_signature(payload, signature):
+            self._send_json(401, {"ok": False, "error": "invalid signature"})
+            return
+
+        if app_loop is None:
+            self._send_json(503, {"ok": False, "error": "bot loop not ready"})
+            return
+
+        try:
+            asyncio.run_coroutine_threadsafe(handle_nowpayments_ipn(payload), app_loop)
+            self._send_json(200, {"ok": True})
+        except Exception as e:
+            print("NOWPayments webhook schedule error:", e)
+            self._send_json(500, {"ok": False, "error": "internal error"})
+
+
+def start_nowpayments_webhook_server():
+    global webhook_server_started
+    if webhook_server_started:
+        return
+    webhook_server_started = True
+    port = int(os.getenv("PORT", "8080"))
+
+    def run_server():
+        server = HTTPServer(("0.0.0.0", port), NowPaymentsWebhookHandler)
+        print(f"✅ NOWPayments webhook server listening on port {port}, path {NOWPAYMENTS_WEBHOOK_PATH}")
+        server.serve_forever()
+
+    thread = threading.Thread(target=run_server, daemon=True)
+    thread.start()
+
+
+async def post_init(application):
+    global app_loop
+    app_loop = asyncio.get_running_loop()
+    load_nowpayments_pending()
+    start_nowpayments_webhook_server()
+
+
 # =========================
 # COMMANDS
 # =========================
@@ -3489,31 +3936,38 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("buy_net_"):
         network_label = paymod.map_network_callback_to_label(data.replace("buy_net_", ""))
-        address = CRYPTO_ADDRESSES[network_label]
         state = user_state[user_id]
         ref = f"order:{user_id}:{state['product_id']}:{state['qty']}:{state['total']}"
-        crypto_amount = build_unique_crypto_amount(state["total"], network_label, user_id, ref)
-        wc.create_or_update_pending_order(
-            user_id,
-            state["product_id"],
-            state["qty"],
-            state["total"],
-            float(crypto_amount),
-            network_label,
-            address,
-        )
-        user_state[user_id] = {"step": "buy_payment_ready", "product_id": state["product_id"], "qty": state["qty"], "total": state["total"], "network": network_label}
+        try:
+            np_record = create_nowpayments_payment(
+                user_id=user_id,
+                kind="order",
+                usd_amount=state["total"],
+                network_label=network_label,
+                ref=ref,
+                product_id=state["product_id"],
+                qty=state["qty"],
+            )
+        except Exception as e:
+            print("NOWPayments order create error:", e)
+            await send_inline_from_callback(
+                query,
+                f"❌ <b>Could not create crypto payment.</b>\n\nPlease try again or contact live support: {SUPPORT_USERNAME}",
+                paymod.network_keyboard("buy"),
+            )
+            return
+
+        user_state[user_id] = {
+            "step": "buy_payment_ready",
+            "product_id": state["product_id"],
+            "qty": state["qty"],
+            "total": state["total"],
+            "network": network_label,
+            "nowpayments_payment_id": np_record["payment_id"],
+        }
         await send_inline_from_callback(
             query,
-            paymod.render_buy_crypto_payment_text(
-                state["product_id"],
-                state["qty"],
-                state["total"],
-                crypto_amount,
-                network_label,
-                address,
-                PRODUCTS,
-            ),
+            render_nowpayments_payment_text(np_record),
             paymod.payment_request_keyboard("buypay"),
         )
         return
@@ -3524,7 +3978,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "buypay_verify":
-        context.application.create_task(run_simple_verify_flow(query, context, user_id, "order"))
+        context.application.create_task(run_nowpayments_manual_verify(query, user_id, "order"))
         return
 
     if data == "buymanual_submitted":
@@ -3581,21 +4035,34 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("dep_net_"):
         network_label = paymod.map_network_callback_to_label(data.replace("dep_net_", ""))
-        address = CRYPTO_ADDRESSES[network_label]
         amount = user_state[user_id]["amount"]
         ref = f"deposit:{user_id}:{amount}"
-        crypto_amount = build_unique_crypto_amount(amount, network_label, user_id, ref)
-        wc.create_or_update_pending_deposit(
-            user_id,
-            amount,
-            float(crypto_amount),
-            network_label,
-            address,
-        )
-        user_state[user_id] = {"step": "deposit_payment_ready", "amount": amount, "network": network_label}
+        try:
+            np_record = create_nowpayments_payment(
+                user_id=user_id,
+                kind="deposit",
+                usd_amount=amount,
+                network_label=network_label,
+                ref=ref,
+            )
+        except Exception as e:
+            print("NOWPayments deposit create error:", e)
+            await send_inline_from_callback(
+                query,
+                f"❌ <b>Could not create crypto payment.</b>\n\nPlease try again or contact live support: {SUPPORT_USERNAME}",
+                paymod.network_keyboard("dep"),
+            )
+            return
+
+        user_state[user_id] = {
+            "step": "deposit_payment_ready",
+            "amount": amount,
+            "network": network_label,
+            "nowpayments_payment_id": np_record["payment_id"],
+        }
         await send_inline_from_callback(
             query,
-            paymod.render_crypto_payment_text(amount, crypto_amount, network_label, address),
+            render_nowpayments_payment_text(np_record),
             paymod.payment_request_keyboard("deppay"),
         )
         return
@@ -3603,9 +4070,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "retry_verify_after_timeout":
         record = wc.get_user_pending_any(user_id)
         if record and record.get("kind") == "order":
-            context.application.create_task(run_simple_verify_flow(query, context, user_id, "order"))
+            context.application.create_task(run_nowpayments_manual_verify(query, user_id, "order"))
         else:
-            context.application.create_task(run_simple_verify_flow(query, context, user_id, "deposit"))
+            context.application.create_task(run_nowpayments_manual_verify(query, user_id, "deposit"))
         return
 
     if data == "deppay_change_network":
@@ -3614,7 +4081,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "deppay_verify":
-        context.application.create_task(run_simple_verify_flow(query, context, user_id, "deposit"))
+        context.application.create_task(run_nowpayments_manual_verify(query, user_id, "deposit"))
         return
 
     if data == "depmanual_submitted":
@@ -3635,7 +4102,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 def main():
     global app_instance
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
     app_instance = app
 
     app.add_handler(CommandHandler("start", start))
