@@ -300,6 +300,117 @@ all_users = set()
 app_instance = None
 
 # =========================
+# PERSISTENT STORAGE
+# =========================
+BOT_STATE_FILE = os.getenv("BOT_STATE_FILE", "bot_state.json")
+
+
+def _json_safe(value):
+    if isinstance(value, datetime):
+        return {"__datetime__": value.isoformat()}
+    if isinstance(value, set):
+        return list(value)
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    return value
+
+
+def _restore_datetime(value):
+    if isinstance(value, dict) and "__datetime__" in value:
+        try:
+            return datetime.fromisoformat(value["__datetime__"])
+        except Exception:
+            return value.get("__datetime__")
+    if isinstance(value, dict):
+        return {k: _restore_datetime(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_restore_datetime(v) for v in value]
+    return value
+
+
+def save_bot_state():
+    try:
+        state = {
+            "user_wallet": user_wallet,
+            "user_orders": user_orders,
+            "user_transactions": user_transactions,
+            "used_promo_codes": used_promo_codes,
+            "all_users": list(all_users),
+            "all_orders": all_orders,
+            "all_transactions": all_transactions,
+            "PRODUCTS": PRODUCTS,
+            "product_order": product_order,
+            "PROMO_CODES": PROMO_CODES,
+            "notify_waitlist": {k: list(v) for k, v in notify_waitlist.items()},
+            "global_order_id": global_order_id,
+            "global_tx_id": global_tx_id,
+            "next_product_number": next_product_number,
+        }
+        tmp_file = BOT_STATE_FILE + ".tmp"
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(_json_safe(state), f, ensure_ascii=False, indent=2)
+        os.replace(tmp_file, BOT_STATE_FILE)
+    except Exception as e:
+        print("⚠️ Failed to save bot state:", e)
+
+
+def load_bot_state():
+    global PRODUCTS, product_order, PROMO_CODES
+    global global_order_id, global_tx_id, next_product_number
+    try:
+        if not os.path.exists(BOT_STATE_FILE):
+            print("ℹ️ No bot_state.json found; using code defaults for first run.")
+            return
+        with open(BOT_STATE_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        data = _restore_datetime(raw)
+
+        loaded_products = data.get("PRODUCTS")
+        if loaded_products:
+            PRODUCTS.clear()
+            PRODUCTS.update(loaded_products)
+
+        product_order.clear()
+        product_order.extend([pid for pid in data.get("product_order", []) if pid in PRODUCTS])
+        for pid in PRODUCTS:
+            if pid not in product_order:
+                product_order.append(pid)
+
+        loaded_promos = data.get("PROMO_CODES")
+        if loaded_promos:
+            PROMO_CODES.clear()
+            PROMO_CODES.update(loaded_promos)
+
+        user_wallet.clear()
+        user_wallet.update({int(k): float(v) for k, v in (data.get("user_wallet", {}) or {}).items()})
+        user_orders.clear()
+        user_orders.update({int(k): v for k, v in (data.get("user_orders", {}) or {}).items()})
+        user_transactions.clear()
+        user_transactions.update({int(k): v for k, v in (data.get("user_transactions", {}) or {}).items()})
+        used_promo_codes.clear()
+        used_promo_codes.update({int(k): set(v or []) for k, v in (data.get("used_promo_codes", {}) or {}).items()})
+        all_users.clear()
+        all_users.update(int(x) for x in (data.get("all_users", []) or []))
+        all_orders.clear()
+        all_orders.extend(data.get("all_orders", []) or [])
+        all_transactions.clear()
+        all_transactions.extend(data.get("all_transactions", []) or [])
+        notify_waitlist.clear()
+        notify_waitlist.update({pid: set(users or []) for pid, users in (data.get("notify_waitlist", {}) or {}).items()})
+        for pid in PRODUCTS:
+            notify_waitlist.setdefault(pid, set())
+
+        global_order_id = int(data.get("global_order_id", global_order_id) or global_order_id)
+        global_tx_id = int(data.get("global_tx_id", global_tx_id) or global_tx_id)
+        next_product_number = int(data.get("next_product_number", next_product_number) or next_product_number)
+        print(f"✅ Loaded bot state: {len(all_users)} users, {len(PRODUCTS)} products")
+    except Exception as e:
+        print("⚠️ Failed to load bot state; using code defaults:", e)
+
+
+# =========================
 # TIME HELPERS
 # =========================
 def now_dt():
@@ -647,7 +758,8 @@ def admin_menu() -> ReplyKeyboardMarkup:
         ["📦 Products", "📥 Stock"],
         ["🎟 Promo Admin", "📦 Orders Admin"],
         ["💳 Deposits Admin", "👤 Users Admin"],
-        ["📊 Analytics", "🚪 Exit Admin"],
+        ["📊 Analytics", "📢 Broadcast"],
+        ["🚪 Exit Admin"],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -866,6 +978,13 @@ def admin_confirm_keyboard(confirm_callback: str, confirm_text: str = "✅ Confi
         [InlineKeyboardButton("❌ Cancel", callback_data="admin_cancel_flow")],
     ]
     return InlineKeyboardMarkup(rows)
+
+
+def broadcast_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Send Broadcast", callback_data="admin_broadcast_send")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="admin_cancel_flow")],
+    ])
 
 
 def admin_reorder_selected_keyboard(product_id: str) -> InlineKeyboardMarkup:
@@ -1125,7 +1244,6 @@ def render_product_details(product_id: str) -> str:
     product = PRODUCTS[product_id]
     detail_lines = "\n".join(product["details"])
     stock = get_display_stock(product_id)
-    real_stock = get_product_stock(product_id)
     icon = product.get("icon", "📦")
     return (
         "📦 <b>PRODUCT DETAILS</b>\n\n"
@@ -1133,8 +1251,7 @@ def render_product_details(product_id: str) -> str:
         f"<b>Name:</b> {product['name']}\n"
         f"<b>Month:</b> {product['month']}\n"
         f"<b>Price:</b> {format_money(product['price'])}\n"
-        f"<b>Stock:</b> {stock} pcs\n"
-        f"<b>Real Stock:</b> {real_stock} pcs\n\n"
+        f"<b>Stock:</b> {stock} pcs\n\n"
         f"{detail_lines}\n\n"
         "<b>Select quantity below:</b>"
     )
@@ -1900,25 +2017,46 @@ async def notify_waiters_for_product(context: ContextTypes.DEFAULT_TYPE, product
     notify_waitlist[product_id].clear()
 
 
-async def send_shop_cards_message(source, from_callback: bool = False):
+def _short_button_text(text: str, max_len: int = 60) -> str:
+    text = str(text)
+    return text if len(text) <= max_len else text[: max_len - 1] + "…"
+
+
+def render_shop_menu_text() -> str:
+    return (
+        "🛒🛒 <b>STORE MENU</b>\n\n"
+        "──── ⚡ <b>AUTO DELIVERY</b> ────\n"
+        "Tap any product below to continue."
+    )
+
+
+def shop_menu_keyboard() -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton("──── ⚡ AUTO DELIVERY ────", callback_data="noop")]]
     for product_id in product_order:
         if product_id not in PRODUCTS:
             continue
+        product = PRODUCTS[product_id]
         stock = get_display_stock(product_id)
-        if stock > 0:
-            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🛒 Buy Now", callback_data=f"shop_buy_{product_id}")]])
-        else:
-            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔔 Notify Me", callback_data=f"shop_notify_{product_id}")]])
+        icon = product.get("icon", "📦")
+        month = str(product.get("month", "")).strip()
+        month_part = f" {month} Month" if month and month != "0" else ""
+        stock_text = f"📦 {stock} Pcs" if stock > 0 else "📦 0"
+        label = _short_button_text(f"{icon} {product['name']}{month_part} - {format_money(product['price'])} | {stock_text}")
+        callback = f"shop_buy_{product_id}" if stock > 0 else f"shop_notify_{product_id}"
+        rows.append([InlineKeyboardButton(label, callback_data=callback)])
+        if stock <= 0:
+            rows.append([InlineKeyboardButton("🔔 Notify Me", callback_data=f"shop_notify_{product_id}")])
+    rows.append([InlineKeyboardButton("⬅️ Close", callback_data="close_inline")])
+    return InlineKeyboardMarkup(rows)
 
-        if from_callback:
-            await source.message.reply_text(render_product_card(product_id), reply_markup=keyboard, parse_mode="HTML")
-        else:
-            await source.reply_text(render_product_card(product_id), reply_markup=keyboard, parse_mode="HTML")
 
+async def send_shop_cards_message(source, from_callback: bool = False):
+    # Kept same function name so existing callbacks keep working.
+    # New behavior: one compact store menu instead of many product messages.
     if from_callback:
-        await source.message.reply_text("Tap a product option above.", reply_markup=close_keyboard())
+        await source.message.reply_text(render_shop_menu_text(), reply_markup=shop_menu_keyboard(), parse_mode="HTML")
     else:
-        await source.reply_text("Tap a product option above.", reply_markup=close_keyboard())
+        await source.reply_text(render_shop_menu_text(), reply_markup=shop_menu_keyboard(), parse_mode="HTML")
 
 
 async def deliver_accounts_to_user(bot, user_id: int, product_id: str, qty: int):
@@ -2577,6 +2715,7 @@ async def finalize_nowpayments_record(record: dict, payload: dict = None):
     record["payment_status"] = "completed"
     record["completed_at"] = datetime.utcnow().isoformat()
     save_nowpayments_pending()
+    save_bot_state()
 
 
 async def handle_nowpayments_ipn(payload: dict):
@@ -2717,6 +2856,7 @@ def start_nowpayments_webhook_server():
 async def post_init(application):
     global app_loop
     app_loop = asyncio.get_running_loop()
+    load_bot_state()
     load_nowpayments_pending()
     start_nowpayments_webhook_server()
 
@@ -2839,6 +2979,35 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text == "📊 Analytics":
             await update.message.reply_text(render_analytics(), reply_markup=admin_menu(), parse_mode="HTML")
             return
+
+        if text == "📢 Broadcast":
+            user_state[user_id] = {"step": "admin_broadcast_input"}
+            await update.message.reply_text(
+                "📢 <b>BROADCAST MESSAGE</b>\n\n"
+                f"Saved users: <b>{len(all_users)}</b>\n\n"
+                "Send the message you want to broadcast.\n"
+                "It will be previewed before sending.",
+                reply_markup=admin_menu(),
+                parse_mode="HTML",
+            )
+            return
+
+    if step == "admin_broadcast_input":
+        if len(text) > 4096:
+            await update.message.reply_text("❌ Broadcast message is too long. Keep it under 4096 characters.", reply_markup=admin_menu())
+            return
+        admin_temp[user_id]["broadcast_text"] = text
+        user_state[user_id] = {"step": "admin_broadcast_confirm"}
+        await update.message.reply_text(
+            "📢 <b>Broadcast Preview</b>\n\n"
+            f"<b>Users:</b> {max(0, len(all_users) - 1)}\n\n"
+            "<b>Message:</b>\n"
+            f"{escape_html(text)}\n\n"
+            "Send this message to all saved users?",
+            reply_markup=broadcast_confirm_keyboard(),
+            parse_mode="HTML",
+        )
+        return
 
     # ========= PRODUCT ADD =========
     if step == "admin_add_product_icon":
@@ -3252,7 +3421,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ========= NORMAL CLIENT MENUS =========
     if text == "🛍 Shop":
         user_state[user_id] = {"step": "shop"}
-        await update.message.reply_text("🛍 <b>SHOP MENU</b>\n", parse_mode="HTML")
         await send_shop_cards_message(update.message, from_callback=False)
         return
 
@@ -3441,6 +3609,41 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reset_admin_temp(user_id)
         user_state[user_id] = {"step": "admin_reorder_pick"}
         await send_inline_from_callback(query, "↕️ <b>Reorder Products</b>\n\nSelect a product below.", admin_product_select_keyboard("admin_pick_reorder"))
+        return
+
+    if data == "admin_broadcast_send":
+        if not is_admin(user_id):
+            await send_inline_from_callback(query, "❌ <b>You are not allowed.</b>", close_keyboard())
+            return
+        message = admin_temp.get(user_id, {}).get("broadcast_text")
+        if not message:
+            await send_inline_from_callback(query, "❌ <b>No broadcast message found.</b>", close_keyboard())
+            return
+
+        targets = sorted(int(uid) for uid in all_users if int(uid) != int(user_id))
+        sent = 0
+        failed = 0
+        await send_inline_from_callback(query, f"📢 <b>Broadcast started...</b>\n\nTargets: {len(targets)}")
+        for target_id in targets:
+            try:
+                await context.bot.send_message(chat_id=target_id, text=message)
+                sent += 1
+            except Exception:
+                failed += 1
+            await asyncio.sleep(0.05)
+
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "admin_main"}
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=(
+                "✅ <b>Broadcast completed</b>\n\n"
+                f"<b>Sent:</b> {sent}\n"
+                f"<b>Failed/Blocked:</b> {failed}\n"
+                f"<b>Total targets:</b> {len(targets)}"
+            ),
+            parse_mode="HTML",
+        )
         return
 
     if data == "admin_cancel_flow":
@@ -3905,7 +4108,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "back_shop_cards":
         user_state[user_id] = {"step": "shop"}
-        await send_inline_from_callback(query, "🛍 <b>SHOP MENU</b>\n")
         await send_shop_cards_message(query, from_callback=True)
         return
 
@@ -4143,6 +4345,44 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
+# PERSISTENCE WRAPPERS
+# =========================
+async def start_persistent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await start(update, context)
+    finally:
+        save_bot_state()
+
+
+async def admin_command_persistent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await admin_command(update, context)
+    finally:
+        save_bot_state()
+
+
+async def addstock_persistent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await addstock(update, context)
+    finally:
+        save_bot_state()
+
+
+async def handle_text_persistent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await handle_text(update, context)
+    finally:
+        save_bot_state()
+
+
+async def handle_callback_persistent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await handle_callback(update, context)
+    finally:
+        save_bot_state()
+
+
+# =========================
 # MAIN APP
 # =========================
 def main():
@@ -4150,15 +4390,16 @@ def main():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
     app_instance = app
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("admin", admin_command))
+    app.add_handler(CommandHandler("start", start_persistent))
+    app.add_handler(CommandHandler("admin", admin_command_persistent))
     app.add_handler(CommandHandler("myid", myid))
-    app.add_handler(CommandHandler("addstock", addstock))
+    app.add_handler(CommandHandler("addstock", addstock_persistent))
 
-    app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(CallbackQueryHandler(handle_callback_persistent))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_persistent))
 
-    app.job_queue.run_repeating(background_job, interval=60, first=30)
+    # Old custom blockchain scanner disabled. NOWPayments webhook is the main verifier.
+    # app.job_queue.run_repeating(background_job, interval=60, first=30)
 
     print("✅ Bot started...")
     app.run_polling()
