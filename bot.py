@@ -3167,8 +3167,19 @@ class NowPaymentsWebhookHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_text(self, code: int, body_text: str, content_type: str = "text/plain; charset=utf-8"):
+        body = body_text.encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
-        if self.path in {"/", NOWPAYMENTS_WEBHOOK_PATH}:
+        clean_path = self.path.split("?")[0]
+        if clean_path == "/cryptomus_d7a0b5fb.html":
+            self._send_text(200, "cryptomus=d7a0b5fb", "text/html; charset=utf-8")
+        elif self.path in {"/", NOWPAYMENTS_WEBHOOK_PATH}:
             self._send_json(200, {"ok": True, "service": "telegram-shop-bot"})
         else:
             self._send_json(404, {"ok": False, "error": "not found"})
