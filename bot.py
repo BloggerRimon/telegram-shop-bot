@@ -327,6 +327,31 @@ PRODUCTS = {
 }
 product_order = ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9"]
 
+DEFAULT_DELIVERY_GUIDE = """📌 Account Login Guide
+Please follow these simple steps to use your new account:
+
+🛠 Step 1: Preparation
+🧹 Clear your browser cookies before you start.
+🔄 If you are already logged into another account, clear your cookies or use a new browser / Incognito / Private window.
+
+🔐 Step 2: Security
+🔑 This account may not have 2FA or a password lock set yet.
+⚙️ Please change the password immediately after buying to make it secure.
+
+🚀 Step 3: Login Process
+🌐 Go to the product login website or the link provided in the note.
+📋 Copy the account information carefully and log in.
+🟢 If OTP/login code is required, follow the note/instruction included with the account.
+
+🕐 Warranty Policy
+⚠️ This account comes with a 24-hour warranty."""
+
+
+def get_delivery_guide(product_id: str) -> str:
+    product = PRODUCTS.get(product_id, {})
+    guide = str(product.get("delivery_guide", "") or "").strip()
+    return guide or DEFAULT_DELIVERY_GUIDE
+
 # =========================
 # PROMO CODES
 # =========================
@@ -1094,6 +1119,7 @@ def admin_products_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("💲 Edit Price", callback_data="admin_edit_price_menu")],
         [InlineKeyboardButton("📅 Edit Month", callback_data="admin_edit_month_menu")],
         [InlineKeyboardButton("📝 Edit Details", callback_data="admin_edit_details_menu")],
+        [InlineKeyboardButton("📌 Edit Delivery Guide", callback_data="admin_edit_delivery_guide_menu")],
         [InlineKeyboardButton("😀 Edit Icon", callback_data="admin_edit_icon_menu")],
         [InlineKeyboardButton("📦 Edit Display Stock", callback_data="admin_edit_display_stock_menu")],
         [InlineKeyboardButton("↕️ Reorder Products", callback_data="admin_reorder_menu")],
@@ -1662,6 +1688,19 @@ def render_admin_edit_details_preview(product_id: str, new_details: list) -> str
         "📝 <b>CONFIRM DETAILS UPDATE</b>\n\n"
         f"<b>Product:</b> {product['name']}\n\n"
         f"<b>New Details:</b>\n" + "\n".join(new_details) + "\n\nConfirm update?"
+    )
+
+
+def render_admin_edit_delivery_guide_preview(product_id: str, new_guide: str) -> str:
+    product = PRODUCTS[product_id]
+    preview = new_guide.strip()
+    if len(preview) > 2500:
+        preview = preview[:2500] + "\n..."
+    return (
+        "📌 <b>CONFIRM DELIVERY GUIDE UPDATE</b>\n\n"
+        f"<b>Product:</b> {product['name']}\n\n"
+        f"<b>New Guide:</b>\n{escape_html(preview)}\n\n"
+        "Confirm update?"
     )
 
 
@@ -2340,6 +2379,22 @@ async def send_shop_cards_message(source, from_callback: bool = False):
         await source.reply_text(render_shop_menu_text(), reply_markup=shop_menu_keyboard(), parse_mode="HTML")
 
 
+async def send_html_lines(bot, chat_id: int, lines: list, max_len: int = 3800):
+    """Send long HTML-safe messages without breaking Telegram's 4096 character limit."""
+    chunk = []
+    chunk_len = 0
+    for line in lines:
+        add_len = len(line) + 1
+        if chunk and chunk_len + add_len > max_len:
+            await bot.send_message(chat_id=chat_id, text="\n".join(chunk), parse_mode="HTML", disable_web_page_preview=True)
+            chunk = []
+            chunk_len = 0
+        chunk.append(line)
+        chunk_len += add_len
+    if chunk:
+        await bot.send_message(chat_id=chat_id, text="\n".join(chunk), parse_mode="HTML", disable_web_page_preview=True)
+
+
 async def deliver_accounts_to_user(bot, user_id: int, product_id: str, qty: int):
     product = PRODUCTS[product_id]
     available = product["accounts"]
@@ -2358,20 +2413,27 @@ async def deliver_accounts_to_user(bot, user_id: int, product_id: str, qty: int)
     product["display_stock"] = max(0, current_display - qty)
 
     lines = [
-        f"✅ <b>Order Completed:</b> {product['name']}",
+        f"✅ <b>Order Completed:</b> {escape_html(product['name'])}",
         f"<b>Quantity:</b> {qty}",
         "",
         "🔐 <b>Your Account Details:</b>",
         "",
     ]
-    for idx, acc in enumerate(delivered, start=1):
-        lines.append(f"{idx}. <b>Email/Username:</b> {escape_html(acc['email'])}")
-        lines.append(f"   <b>Password:</b> {escape_html(acc['password'])}")
-        if acc.get("note"):
-            lines.append(f"   <b>Note:</b> {escape_html(acc['note'])}")
-        lines.append("")
+    for acc in delivered:
+        email = str(acc.get("email", "") or "").strip()
+        password = str(acc.get("password", "") or "").strip()
+        note = str(acc.get("note", "") or "").strip()
+        if note:
+            lines.append(f"<code>{escape_html(email)} | {escape_html(password)} | {escape_html(note)}</code>")
+        else:
+            lines.append(f"<code>{escape_html(email)} | {escape_html(password)}</code>")
 
-    await bot.send_message(chat_id=user_id, text="\n".join(lines), parse_mode="HTML")
+    guide = get_delivery_guide(product_id)
+    if guide:
+        lines.append("")
+        lines.append(escape_html(guide))
+
+    await send_html_lines(bot, user_id, lines)
     return True, delivered
 
 
@@ -3430,6 +3492,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if step == "admin_edit_delivery_guide_input":
+        new_guide = text.strip()
+        if not new_guide:
+            await update.message.reply_text("❌ <b>Delivery guide cannot be empty.</b>", parse_mode="HTML")
+            return
+        admin_temp[user_id]["new_delivery_guide"] = new_guide
+        user_state[user_id] = {"step": "admin_edit_delivery_guide_confirm"}
+        await update.message.reply_text(
+            render_admin_edit_delivery_guide_preview(admin_temp[user_id]["selected_product_id"], new_guide),
+            reply_markup=admin_confirm_keyboard("admin_confirm_delivery_guide_update", "✅ Confirm Delivery Guide"),
+            parse_mode="HTML",
+        )
+        return
+
     if step == "admin_edit_icon_input":
         new_icon = text.strip()
         if not new_icon:
@@ -3884,6 +3960,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_inline_from_callback(query, "📝 <b>Edit Details</b>\n\nSelect a product below.", admin_product_select_keyboard("admin_pick_details"))
         return
 
+    if data == "admin_edit_delivery_guide_menu":
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "admin_edit_delivery_guide_pick"}
+        await send_inline_from_callback(query, "📌 <b>Edit Delivery Guide</b>\n\nSelect a product below.", admin_product_select_keyboard("admin_pick_delivery_guide"))
+        return
+
     if data == "admin_edit_icon_menu":
         reset_admin_temp(user_id)
         user_state[user_id] = {"step": "admin_edit_icon_pick"}
@@ -3977,6 +4059,23 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_inline_from_callback(query, f"📝 <b>Edit Details</b>\n\nSend new details line by line.", admin_cancel_keyboard())
         return
 
+    if data.startswith("admin_pick_delivery_guide_"):
+        product_id = data.replace("admin_pick_delivery_guide_", "")
+        admin_temp[user_id]["selected_product_id"] = product_id
+        user_state[user_id] = {"step": "admin_edit_delivery_guide_input"}
+        current = get_delivery_guide(product_id)
+        if len(current) > 2500:
+            current = current[:2500] + "\n..."
+        await send_inline_from_callback(
+            query,
+            "📌 <b>Edit Delivery Guide</b>\n\n"
+            f"<b>Product:</b> {PRODUCTS[product_id]['name']}\n\n"
+            f"<b>Current Guide:</b>\n{escape_html(current)}\n\n"
+            "Now send the new full delivery guide/instruction. It will be sent once after all account details.",
+            admin_cancel_keyboard(),
+        )
+        return
+
     if data.startswith("admin_pick_icon_"):
         product_id = data.replace("admin_pick_icon_", "")
         admin_temp[user_id]["selected_product_id"] = product_id
@@ -4063,8 +4162,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "admin_confirm_details_update":
         product_id = admin_temp[user_id]["selected_product_id"]
         PRODUCTS[product_id]["details"] = list(admin_temp[user_id]["new_details"])
+        save_bot_state()
         reset_admin_temp(user_id)
         await send_inline_from_callback(query, "✅ <b>Details updated.</b>", admin_products_keyboard())
+        return
+
+    if data == "admin_confirm_delivery_guide_update":
+        product_id = admin_temp[user_id]["selected_product_id"]
+        PRODUCTS[product_id]["delivery_guide"] = admin_temp[user_id]["new_delivery_guide"]
+        save_bot_state()
+        reset_admin_temp(user_id)
+        await send_inline_from_callback(query, "✅ <b>Delivery guide updated.</b>", admin_products_keyboard())
         return
 
     if data == "admin_confirm_icon_update":
