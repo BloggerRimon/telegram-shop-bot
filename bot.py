@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import random
 import string
 import requests
-from decimal import Decimal, InvalidOperation, ROUND_DOWN
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_UP
 from datetime import datetime
 
 from telegram import (
@@ -83,6 +83,9 @@ CRYPTOMUS_COURSE_SOURCE = os.getenv("CRYPTOMUS_COURSE_SOURCE", "Binance").strip(
 CRYPTOMUS_ACCURACY_PERCENT = os.getenv("CRYPTOMUS_ACCURACY_PERCENT", "1").strip() or "1"
 # 0 = merchant pays Cryptomus commission; 100 = client pays Cryptomus commission.
 CRYPTOMUS_SUBTRACT_PERCENT = int(os.getenv("CRYPTOMUS_SUBTRACT_PERCENT", "0") or "0")
+# Extra percent added to Cryptomus invoice amount to cover merchant processing cost.
+# Example: user selects $10 deposit, invoice amount becomes $10.10, wallet credit remains $10.00.
+CRYPTOMUS_CLIENT_MARKUP_PERCENT = Decimal(os.getenv("CRYPTOMUS_CLIENT_MARKUP_PERCENT", "1.0") or "1.0")
 
 # Fee/margin in USD payment amount before creating NOWPayments invoice.
 # If you already use NOWPayments dashboard markup, set this Railway variable to 0.
@@ -2873,7 +2876,9 @@ def create_cryptomus_payment(user_id: int, kind: str, usd_amount: float, network
 
     # Cryptomus order_id allows alpha, numbers, underscores, dashes only.
     order_id = f"{kind}_{user_id}_{int(datetime.utcnow().timestamp())}_{random.randint(1000, 9999)}"
-    amount_text = f"{Decimal(str(usd_amount)).quantize(Decimal('0.01'))}"
+    base_amount = Decimal(str(usd_amount)).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+    invoice_amount = (base_amount * (Decimal("100") + CRYPTOMUS_CLIENT_MARKUP_PERCENT) / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_UP)
+    amount_text = f"{invoice_amount:.2f}"
     coin_cfg = CRYPTOMUS_COIN_MAP[network_label]
     payload = {
         "amount": amount_text,
@@ -2903,6 +2908,8 @@ def create_cryptomus_payment(user_id: int, kind: str, usd_amount: float, network
         "kind": kind,
         "user_id": user_id,
         "usd_amount": float(usd_amount),
+        "invoice_amount": float(invoice_amount),
+        "client_markup_percent": float(CRYPTOMUS_CLIENT_MARKUP_PERCENT),
         "network": network_label,
         "to_currency": coin_cfg.get("to_currency"),
         "network_code": coin_cfg.get("network"),
@@ -2940,10 +2947,12 @@ def render_cryptomus_payment_text(record: dict) -> str:
         f"🌐 <b>Network:</b>\n{escape_html(network)}\n\n"
         f"🏦 <b>Payment Address:</b>\n<code>{escape_html(str(pay_address))}</code>\n\n"
     )
-    if payment_url:
-        text += f"🔗 <b>Payment Link:</b>\n{escape_html(payment_url)}\n\n"
+    # Keep the payment processor private from customers: do not show the hosted payment link.
+    # Users can pay directly to the generated address and exact amount shown above.
     text += (
-        "⚠️ <b>CRITICAL:</b> Use the correct network only.\n"
+        "⚠️ <b>IMPORTANT:</b>\n"
+        "Send <b>EXACTLY</b> the amount shown above. Do not round the amount.\n"
+        "If you send a different amount, the bot may not verify your payment automatically.\n"
         "After payment, tap <b>I Have Paid (Verify)</b>."
     )
     return text
@@ -3088,12 +3097,12 @@ async def run_cryptomus_manual_verify(query, user_id: int, kind: str):
 
     record = find_latest_cryptomus_record(user_id, kind)
     if not record:
-        await query.message.reply_text("❌ No pending Cryptomus payment found.")
+        await query.message.reply_text("❌ No pending payment found.")
         return
 
     state["verify_in_progress"] = True
     try:
-        await query.message.reply_text("⏳ Checking Cryptomus payment status...")
+        await query.message.reply_text("⏳ Checking payment status...")
         status_payload = get_cryptomus_status(record)
         result = status_payload.get("result") or status_payload
         status = str(result.get("payment_status") or result.get("status") or "").lower()
@@ -3114,7 +3123,7 @@ async def run_cryptomus_manual_verify(query, user_id: int, kind: str):
                 f"If it still fails after 10–15 minutes, contact live support: {SUPPORT_USERNAME}"
             )
     except Exception as e:
-        print("Cryptomus manual verify error:", e)
+        print("Payment manual verify error:", e)
         await query.message.reply_text(
             f"❌ Could not check payment right now.\n\nPlease contact live support: {SUPPORT_USERNAME}"
         )
@@ -3350,8 +3359,9 @@ def render_nowpayments_payment_text(record: dict) -> str:
         f"🪙 <b>Amount to send:</b>\n<code>{pay_amount_display} {pay_currency}</code>\n\n"
         f"🌐 <b>Network:</b>\n{network}\n\n"
         f"🏦 <b>Payment Address:</b>\n<code>{escape_html(str(pay_address))}</code>\n\n"
-        "⚠️ <b>CRITICAL:</b> Send EXACTLY the amount above. Do not round!\n"
-        "Use the correct network only.\n\n"
+        "⚠️ <b>IMPORTANT:</b>\n"
+        "Send <b>EXACTLY</b> the amount shown above. Do not round the amount.\n"
+        "If you send a different amount, the bot may not verify your payment automatically.\n\n"
         "After payment, tap <b>I Have Paid (Verify)</b>."
     )
 
