@@ -4,8 +4,9 @@ from datetime import datetime
 from decimal import Decimal
 from contextlib import contextmanager
 
-import psycopg2
-import psycopg2.extras
+import psycopg
+from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
@@ -34,14 +35,14 @@ def _restore_datetime(value):
 
 
 def _to_jsonb(value):
-    return psycopg2.extras.Json(value, dumps=lambda x: json.dumps(x, ensure_ascii=False, default=_json_default))
+    return Jsonb(value, dumps=lambda x: json.dumps(x, ensure_ascii=False, default=_json_default))
 
 
 @contextmanager
 def get_conn():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL is not set")
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = psycopg.connect(DATABASE_URL)
     try:
         yield conn
         conn.commit()
@@ -142,7 +143,7 @@ def load_state():
     """Load full bot state. Returns None if database is empty."""
     init_db()
     with get_conn() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(row_factory=dict_row) as cur:
             cur.execute("SELECT value FROM bot_state WHERE key = 'main';")
             row = cur.fetchone()
             if not row:
@@ -262,7 +263,7 @@ def upsert_user_profile(profile: dict):
 def list_user_profiles(limit: int = 1000, offset: int = 0):
     init_db()
     with get_conn() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
                 SELECT user_id, username, first_name, last_name, is_bot, wallet_balance, first_seen_at, last_seen_at
