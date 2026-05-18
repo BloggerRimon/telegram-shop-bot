@@ -30,6 +30,12 @@ import crypto_verify as cv
 import wallet_checker as wc
 
 try:
+    import cryptomus as cm
+except Exception as e:
+    cm = None
+    print("⚠️ Cryptomus module not available:", e)
+
+try:
     import database as db
 except Exception as e:
     db = None
@@ -68,6 +74,16 @@ PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
 NOWPAYMENTS_WEBHOOK_PATH = os.getenv("NOWPAYMENTS_WEBHOOK_PATH", "/nowpayments/webhook").strip() or "/nowpayments/webhook"
 NOWPAYMENTS_API_BASE = "https://api.nowpayments.io/v1"
 
+# 🔐 Payment gateway switch: set PAYMENT_GATEWAY=cryptomus in Railway to use Cryptomus.
+PAYMENT_GATEWAY = os.getenv("PAYMENT_GATEWAY", "nowpayments").strip().lower()
+CRYPTOMUS_MERCHANT_ID = os.getenv("CRYPTOMUS_MERCHANT_ID", "").strip()
+CRYPTOMUS_PAYMENT_API_KEY = os.getenv("CRYPTOMUS_PAYMENT_API_KEY", "").strip()
+CRYPTOMUS_WEBHOOK_PATH = os.getenv("CRYPTOMUS_WEBHOOK_PATH", "/cryptomus/webhook").strip() or "/cryptomus/webhook"
+CRYPTOMUS_COURSE_SOURCE = os.getenv("CRYPTOMUS_COURSE_SOURCE", "Binance").strip() or "Binance"
+CRYPTOMUS_ACCURACY_PERCENT = os.getenv("CRYPTOMUS_ACCURACY_PERCENT", "1").strip() or "1"
+# 0 = merchant pays Cryptomus commission; 100 = client pays Cryptomus commission.
+CRYPTOMUS_SUBTRACT_PERCENT = int(os.getenv("CRYPTOMUS_SUBTRACT_PERCENT", "0") or "0")
+
 # Fee/margin in USD payment amount before creating NOWPayments invoice.
 # If you already use NOWPayments dashboard markup, set this Railway variable to 0.
 NOWPAYMENTS_FEE_MARGIN_PERCENT = Decimal(os.getenv("NOWPAYMENTS_FEE_MARGIN_PERCENT", "1.0"))
@@ -90,6 +106,11 @@ if not NOWPAYMENTS_API_KEY:
     print("⚠️ NOWPAYMENTS_API_KEY not set")
 if not NOWPAYMENTS_IPN_SECRET:
     print("⚠️ NOWPAYMENTS_IPN_SECRET not set")
+if PAYMENT_GATEWAY == "cryptomus":
+    if not CRYPTOMUS_MERCHANT_ID:
+        print("⚠️ CRYPTOMUS_MERCHANT_ID not set")
+    if not CRYPTOMUS_PAYMENT_API_KEY:
+        print("⚠️ CRYPTOMUS_PAYMENT_API_KEY not set")
 if not PUBLIC_BASE_URL:
     print("⚠️ PUBLIC_BASE_URL not set")
 
@@ -464,6 +485,10 @@ def build_state_snapshot():
         state["NOWPAYMENTS_PAYMENTS"] = globals().get("NOWPAYMENTS_PAYMENTS", {})
     if "NOWPAYMENTS_PROCESSED" in globals():
         state["NOWPAYMENTS_PROCESSED"] = list(globals().get("NOWPAYMENTS_PROCESSED", set()) or [])
+    if "CRYPTOMUS_PAYMENTS" in globals():
+        state["CRYPTOMUS_PAYMENTS"] = globals().get("CRYPTOMUS_PAYMENTS", {})
+    if "CRYPTOMUS_PROCESSED" in globals():
+        state["CRYPTOMUS_PROCESSED"] = list(globals().get("CRYPTOMUS_PROCESSED", set()) or [])
 
     return state
 
@@ -473,6 +498,7 @@ def apply_loaded_state(data: dict):
     global PRODUCTS, product_order, PROMO_CODES
     global global_order_id, global_tx_id, next_product_number
     global NOWPAYMENTS_PAYMENTS, NOWPAYMENTS_PROCESSED
+    global CRYPTOMUS_PAYMENTS, CRYPTOMUS_PROCESSED
 
     data = _restore_datetime(data or {})
 
@@ -529,6 +555,10 @@ def apply_loaded_state(data: dict):
         NOWPAYMENTS_PAYMENTS = data.get("NOWPAYMENTS_PAYMENTS", {}) or {}
     if "NOWPAYMENTS_PROCESSED" in globals() and "NOWPAYMENTS_PROCESSED" in data:
         NOWPAYMENTS_PROCESSED = set(data.get("NOWPAYMENTS_PROCESSED", []) or [])
+    if "CRYPTOMUS_PAYMENTS" in globals() and "CRYPTOMUS_PAYMENTS" in data:
+        CRYPTOMUS_PAYMENTS = data.get("CRYPTOMUS_PAYMENTS", {}) or {}
+    if "CRYPTOMUS_PROCESSED" in globals() and "CRYPTOMUS_PROCESSED" in data:
+        CRYPTOMUS_PROCESSED = set(data.get("CRYPTOMUS_PROCESSED", []) or [])
 
 
 def save_bot_state():
@@ -1009,8 +1039,7 @@ def main_menu() -> ReplyKeyboardMarkup:
         ["💳 Top Up", "🎟 Promo"],
         ["📦 Orders", "🆔 User ID"],
         ["🧾 Transactions", "👥 Refer & Earn"],
-        ["💬 Support", "📜 Terms"],
-        ["🔐 Privacy", "⚖️ Legal"],
+        ["💬 Support"],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -2801,6 +2830,317 @@ async def background_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
+# CRYPTOMUS INTEGRATION
+# =========================
+CRYPTOMUS_PAYMENTS = {}
+CRYPTOMUS_PROCESSED = set()
+
+CRYPTOMUS_COIN_MAP = {
+    "USDT (TRC20)": {"to_currency": "USDT", "network": "tron"},
+    "USDT (ERC20)": {"to_currency": "USDT", "network": "eth"},
+    "USDT (BEP20)": {"to_currency": "USDT", "network": "bsc"},
+    "TRX (TRC20)": {"to_currency": "TRX", "network": "tron"},
+    "BTC": {"to_currency": "BTC"},
+    "LTC": {"to_currency": "LTC"},
+    "ETH (ERC20)": {"to_currency": "ETH", "network": "eth"},
+    "BNB (BEP20)": {"to_currency": "BNB", "network": "bsc"},
+    "SOL": {"to_currency": "SOL", "network": "sol"},
+}
+
+
+def cryptomus_callback_url() -> str:
+    if not PUBLIC_BASE_URL:
+        return ""
+    return f"{PUBLIC_BASE_URL}{CRYPTOMUS_WEBHOOK_PATH}"
+
+
+def save_cryptomus_pending():
+    try:
+        save_bot_state()
+    except Exception as e:
+        print("⚠️ Failed to save Cryptomus pending:", e)
+
+
+def create_cryptomus_payment(user_id: int, kind: str, usd_amount: float, network_label: str, ref: str, product_id=None, qty=None) -> dict:
+    if cm is None:
+        raise RuntimeError("cryptomus.py is missing or could not be imported.")
+    if not CRYPTOMUS_MERCHANT_ID:
+        raise RuntimeError("CRYPTOMUS_MERCHANT_ID is not set in Railway Variables.")
+    if not CRYPTOMUS_PAYMENT_API_KEY:
+        raise RuntimeError("CRYPTOMUS_PAYMENT_API_KEY is not set in Railway Variables.")
+    if network_label not in CRYPTOMUS_COIN_MAP:
+        raise RuntimeError(f"Unsupported Cryptomus network: {network_label}")
+
+    # Cryptomus order_id allows alpha, numbers, underscores, dashes only.
+    order_id = f"{kind}_{user_id}_{int(datetime.utcnow().timestamp())}_{random.randint(1000, 9999)}"
+    amount_text = f"{Decimal(str(usd_amount)).quantize(Decimal('0.01'))}"
+    coin_cfg = CRYPTOMUS_COIN_MAP[network_label]
+    payload = {
+        "amount": amount_text,
+        "currency": "USD",
+        "order_id": order_id,
+        "url_callback": cryptomus_callback_url(),
+        "is_payment_multiple": False,
+        "lifetime": 3600,
+        "accuracy_payment_percent": str(CRYPTOMUS_ACCURACY_PERCENT),
+        "course_source": CRYPTOMUS_COURSE_SOURCE,
+        "subtract": CRYPTOMUS_SUBTRACT_PERCENT,
+        "additional_data": f"{kind}:{user_id}:{ref}"[:255],
+    }
+    payload.update(coin_cfg)
+
+    data = cm.create_invoice(payload, CRYPTOMUS_MERCHANT_ID, CRYPTOMUS_PAYMENT_API_KEY)
+    result = data.get("result") or data
+    uuid = str(result.get("uuid") or "")
+    if not uuid:
+        raise RuntimeError(f"Cryptomus did not return uuid: {data}")
+
+    record = {
+        "provider": "Cryptomus",
+        "uuid": uuid,
+        "payment_id": uuid,
+        "order_id": order_id,
+        "kind": kind,
+        "user_id": user_id,
+        "usd_amount": float(usd_amount),
+        "network": network_label,
+        "to_currency": coin_cfg.get("to_currency"),
+        "network_code": coin_cfg.get("network"),
+        "pay_currency": result.get("payer_currency") or coin_cfg.get("to_currency"),
+        "pay_amount": result.get("payer_amount") or result.get("payment_amount"),
+        "pay_address": result.get("address"),
+        "payment_url": result.get("url"),
+        "payment_status": result.get("payment_status") or result.get("status") or "check",
+        "product_id": product_id,
+        "qty": qty,
+        "created_at": result.get("created_at") or datetime.utcnow().isoformat(),
+        "raw": data,
+    }
+    CRYPTOMUS_PAYMENTS[uuid] = record
+    save_cryptomus_pending()
+    return record
+
+
+def render_cryptomus_payment_text(record: dict) -> str:
+    network = record.get("network", "")
+    pay_amount = record.get("pay_amount")
+    pay_currency = str(record.get("pay_currency") or record.get("to_currency") or "").upper()
+    pay_address = record.get("pay_address") or "Open payment link below"
+    payment_url = record.get("payment_url") or ""
+    usd_amount = float(record.get("usd_amount", 0))
+
+    amount_line = "Open payment link to see exact amount"
+    if pay_amount:
+        amount_line = f"<code>{escape_html(str(pay_amount))} {escape_html(pay_currency)}</code>"
+
+    text = (
+        "✅ <b>PAYMENT REQUEST GENERATED!</b>\n\n"
+        f"💵 <b>Amount:</b>\n${usd_amount:.2f}\n\n"
+        f"🪙 <b>Amount to send:</b>\n{amount_line}\n\n"
+        f"🌐 <b>Network:</b>\n{escape_html(network)}\n\n"
+        f"🏦 <b>Payment Address:</b>\n<code>{escape_html(str(pay_address))}</code>\n\n"
+    )
+    if payment_url:
+        text += f"🔗 <b>Payment Link:</b>\n{escape_html(payment_url)}\n\n"
+    text += (
+        "⚠️ <b>CRITICAL:</b> Use the correct network only.\n"
+        "After payment, tap <b>I Have Paid (Verify)</b>."
+    )
+    return text
+
+
+def get_cryptomus_status(record: dict) -> dict:
+    if cm is None:
+        raise RuntimeError("cryptomus.py is missing or could not be imported.")
+    return cm.payment_info(record.get("uuid"), record.get("order_id"), CRYPTOMUS_MERCHANT_ID, CRYPTOMUS_PAYMENT_API_KEY)
+
+
+def is_cryptomus_success_status(status: str) -> bool:
+    return str(status or "").lower() in {"paid", "paid_over"}
+
+
+def is_cryptomus_failed_status(status: str) -> bool:
+    return str(status or "").lower() in {"fail", "wrong_amount", "cancel", "system_fail", "refund_fail", "refund_paid"}
+
+
+def find_latest_cryptomus_record(user_id: int, kind: str = None):
+    records = []
+    for rec in CRYPTOMUS_PAYMENTS.values():
+        if int(rec.get("user_id", 0)) != int(user_id):
+            continue
+        if kind and rec.get("kind") != kind:
+            continue
+        if str(rec.get("uuid")) in CRYPTOMUS_PROCESSED:
+            continue
+        records.append(rec)
+    if not records:
+        return None
+    return records[-1]
+
+
+async def finalize_cryptomus_record(record: dict, payload: dict = None):
+    uuid = str(record.get("uuid") or record.get("payment_id"))
+    if uuid in CRYPTOMUS_PROCESSED:
+        return
+
+    user_id = int(record["user_id"])
+    amount = float(record["usd_amount"])
+    kind = record.get("kind")
+    txid = ""
+    if payload:
+        txid = str(payload.get("txid") or payload.get("uuid") or uuid)
+    else:
+        txid = uuid
+
+    if kind == "deposit":
+        user_wallet[user_id] = user_wallet.get(user_id, 0.0) + amount
+        add_transaction_record(
+            user_id,
+            "Deposit",
+            amount,
+            "Completed",
+            {"provider": "Cryptomus", "payment_id": uuid, "txid": txid},
+        )
+        await app_instance.bot.send_message(
+            chat_id=user_id,
+            text=(
+                "🎉 <b>PAYMENT VERIFIED!</b>\n\n"
+                f"<b>{format_money(amount)}</b> added to your wallet.\n"
+                f"{get_wallet_balance_text(user_id)}"
+            ),
+            parse_mode="HTML",
+        )
+
+    elif kind == "order":
+        product_id = record.get("product_id")
+        qty = int(record.get("qty") or 1)
+        ok, _ = await deliver_accounts_to_user(app_instance.bot, user_id, product_id, qty)
+        if ok:
+            add_order_record(user_id, product_id, qty, amount, "Completed", "Cryptomus")
+            await notify_admin_order(app_instance.bot, user_id, product_id, qty, amount, "Cryptomus")
+            add_transaction_record(
+                user_id,
+                "Order Payment",
+                amount,
+                "Completed",
+                {"provider": "Cryptomus", "payment_id": uuid, "product_id": product_id, "qty": qty, "txid": txid},
+            )
+            await app_instance.bot.send_message(
+                chat_id=user_id,
+                text=(
+                    "🎉 <b>PAYMENT VERIFIED!</b>\n\n"
+                    f"<b>Order completed</b> for {PRODUCTS[product_id]['name']}.\n"
+                    f"<b>Quantity:</b> {qty}\n"
+                    f"<b>Total:</b> {format_money(amount)}"
+                ),
+                parse_mode="HTML",
+            )
+        else:
+            await app_instance.bot.send_message(
+                chat_id=user_id,
+                text="✅ Payment received, but stock delivery failed. Please contact live support.",
+                parse_mode="HTML",
+            )
+
+    CRYPTOMUS_PROCESSED.add(uuid)
+    record["payment_status"] = "completed"
+    record["completed_at"] = datetime.utcnow().isoformat()
+    save_cryptomus_pending()
+    save_bot_state()
+
+
+async def handle_cryptomus_webhook(payload: dict):
+    uuid = str(payload.get("uuid") or "")
+    order_id = str(payload.get("order_id") or "")
+    status = str(payload.get("status") or payload.get("payment_status") or "").lower()
+
+    record = CRYPTOMUS_PAYMENTS.get(uuid)
+    if not record and order_id:
+        for rec in CRYPTOMUS_PAYMENTS.values():
+            if str(rec.get("order_id")) == order_id:
+                record = rec
+                break
+
+    if not record:
+        print("⚠️ Cryptomus webhook received for unknown payment:", payload)
+        return
+
+    record["payment_status"] = status
+    record["last_webhook"] = payload
+    save_cryptomus_pending()
+
+    if is_cryptomus_success_status(status):
+        await finalize_cryptomus_record(record, payload)
+    elif is_cryptomus_failed_status(status):
+        user_id = int(record.get("user_id", 0))
+        await app_instance.bot.send_message(
+            chat_id=user_id,
+            text=f"❌ <b>Payment failed/cancelled.</b>\n\nStatus: <code>{escape_html(status)}</code>",
+            parse_mode="HTML",
+        )
+
+
+async def run_cryptomus_manual_verify(query, user_id: int, kind: str):
+    state = user_state.setdefault(user_id, {})
+    if state.get("verify_in_progress"):
+        await query.answer("⏳ Verification already in progress. Please wait.", show_alert=False)
+        return
+
+    record = find_latest_cryptomus_record(user_id, kind)
+    if not record:
+        await query.message.reply_text("❌ No pending Cryptomus payment found.")
+        return
+
+    state["verify_in_progress"] = True
+    try:
+        await query.message.reply_text("⏳ Checking Cryptomus payment status...")
+        status_payload = get_cryptomus_status(record)
+        result = status_payload.get("result") or status_payload
+        status = str(result.get("payment_status") or result.get("status") or "").lower()
+        record["payment_status"] = status
+        record["last_status_check"] = status_payload
+        save_cryptomus_pending()
+
+        if is_cryptomus_success_status(status):
+            await finalize_cryptomus_record(record, result)
+        elif is_cryptomus_failed_status(status):
+            await query.message.reply_text(
+                f"❌ Payment status: {status}\n\nPlease create a new payment request or contact live support: {SUPPORT_USERNAME}"
+            )
+        else:
+            await query.message.reply_text(
+                "⌛ Payment not confirmed yet.\n\n"
+                "Please wait 1–2 minutes and tap Verify again.\n"
+                f"If it still fails after 10–15 minutes, contact live support: {SUPPORT_USERNAME}"
+            )
+    except Exception as e:
+        print("Cryptomus manual verify error:", e)
+        await query.message.reply_text(
+            f"❌ Could not check payment right now.\n\nPlease contact live support: {SUPPORT_USERNAME}"
+        )
+    finally:
+        state["verify_in_progress"] = False
+
+
+def create_gateway_payment(user_id: int, kind: str, usd_amount: float, network_label: str, ref: str, product_id=None, qty=None) -> dict:
+    if PAYMENT_GATEWAY == "cryptomus":
+        return create_cryptomus_payment(user_id, kind, usd_amount, network_label, ref, product_id=product_id, qty=qty)
+    return create_nowpayments_payment(user_id, kind, usd_amount, network_label, ref, product_id=product_id, qty=qty)
+
+
+def render_gateway_payment_text(record: dict) -> str:
+    if str(record.get("provider") or "").lower() == "cryptomus":
+        return render_cryptomus_payment_text(record)
+    return render_nowpayments_payment_text(record)
+
+
+async def run_gateway_manual_verify(query, user_id: int, kind: str):
+    if PAYMENT_GATEWAY == "cryptomus":
+        await run_cryptomus_manual_verify(query, user_id, kind)
+    else:
+        await run_nowpayments_manual_verify(query, user_id, kind)
+
+
 # NOWPAYMENTS INTEGRATION
 # =========================
 app_loop = None
@@ -3329,10 +3669,7 @@ class NowPaymentsWebhookHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"ok": False, "error": "not found"})
 
     def do_POST(self):
-        if self.path.split("?")[0] != NOWPAYMENTS_WEBHOOK_PATH:
-            self._send_json(404, {"ok": False, "error": "not found"})
-            return
-
+        clean_path = self.path.split("?")[0]
         raw = self.rfile.read(int(self.headers.get("Content-Length", "0") or "0"))
         try:
             payload = json.loads(raw.decode("utf-8") or "{}")
@@ -3340,21 +3677,38 @@ class NowPaymentsWebhookHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"ok": False, "error": "invalid json"})
             return
 
-        signature = self.headers.get("x-nowpayments-sig", "")
-        if not verify_nowpayments_signature(payload, signature):
-            self._send_json(401, {"ok": False, "error": "invalid signature"})
+        if clean_path == CRYPTOMUS_WEBHOOK_PATH:
+            if cm is None or not cm.verify_webhook_signature(payload, CRYPTOMUS_PAYMENT_API_KEY):
+                self._send_json(401, {"ok": False, "error": "invalid cryptomus signature"})
+                return
+            if app_loop is None:
+                self._send_json(503, {"ok": False, "error": "bot loop not ready"})
+                return
+            try:
+                asyncio.run_coroutine_threadsafe(handle_cryptomus_webhook(payload), app_loop)
+                self._send_json(200, {"ok": True})
+            except Exception as e:
+                print("Cryptomus webhook schedule error:", e)
+                self._send_json(500, {"ok": False, "error": "internal error"})
             return
 
-        if app_loop is None:
-            self._send_json(503, {"ok": False, "error": "bot loop not ready"})
+        if clean_path == NOWPAYMENTS_WEBHOOK_PATH:
+            signature = self.headers.get("x-nowpayments-sig", "")
+            if not verify_nowpayments_signature(payload, signature):
+                self._send_json(401, {"ok": False, "error": "invalid signature"})
+                return
+            if app_loop is None:
+                self._send_json(503, {"ok": False, "error": "bot loop not ready"})
+                return
+            try:
+                asyncio.run_coroutine_threadsafe(handle_nowpayments_ipn(payload), app_loop)
+                self._send_json(200, {"ok": True})
+            except Exception as e:
+                print("NOWPayments webhook schedule error:", e)
+                self._send_json(500, {"ok": False, "error": "internal error"})
             return
 
-        try:
-            asyncio.run_coroutine_threadsafe(handle_nowpayments_ipn(payload), app_loop)
-            self._send_json(200, {"ok": True})
-        except Exception as e:
-            print("NOWPayments webhook schedule error:", e)
-            self._send_json(500, {"ok": False, "error": "internal error"})
+        self._send_json(404, {"ok": False, "error": "not found"})
 
 
 def start_nowpayments_webhook_server():
@@ -3366,7 +3720,7 @@ def start_nowpayments_webhook_server():
 
     def run_server():
         server = HTTPServer(("0.0.0.0", port), NowPaymentsWebhookHandler)
-        print(f"✅ NOWPayments webhook server listening on port {port}, path {NOWPAYMENTS_WEBHOOK_PATH}")
+        print(f"✅ Payment webhook server listening on port {port}, NOWPayments {NOWPAYMENTS_WEBHOOK_PATH}, Cryptomus {CRYPTOMUS_WEBHOOK_PATH}")
         server.serve_forever()
 
     thread = threading.Thread(target=run_server, daemon=True)
@@ -4770,7 +5124,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = user_state[user_id]
         ref = f"order:{user_id}:{state['product_id']}:{state['qty']}:{state['total']}"
         try:
-            np_record = create_nowpayments_payment(
+            np_record = create_gateway_payment(
                 user_id=user_id,
                 kind="order",
                 usd_amount=state["total"],
@@ -4780,7 +5134,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 qty=state["qty"],
             )
         except Exception as e:
-            print("NOWPayments order create error:", e)
+            print("Crypto order create error:", e)
             await send_inline_from_callback(
                 query,
                 f"❌ <b>Could not create crypto payment.</b>\n\nPlease try again or contact live support: {SUPPORT_USERNAME}",
@@ -4794,11 +5148,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "qty": state["qty"],
             "total": state["total"],
             "network": network_label,
-            "nowpayments_payment_id": np_record["payment_id"],
+            "crypto_payment_id": np_record.get("payment_id") or np_record.get("uuid"),
+            "payment_provider": np_record.get("provider"),
         }
         await send_inline_from_callback(
             query,
-            render_nowpayments_payment_text(np_record),
+            render_gateway_payment_text(np_record),
             paymod.payment_request_keyboard("buypay"),
         )
         return
@@ -4809,7 +5164,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "buypay_verify":
-        context.application.create_task(run_nowpayments_manual_verify(query, user_id, "order"))
+        context.application.create_task(run_gateway_manual_verify(query, user_id, "order"))
         return
 
     if data == "buymanual_submitted":
@@ -4881,7 +5236,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         ref = f"deposit:{user_id}:{amount}"
         try:
-            np_record = create_nowpayments_payment(
+            np_record = create_gateway_payment(
                 user_id=user_id,
                 kind="deposit",
                 usd_amount=amount,
@@ -4889,7 +5244,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ref=ref,
             )
         except Exception as e:
-            print("NOWPayments deposit create error:", e)
+            print("Crypto deposit create error:", e)
             await send_inline_from_callback(
                 query,
                 f"❌ <b>Could not create crypto payment.</b>\n\nPlease try again or contact live support: {SUPPORT_USERNAME}",
@@ -4901,11 +5256,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "step": "deposit_payment_ready",
             "amount": amount,
             "network": network_label,
-            "nowpayments_payment_id": np_record["payment_id"],
+            "crypto_payment_id": np_record.get("payment_id") or np_record.get("uuid"),
+            "payment_provider": np_record.get("provider"),
         }
         await send_inline_from_callback(
             query,
-            render_nowpayments_payment_text(np_record),
+            render_gateway_payment_text(np_record),
             paymod.payment_request_keyboard("deppay"),
         )
         return
@@ -4913,9 +5269,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "retry_verify_after_timeout":
         record = wc.get_user_pending_any(user_id)
         if record and record.get("kind") == "order":
-            context.application.create_task(run_nowpayments_manual_verify(query, user_id, "order"))
+            context.application.create_task(run_gateway_manual_verify(query, user_id, "order"))
         else:
-            context.application.create_task(run_nowpayments_manual_verify(query, user_id, "deposit"))
+            context.application.create_task(run_gateway_manual_verify(query, user_id, "deposit"))
         return
 
     if data == "deppay_change_network":
@@ -4924,7 +5280,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "deppay_verify":
-        context.application.create_task(run_nowpayments_manual_verify(query, user_id, "deposit"))
+        context.application.create_task(run_gateway_manual_verify(query, user_id, "deposit"))
         return
 
     if data == "depmanual_submitted":
