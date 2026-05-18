@@ -781,15 +781,19 @@ def enter_admin_mode(user_id: int):
 
 
 def parse_account_line(line: str):
-    parts = [x.strip() for x in line.split("|")]
+    # Stock line can contain unlimited fields separated by |
+    # Example: email | pass | note | recovery | otp data | extra info
+    # We keep first fields for old admin views, but delivery uses raw_fields exactly.
+    parts = [x.strip() for x in str(line or "").split("|")]
+    parts = [x for x in parts if x != ""]
     if len(parts) < 2:
         return None
     email = parts[0]
     password = parts[1]
-    note = parts[2] if len(parts) >= 3 else ""
+    note = " | ".join(parts[2:]) if len(parts) >= 3 else ""
     if not email or not password:
         return None
-    return {"email": email, "password": password, "note": note}
+    return {"email": email, "password": password, "note": note, "raw_fields": parts, "raw_line": " | ".join(parts)}
 
 
 def get_next_order_id():
@@ -2420,13 +2424,21 @@ async def deliver_accounts_to_user(bot, user_id: int, product_id: str, qty: int)
         "",
     ]
     for acc in delivered:
-        email = str(acc.get("email", "") or "").strip()
-        password = str(acc.get("password", "") or "").strip()
-        note = str(acc.get("note", "") or "").strip()
-        if note:
-            lines.append(f"<code>{escape_html(email)} | {escape_html(password)} | {escape_html(note)}</code>")
+        raw_fields = acc.get("raw_fields")
+        if isinstance(raw_fields, list) and raw_fields:
+            account_line = " | ".join(str(x).strip() for x in raw_fields if str(x).strip())
         else:
-            lines.append(f"<code>{escape_html(email)} | {escape_html(password)}</code>")
+            raw_line = str(acc.get("raw_line", "") or "").strip()
+            if raw_line:
+                account_line = raw_line
+            else:
+                fields = [
+                    str(acc.get("email", "") or "").strip(),
+                    str(acc.get("password", "") or "").strip(),
+                    str(acc.get("note", "") or "").strip(),
+                ]
+                account_line = " | ".join(x for x in fields if x)
+        lines.append(f"<code>{escape_html(account_line)}</code>")
 
     guide = get_delivery_guide(product_id)
     if guide:
