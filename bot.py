@@ -45,6 +45,11 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 BOT_USERNAME = "SupremeLeaderShopBot"   # @ ছাড়া
 SUPPORT_USERNAME = "@serpstacking"
+SUPPORT_URL = "https://t.me/serpstacking"
+PUBLIC_SITE_URL = "https://telegram-shop-bot-production-48fa.up.railway.app"
+TERMS_URL = f"{PUBLIC_SITE_URL}/terms"
+PRIVACY_URL = f"{PUBLIC_SITE_URL}/privacy"
+LEGAL_URL = f"{PUBLIC_SITE_URL}/legal"
 
 ADMIN_IDS = {6795246172}
 
@@ -1004,7 +1009,8 @@ def main_menu() -> ReplyKeyboardMarkup:
         ["💳 Top Up", "🎟 Promo"],
         ["📦 Orders", "🆔 User ID"],
         ["🧾 Transactions", "👥 Refer & Earn"],
-        ["💬 Support"],
+        ["💬 Support", "📜 Terms"],
+        ["🔐 Privacy", "⚖️ Legal"],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -1496,7 +1502,40 @@ def render_refer_text(user_id: int) -> str:
 
 
 def render_support_text() -> str:
-    return f"💬 <b>SUPPORT</b>\n\nContact admin: {SUPPORT_USERNAME}"
+    return (
+        "💬 <b>SUPPORT</b>\n\n"
+        f"Contact admin: {SUPPORT_USERNAME}\n"
+        f"Support link: {SUPPORT_URL}\n\n"
+        "For payment, order, warranty, or delivery issues, contact support with your User ID and order details."
+    )
+
+
+def render_terms_text() -> str:
+    return (
+        "📜 <b>TERMS OF USE</b>\n\n"
+        "By using this bot, you agree to the shop terms. All products are digital goods delivered automatically or manually after payment confirmation. "
+        "Customers must check product details before purchase. Warranty, replacement, and refund rules depend on the product description and admin decision.\n\n"
+        f"Full Terms: {TERMS_URL}"
+    )
+
+
+def render_privacy_text() -> str:
+    return (
+        "🔐 <b>PRIVACY POLICY</b>\n\n"
+        "The bot stores Telegram user ID, username, wallet balance, orders, transactions, and support-related data needed to operate the shop. "
+        "We do not sell user data. Payment data may be processed by third-party payment providers.\n\n"
+        f"Full Privacy Policy: {PRIVACY_URL}"
+    )
+
+
+def render_legal_text() -> str:
+    return (
+        "⚖️ <b>LEGAL INFORMATION</b>\n\n"
+        "This bot sells digital products and subscription access items. Users are responsible for following the rules of any third-party services they use. "
+        "For legal/support requests, contact the shop admin.\n\n"
+        f"Legal Page: {LEGAL_URL}\n"
+        f"Support: {SUPPORT_URL}"
+    )
 
 
 def render_product_card(product_id: str) -> str:
@@ -3155,6 +3194,101 @@ async def run_nowpayments_manual_verify(query, user_id: int, kind: str):
         state["verify_in_progress"] = False
 
 
+
+def _public_page_html(title: str, body: str) -> str:
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{title}</title>
+  <style>
+    body {{ font-family: Arial, sans-serif; max-width: 860px; margin: 40px auto; padding: 0 18px; line-height: 1.6; color: #111; }}
+    h1 {{ margin-bottom: 8px; }}
+    .card {{ border: 1px solid #e5e7eb; border-radius: 14px; padding: 20px; background: #fff; }}
+    a {{ color: #0b65c2; }}
+    .muted {{ color: #555; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    {body}
+  </div>
+</body>
+</html>"""
+
+
+def public_home_html() -> str:
+    return _public_page_html(
+        "Supreme Leader Shop",
+        f"""
+        <h1>Supreme Leader Shop</h1>
+        <p class="muted">Digital products and subscription shop operated through Telegram.</p>
+        <p><b>Open Telegram Bot:</b> <a href="https://t.me/{BOT_USERNAME}">https://t.me/{BOT_USERNAME}</a></p>
+        <p><b>Support:</b> <a href="{SUPPORT_URL}">{SUPPORT_USERNAME}</a></p>
+        <p><a href="/terms">Terms of Use</a> | <a href="/privacy">Privacy Policy</a> | <a href="/legal">Legal Information</a></p>
+        """
+    )
+
+
+def public_support_html() -> str:
+    return _public_page_html(
+        "Support - Supreme Leader Shop",
+        f"""
+        <h1>Support</h1>
+        <p>For payment, order, delivery, warranty, or account issues, contact our Telegram support.</p>
+        <p><b>Support:</b> <a href="{SUPPORT_URL}">{SUPPORT_USERNAME}</a></p>
+        <p>Please include your Telegram User ID, order details, and payment information when contacting support.</p>
+        <p><a href="/">Home</a></p>
+        """
+    )
+
+
+def public_terms_html() -> str:
+    return _public_page_html(
+        "Terms of Use - Supreme Leader Shop",
+        f"""
+        <h1>Terms of Use</h1>
+        <p>Supreme Leader Shop provides digital products and subscription access items through a Telegram bot.</p>
+        <p>By using the bot, users agree to check product details, price, stock, delivery method, and warranty conditions before purchase.</p>
+        <p>All digital products are delivered through the bot after payment confirmation. Because products are digital, refunds or replacements are handled according to the product warranty and support review.</p>
+        <p>Users are responsible for using purchased digital products in accordance with applicable laws and any third-party service rules.</p>
+        <p>Abuse, fraud, chargeback attempts, duplicate payment claims, or misuse of the bot may result in account restrictions.</p>
+        <p><b>Support:</b> <a href="{SUPPORT_URL}">{SUPPORT_USERNAME}</a></p>
+        <p><a href="/">Home</a> | <a href="/privacy">Privacy Policy</a> | <a href="/legal">Legal Information</a></p>
+        """
+    )
+
+
+def public_privacy_html() -> str:
+    return _public_page_html(
+        "Privacy Policy - Supreme Leader Shop",
+        f"""
+        <h1>Privacy Policy</h1>
+        <p>The bot stores information needed to operate the shop, including Telegram user ID, username, wallet balance, orders, transactions, product deliveries, and support-related data.</p>
+        <p>Payment-related information may be processed by third-party payment providers. We do not sell user personal data.</p>
+        <p>Data is used to provide order delivery, wallet balance tracking, fraud prevention, support, and transaction history.</p>
+        <p>Users can contact support for questions about their data or account.</p>
+        <p><b>Support:</b> <a href="{SUPPORT_URL}">{SUPPORT_USERNAME}</a></p>
+        <p><a href="/">Home</a> | <a href="/terms">Terms of Use</a> | <a href="/legal">Legal Information</a></p>
+        """
+    )
+
+
+def public_legal_html() -> str:
+    return _public_page_html(
+        "Legal Information - Supreme Leader Shop",
+        f"""
+        <h1>Legal Information</h1>
+        <p>Supreme Leader Shop is a Telegram-based digital products shop. Customers purchase digital products and subscription access items through the bot.</p>
+        <p>Customers are responsible for ensuring their use of purchased products follows applicable laws and third-party service terms.</p>
+        <p>For legal, compliance, or support inquiries, contact the shop support account below.</p>
+        <p><b>Support:</b> <a href="{SUPPORT_URL}">{SUPPORT_USERNAME}</a></p>
+        <p><a href="/">Home</a> | <a href="/terms">Terms of Use</a> | <a href="/privacy">Privacy Policy</a></p>
+        """
+    )
+
+
 class NowPaymentsWebhookHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         return
@@ -3179,7 +3313,17 @@ class NowPaymentsWebhookHandler(BaseHTTPRequestHandler):
         clean_path = self.path.split("?")[0]
         if clean_path == "/cryptomus_d7a0b5fb.html":
             self._send_text(200, "cryptomus=d7a0b5fb", "text/html; charset=utf-8")
-        elif self.path in {"/", NOWPAYMENTS_WEBHOOK_PATH}:
+        elif clean_path == "/":
+            self._send_text(200, public_home_html(), "text/html; charset=utf-8")
+        elif clean_path == "/support":
+            self._send_text(200, public_support_html(), "text/html; charset=utf-8")
+        elif clean_path == "/terms":
+            self._send_text(200, public_terms_html(), "text/html; charset=utf-8")
+        elif clean_path == "/privacy":
+            self._send_text(200, public_privacy_html(), "text/html; charset=utf-8")
+        elif clean_path == "/legal":
+            self._send_text(200, public_legal_html(), "text/html; charset=utf-8")
+        elif clean_path == NOWPAYMENTS_WEBHOOK_PATH:
             self._send_json(200, {"ok": True, "service": "telegram-shop-bot"})
         else:
             self._send_json(404, {"ok": False, "error": "not found"})
@@ -3858,6 +4002,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "💬 Support":
         user_state[user_id] = {"step": "main"}
         await send_client_main_text(update, render_support_text())
+        return
+
+    if text == "📜 Terms":
+        user_state[user_id] = {"step": "main"}
+        await send_client_main_text(update, render_terms_text())
+        return
+
+    if text == "🔐 Privacy":
+        user_state[user_id] = {"step": "main"}
+        await send_client_main_text(update, render_privacy_text())
+        return
+
+    if text == "⚖️ Legal":
+        user_state[user_id] = {"step": "main"}
+        await send_client_main_text(update, render_legal_text())
         return
 
     await update.message.reply_text(
