@@ -29,6 +29,12 @@ import payment as paymod
 import crypto_verify as cv
 import wallet_checker as wc
 
+try:
+    import database as db
+except Exception as e:
+    db = None
+    print("⚠️ Database module not available:", e)
+
 
 # =========================
 # BASIC SETTINGS
@@ -198,58 +204,128 @@ CRYPTO_ADDRESSES = {
 # =========================
 PRODUCTS = {
     "p1": {
-        "name": "Netflix Premium Account",
-        "icon": "🎬",
+        "name": "ChatGPT Plus",
+        "icon": "🧠",
         "month": "1",
         "price": 5.0,
-        "details": [
-            "✅ Private Account",
-            "✅ Auto Delivery",
-            "✅ Email:Password Delivery",
-        ],
-        "accounts": [
-            {"email": "netflix1@example.com", "password": "Pass1234", "note": "Private Account"},
-            {"email": "netflix2@example.com", "password": "Pass1234", "note": "Private Account"},
-            {"email": "netflix3@example.com", "password": "Pass1234", "note": "Private Account"},
-            {"email": "netflix4@example.com", "password": "Pass1234", "note": "Private Account"},
-            {"email": "netflix5@example.com", "password": "Pass1234", "note": "Private Account"},
-            {"email": "netflix6@example.com", "password": "Pass1234", "note": "Private Account"},
-        ],
-        "display_stock": 25,
+        "details": ["✅ Auto Delivery", "✅ Account Details Delivery", "✅ Replace stock from Admin Panel"],
+        "accounts": [],
+        "display_stock": 0,
     },
     "p2": {
-        "name": "Spotify Premium Account",
-        "icon": "🎵",
-        "month": "1",
-        "price": 3.0,
-        "details": [
-            "✅ Private Account",
-            "✅ Auto Delivery",
-            "✅ Email:Password Delivery",
-        ],
-        "accounts": [
-            {"email": "spotify1@example.com", "password": "Pass1234", "note": "Private Account"},
-            {"email": "spotify2@example.com", "password": "Pass1234", "note": "Private Account"},
-            {"email": "spotify3@example.com", "password": "Pass1234", "note": "Private Account"},
-            {"email": "spotify4@example.com", "password": "Pass1234", "note": "Private Account"},
-        ],
-        "display_stock": 18,
+        "name": "SEMrush Guru",
+        "icon": "📈",
+        "month": "14 Days",
+        "price": 2.0,
+        "details": ["✅ Auto Delivery", "✅ Account Details Delivery", "✅ Replace stock from Admin Panel"],
+        "accounts": [{"email": "semrush1@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_1", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "semrush2@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_2", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "semrush3@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_3", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "semrush4@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_4", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "semrush5@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_5", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "semrush6@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_6", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "semrush7@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_7", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "semrush8@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_8", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "semrush9@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_9", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "semrush10@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_10", "note": "Replace this placeholder account from Admin Panel"}],
+        "display_stock": 10,
     },
     "p3": {
-        "name": "YouTube Premium Account",
-        "icon": "▶️",
+        "name": "CapCut Pro",
+        "icon": "🎬",
         "month": "1",
-        "price": 4.0,
-        "details": [
-            "✅ Private Account",
-            "✅ Auto Delivery",
-            "✅ Email:Password Delivery",
-        ],
+        "price": 2.0,
+        "details": ["✅ Auto Delivery", "✅ Account Details Delivery", "✅ Replace stock from Admin Panel"],
+        "accounts": [{"email": "capcut1@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_1", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "capcut2@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_2", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "capcut3@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_3", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "capcut4@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_4", "note": "Replace this placeholder account from Admin Panel"}],
+        "display_stock": 4,
+    },
+    "p4": {
+        "name": "SuperGrok",
+        "icon": "🌕",
+        "month": "1",
+        "price": 8.0,
+        "details": ["✅ Auto Delivery", "✅ Account Details Delivery", "✅ Replace stock from Admin Panel"],
+        "accounts": [{"email": "supergrok1@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_1", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "supergrok2@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_2", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "supergrok3@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_3", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "supergrok4@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_4", "note": "Replace this placeholder account from Admin Panel"}],
+        "display_stock": 4,
+    },
+    "p5": {
+        "name": "Perplexity AI Pro",
+        "icon": "🌟",
+        "month": "1 Year",
+        "price": 13.0,
+        "details": ["✅ Auto Delivery", "✅ Account Details Delivery", "✅ Replace stock from Admin Panel"],
+        "accounts": [{"email": "perplexity1@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_1", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "perplexity2@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_2", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "perplexity3@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_3", "note": "Replace this placeholder account from Admin Panel"}],
+        "display_stock": 3,
+    },
+    "p6": {
+        "name": "Gemini Pro",
+        "icon": "🤖",
+        "month": "4",
+        "price": 7.0,
+        "details": ["✅ Auto Delivery", "✅ Account Details Delivery", "✅ Replace stock from Admin Panel"],
+        "accounts": [{"email": "gemini1@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_1", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "gemini2@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_2", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "gemini3@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_3", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "gemini4@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_4", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "gemini5@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_5", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "gemini6@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_6", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "gemini7@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_7", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "gemini8@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_8", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "gemini9@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_9", "note": "Replace this placeholder account from Admin Panel"}],
+        "display_stock": 9,
+    },
+    "p7": {
+        "name": "Microsoft Office 365 Pro Plus",
+        "icon": "📝",
+        "month": "0",
+        "price": 2.0,
+        "details": ["✅ Auto Delivery", "✅ Account Details Delivery", "✅ Replace stock from Admin Panel"],
+        "accounts": [{"email": "office3651@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_1", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "office3652@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_2", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "office3653@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_3", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "office3654@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_4", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "office3655@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_5", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "office3656@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_6", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "office3657@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_7", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "office3658@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_8", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "office3659@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_9", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "office36510@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_10", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "office36511@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_11", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "office36512@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_12", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "office36513@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_13", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "office36514@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_14", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "office36515@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_15", "note": "Replace this placeholder account from Admin Panel"},
+            {"email": "office36516@replace-stock.local", "password": "CHANGE_THIS_PASSWORD_16", "note": "Replace this placeholder account from Admin Panel"}],
+        "display_stock": 16,
+    },
+    "p8": {
+        "name": "Jasper AI",
+        "icon": "✨",
+        "month": "7 Days",
+        "price": 2.5,
+        "details": ["✅ Auto Delivery", "✅ Account Details Delivery", "✅ Replace stock from Admin Panel"],
+        "accounts": [],
+        "display_stock": 0,
+    },
+    "p9": {
+        "name": "SpyHero",
+        "icon": "✨",
+        "month": "7 Days",
+        "price": 3.0,
+        "details": ["✅ Auto Delivery", "✅ Account Details Delivery", "✅ Replace stock from Admin Panel"],
         "accounts": [],
         "display_stock": 0,
     },
 }
-product_order = ["p1", "p2", "p3"]
+product_order = ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9"]
 
 # =========================
 # PROMO CODES
@@ -297,12 +373,15 @@ global_tx_id = 1
 all_orders = []
 all_transactions = []
 all_users = set()
+user_profiles = {}
 app_instance = None
 
 # =========================
 # PERSISTENT STORAGE
 # =========================
 BOT_STATE_FILE = os.getenv("BOT_STATE_FILE", "bot_state.json")
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+USE_DATABASE = bool(DATABASE_URL)
 
 
 def _json_safe(value):
@@ -330,24 +409,114 @@ def _restore_datetime(value):
     return value
 
 
+def build_state_snapshot():
+    """Collect all important bot data in one snapshot for persistent storage."""
+    state = {
+        "user_wallet": user_wallet,
+        "user_orders": user_orders,
+        "user_transactions": user_transactions,
+        "used_promo_codes": used_promo_codes,
+        "all_users": list(all_users),
+        "user_profiles": user_profiles,
+        "all_orders": all_orders,
+        "all_transactions": all_transactions,
+        "PRODUCTS": PRODUCTS,
+        "product_order": product_order,
+        "PROMO_CODES": PROMO_CODES,
+        "notify_waitlist": {k: list(v) for k, v in notify_waitlist.items()},
+        "global_order_id": global_order_id,
+        "global_tx_id": global_tx_id,
+        "next_product_number": next_product_number,
+    }
+
+    # These globals are defined later in the file. If they already exist, keep them too.
+    if "NOWPAYMENTS_PAYMENTS" in globals():
+        state["NOWPAYMENTS_PAYMENTS"] = globals().get("NOWPAYMENTS_PAYMENTS", {})
+    if "NOWPAYMENTS_PROCESSED" in globals():
+        state["NOWPAYMENTS_PROCESSED"] = list(globals().get("NOWPAYMENTS_PROCESSED", set()) or [])
+
+    return state
+
+
+def apply_loaded_state(data: dict):
+    """Apply a loaded state snapshot back into the in-memory bot structures."""
+    global PRODUCTS, product_order, PROMO_CODES
+    global global_order_id, global_tx_id, next_product_number
+    global NOWPAYMENTS_PAYMENTS, NOWPAYMENTS_PROCESSED
+
+    data = _restore_datetime(data or {})
+
+    loaded_products = data.get("PRODUCTS")
+    if loaded_products:
+        PRODUCTS.clear()
+        PRODUCTS.update(loaded_products)
+
+    product_order.clear()
+    product_order.extend([pid for pid in data.get("product_order", []) if pid in PRODUCTS])
+    for pid in PRODUCTS:
+        if pid not in product_order:
+            product_order.append(pid)
+
+    loaded_promos = data.get("PROMO_CODES")
+    if loaded_promos:
+        PROMO_CODES.clear()
+        PROMO_CODES.update(loaded_promos)
+
+    user_wallet.clear()
+    user_wallet.update({int(k): float(v) for k, v in (data.get("user_wallet", {}) or {}).items()})
+
+    user_orders.clear()
+    user_orders.update({int(k): v for k, v in (data.get("user_orders", {}) or {}).items()})
+
+    user_transactions.clear()
+    user_transactions.update({int(k): v for k, v in (data.get("user_transactions", {}) or {}).items()})
+
+    used_promo_codes.clear()
+    used_promo_codes.update({int(k): set(v or []) for k, v in (data.get("used_promo_codes", {}) or {}).items()})
+
+    all_users.clear()
+    all_users.update(int(x) for x in (data.get("all_users", []) or []))
+
+    user_profiles.clear()
+    user_profiles.update({int(k): v for k, v in (data.get("user_profiles", {}) or {}).items()})
+
+    all_orders.clear()
+    all_orders.extend(data.get("all_orders", []) or [])
+
+    all_transactions.clear()
+    all_transactions.extend(data.get("all_transactions", []) or [])
+
+    notify_waitlist.clear()
+    notify_waitlist.update({pid: set(users or []) for pid, users in (data.get("notify_waitlist", {}) or {}).items()})
+    for pid in PRODUCTS:
+        notify_waitlist.setdefault(pid, set())
+
+    global_order_id = int(data.get("global_order_id", global_order_id) or global_order_id)
+    global_tx_id = int(data.get("global_tx_id", global_tx_id) or global_tx_id)
+    next_product_number = int(data.get("next_product_number", next_product_number) or next_product_number)
+
+    if "NOWPAYMENTS_PAYMENTS" in globals() and "NOWPAYMENTS_PAYMENTS" in data:
+        NOWPAYMENTS_PAYMENTS = data.get("NOWPAYMENTS_PAYMENTS", {}) or {}
+    if "NOWPAYMENTS_PROCESSED" in globals() and "NOWPAYMENTS_PROCESSED" in data:
+        NOWPAYMENTS_PROCESSED = set(data.get("NOWPAYMENTS_PROCESSED", []) or [])
+
+
 def save_bot_state():
     try:
-        state = {
-            "user_wallet": user_wallet,
-            "user_orders": user_orders,
-            "user_transactions": user_transactions,
-            "used_promo_codes": used_promo_codes,
-            "all_users": list(all_users),
-            "all_orders": all_orders,
-            "all_transactions": all_transactions,
-            "PRODUCTS": PRODUCTS,
-            "product_order": product_order,
-            "PROMO_CODES": PROMO_CODES,
-            "notify_waitlist": {k: list(v) for k, v in notify_waitlist.items()},
-            "global_order_id": global_order_id,
-            "global_tx_id": global_tx_id,
-            "next_product_number": next_product_number,
-        }
+        state = build_state_snapshot()
+
+        if USE_DATABASE:
+            if db is None:
+                raise RuntimeError("DATABASE_URL is set but database.py could not be imported")
+            db.save_state(_json_safe(state))
+            if hasattr(db, "upsert_user_profile"):
+                for profile in user_profiles.values():
+                    try:
+                        db.upsert_user_profile(_json_safe(profile))
+                    except Exception as e:
+                        print("⚠️ Failed to save user profile:", e)
+            return
+
         tmp_file = BOT_STATE_FILE + ".tmp"
         with open(tmp_file, "w", encoding="utf-8") as f:
             json.dump(_json_safe(state), f, ensure_ascii=False, indent=2)
@@ -357,55 +526,26 @@ def save_bot_state():
 
 
 def load_bot_state():
-    global PRODUCTS, product_order, PROMO_CODES
-    global global_order_id, global_tx_id, next_product_number
     try:
+        if USE_DATABASE:
+            if db is None:
+                raise RuntimeError("DATABASE_URL is set but database.py could not be imported")
+            data = db.load_state()
+            if not data:
+                print("ℹ️ Database is empty; using code defaults for first run.")
+                save_bot_state()
+                return
+            apply_loaded_state(data)
+            print(f"✅ Loaded bot state from database: {len(all_users)} users, {len(PRODUCTS)} products")
+            return
+
         if not os.path.exists(BOT_STATE_FILE):
             print("ℹ️ No bot_state.json found; using code defaults for first run.")
             return
         with open(BOT_STATE_FILE, "r", encoding="utf-8") as f:
             raw = json.load(f)
-        data = _restore_datetime(raw)
-
-        loaded_products = data.get("PRODUCTS")
-        if loaded_products:
-            PRODUCTS.clear()
-            PRODUCTS.update(loaded_products)
-
-        product_order.clear()
-        product_order.extend([pid for pid in data.get("product_order", []) if pid in PRODUCTS])
-        for pid in PRODUCTS:
-            if pid not in product_order:
-                product_order.append(pid)
-
-        loaded_promos = data.get("PROMO_CODES")
-        if loaded_promos:
-            PROMO_CODES.clear()
-            PROMO_CODES.update(loaded_promos)
-
-        user_wallet.clear()
-        user_wallet.update({int(k): float(v) for k, v in (data.get("user_wallet", {}) or {}).items()})
-        user_orders.clear()
-        user_orders.update({int(k): v for k, v in (data.get("user_orders", {}) or {}).items()})
-        user_transactions.clear()
-        user_transactions.update({int(k): v for k, v in (data.get("user_transactions", {}) or {}).items()})
-        used_promo_codes.clear()
-        used_promo_codes.update({int(k): set(v or []) for k, v in (data.get("used_promo_codes", {}) or {}).items()})
-        all_users.clear()
-        all_users.update(int(x) for x in (data.get("all_users", []) or []))
-        all_orders.clear()
-        all_orders.extend(data.get("all_orders", []) or [])
-        all_transactions.clear()
-        all_transactions.extend(data.get("all_transactions", []) or [])
-        notify_waitlist.clear()
-        notify_waitlist.update({pid: set(users or []) for pid, users in (data.get("notify_waitlist", {}) or {}).items()})
-        for pid in PRODUCTS:
-            notify_waitlist.setdefault(pid, set())
-
-        global_order_id = int(data.get("global_order_id", global_order_id) or global_order_id)
-        global_tx_id = int(data.get("global_tx_id", global_tx_id) or global_tx_id)
-        next_product_number = int(data.get("next_product_number", next_product_number) or next_product_number)
-        print(f"✅ Loaded bot state: {len(all_users)} users, {len(PRODUCTS)} products")
+        apply_loaded_state(raw)
+        print(f"✅ Loaded bot state from file: {len(all_users)} users, {len(PRODUCTS)} products")
     except Exception as e:
         print("⚠️ Failed to load bot state; using code defaults:", e)
 
@@ -428,7 +568,7 @@ def format_dt(dt_obj):
 # =========================
 # BASIC HELPERS
 # =========================
-def ensure_user(user_id: int):
+def ensure_user(user_id: int, tg_user=None):
     all_users.add(user_id)
 
     if user_id not in user_wallet:
@@ -446,6 +586,84 @@ def ensure_user(user_id: int):
     if user_id not in admin_temp:
         admin_temp[user_id] = {}
 
+    update_user_profile(user_id, tg_user)
+
+
+def update_user_profile(user_id: int, tg_user=None):
+    now = now_dt()
+    profile = user_profiles.get(user_id, {})
+    if not profile.get("first_seen_at"):
+        profile["first_seen_at"] = now
+    profile["last_seen_at"] = now
+    profile["user_id"] = user_id
+    profile["wallet_balance"] = float(user_wallet.get(user_id, 0.0))
+
+    if tg_user is not None:
+        profile["username"] = getattr(tg_user, "username", None) or profile.get("username")
+        profile["first_name"] = getattr(tg_user, "first_name", None) or profile.get("first_name")
+        profile["last_name"] = getattr(tg_user, "last_name", None) or profile.get("last_name")
+        profile["is_bot"] = bool(getattr(tg_user, "is_bot", False))
+
+    user_profiles[user_id] = profile
+    return profile
+
+
+def get_user_profile(user_id: int) -> dict:
+    ensure_user(user_id)
+    profile = user_profiles.get(user_id, {})
+    profile["wallet_balance"] = float(user_wallet.get(user_id, 0.0))
+    return profile
+
+
+def format_user_link(user_id: int) -> str:
+    profile = get_user_profile(user_id)
+    username = str(profile.get("username") or "").strip().lstrip("@")
+    first = str(profile.get("first_name") or "").strip()
+    last = str(profile.get("last_name") or "").strip()
+    full_name = (first + " " + last).strip()
+
+    if username:
+        return f'<a href="https://t.me/{escape_html(username)}">@{escape_html(username)}</a>'
+    if full_name:
+        return escape_html(full_name)
+    return "No username"
+
+
+async def notify_admin_order(bot, user_id: int, product_id: str, qty: int, total: float, payment_type: str):
+    product = PRODUCTS.get(product_id, {})
+    real_stock = get_product_stock(product_id) if product_id in PRODUCTS else 0
+    display_stock = get_display_stock(product_id) if product_id in PRODUCTS else 0
+
+    stock_lines = [
+        f"<b>Remaining Real Stock:</b> {real_stock} pcs",
+        f"<b>Display Stock:</b> {display_stock} pcs",
+    ]
+
+    stock_alert = ""
+    if real_stock <= 0 or display_stock <= 0:
+        stock_alert = (
+            "\n\n🚨 <b>STOCK OUT REMINDER</b>\n"
+            f"<b>{escape_html(product.get('name', product_id))}</b> is now stock out or display stock is 0.\n"
+            "Please update stock from Admin Panel."
+        )
+
+    text = (
+        "🛒 <b>NEW PURCHASE NOTIFICATION</b>\n\n"
+        f"<b>User:</b> {format_user_link(user_id)}\n"
+        f"<b>User ID:</b> <code>{user_id}</code>\n"
+        f"<b>Product:</b> {escape_html(product.get('name', product_id))}\n"
+        f"<b>Quantity:</b> {qty}\n"
+        f"<b>Total:</b> {format_money(total)}\n"
+        f"<b>Payment:</b> {escape_html(payment_type)}\n"
+        + "\n".join(stock_lines)
+        + stock_alert
+    )
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML", disable_web_page_preview=True)
+        except Exception as e:
+            print(f"⚠️ Failed to notify admin {admin_id}:", e)
+
 
 def format_money(value: float) -> str:
     return f"${float(value):.2f}"
@@ -457,6 +675,15 @@ def get_product_stock(product_id: str) -> int:
 
 def get_display_stock(product_id: str) -> int:
     return int(PRODUCTS[product_id].get("display_stock", len(PRODUCTS[product_id]["accounts"])))
+
+
+def format_duration_text(value) -> str:
+    text = str(value or "").strip()
+    if not text or text == "0":
+        return ""
+    if text.isdigit():
+        return f"{text} Month"
+    return text
 
 
 def safe_decimal(value):
@@ -758,7 +985,8 @@ def admin_menu() -> ReplyKeyboardMarkup:
         ["📦 Products", "📥 Stock"],
         ["🎟 Promo Admin", "📦 Orders Admin"],
         ["💳 Deposits Admin", "👤 Users Admin"],
-        ["📊 Analytics", "📢 Broadcast"],
+        ["👥 User Details", "📊 Analytics"],
+        ["📢 Broadcast"],
         ["🚪 Exit Admin"],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -926,9 +1154,23 @@ def deposits_admin_keyboard() -> InlineKeyboardMarkup:
 def users_admin_keyboard() -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton("📊 View Summary", callback_data="users_summary")],
+        [InlineKeyboardButton("👥 User Details", callback_data="users_details_0")],
         [InlineKeyboardButton("🔎 Search User ID", callback_data="users_search")],
         [InlineKeyboardButton("⬅️ Close", callback_data="users_close")],
     ]
+    return InlineKeyboardMarkup(rows)
+
+
+def users_details_keyboard(page: int, total_pages: int) -> InlineKeyboardMarkup:
+    rows = []
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"users_details_{page - 1}"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"users_details_{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="users_summary")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -1232,9 +1474,11 @@ def render_product_card(product_id: str) -> str:
     stock = get_display_stock(product_id)
     stock_text = f"{stock} pcs" if stock > 0 else "Stock Out"
     icon = product.get("icon", "📦")
+    duration = format_duration_text(product.get("month", ""))
+    duration_line = f"<b>Duration:</b> {duration}\n" if duration else ""
     return (
         f"{icon} <b>{product['name']}</b>\n"
-        f"<b>Month:</b> {product['month']}\n"
+        f"{duration_line}"
         f"<b>Price:</b> {format_money(product['price'])}\n"
         f"<b>Stock:</b> {stock_text}"
     )
@@ -1245,17 +1489,18 @@ def render_product_details(product_id: str) -> str:
     detail_lines = "\n".join(product["details"])
     stock = get_display_stock(product_id)
     icon = product.get("icon", "📦")
+    duration = format_duration_text(product.get("month", ""))
+    duration_line = f"<b>Duration:</b> {duration}\n" if duration else ""
     return (
         "📦 <b>PRODUCT DETAILS</b>\n\n"
         f"<b>Icon:</b> {icon}\n"
         f"<b>Name:</b> {product['name']}\n"
-        f"<b>Month:</b> {product['month']}\n"
+        f"{duration_line}"
         f"<b>Price:</b> {format_money(product['price'])}\n"
         f"<b>Stock:</b> {stock} pcs\n\n"
         f"{detail_lines}\n\n"
         "<b>Select quantity below:</b>"
     )
-
 
 def render_buy_summary(product_id: str, qty: int, wallet_balance: float) -> str:
     product = PRODUCTS[product_id]
@@ -1604,8 +1849,44 @@ def render_users_admin() -> str:
         f"<b>Total Users:</b> {total_users}\n"
         f"<b>Total Wallet Balance:</b> {format_money(total_wallet)}\n"
         f"<b>Total Orders:</b> {len(all_orders)}\n"
-        f"<b>Total Transactions:</b> {len(all_transactions)}"
+        f"<b>Total Transactions:</b> {len(all_transactions)}\n\n"
+        "Tap <b>User Details</b> to see usernames and Telegram user IDs."
     )
+
+
+def render_user_details_page(page: int = 0, per_page: int = 25):
+    users = sorted(list(all_users))
+    total = len(users)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = max(0, min(page, total_pages - 1))
+    start = page * per_page
+    end = start + per_page
+
+    lines = [
+        "👥 <b>USER DETAILS</b>",
+        f"<b>Total Users:</b> {total}",
+        f"<b>Page:</b> {page + 1}/{total_pages}",
+        "",
+    ]
+
+    if not users:
+        lines.append("No users found yet.")
+        return "\n".join(lines), page, total_pages
+
+    for idx, uid in enumerate(users[start:end], start=start + 1):
+        profile = get_user_profile(uid)
+        username = str(profile.get("username") or "").strip().lstrip("@")
+        name = ((str(profile.get("first_name") or "").strip() + " " + str(profile.get("last_name") or "").strip()).strip())
+        wallet = float(user_wallet.get(uid, 0.0))
+        if username:
+            user_text = f'<a href="https://t.me/{escape_html(username)}">@{escape_html(username)}</a>'
+        elif name:
+            user_text = escape_html(name)
+        else:
+            user_text = "No username"
+        lines.append(f"{idx}. {user_text} | ID: <code>{uid}</code> | Wallet: {format_money(wallet)}")
+
+    return "\n".join(lines), page, total_pages
 
 
 def render_analytics() -> str:
@@ -2038,8 +2319,8 @@ def shop_menu_keyboard() -> InlineKeyboardMarkup:
         product = PRODUCTS[product_id]
         stock = get_display_stock(product_id)
         icon = product.get("icon", "📦")
-        month = str(product.get("month", "")).strip()
-        month_part = f" {month} Month" if month and month != "0" else ""
+        month = format_duration_text(product.get("month", ""))
+        month_part = f" {month}" if month else ""
         stock_text = f"📦 {stock} Pcs" if stock > 0 else "📦 0"
         label = _short_button_text(f"{icon} {product['name']}{month_part} - {format_money(product['price'])} | {stock_text}")
         callback = f"shop_buy_{product_id}" if stock > 0 else f"shop_notify_{product_id}"
@@ -2105,6 +2386,7 @@ async def process_wallet_purchase(update_or_query, context: ContextTypes.DEFAULT
     user_wallet[user_id] -= total
     add_order_record(user_id, product_id, qty, total, "Completed", "Wallet")
     add_transaction_record(user_id, "Wallet Purchase", total, "Completed", {"product_id": product_id, "qty": qty})
+    await notify_admin_order(context.bot, user_id, product_id, qty, total, "Wallet")
 
     msg = (
         f"✅ <b>Order completed successfully.</b>\n\n"
@@ -2164,6 +2446,7 @@ async def finalize_verified_order(bot, user_id: int, product_id: str, qty: int, 
 
     used_txids.add(txid)
     add_order_record(user_id, product_id, qty, total, "Completed", "Crypto")
+    await notify_admin_order(bot, user_id, product_id, qty, total, "Crypto")
 
     for tx in reversed(user_transactions.get(user_id, [])):
         if tx["type"] == "Order Payment" and tx["status"] == "Checking TXID" and tx["amount"] == total:
@@ -2204,6 +2487,7 @@ async def confirm_manual_order(context: ContextTypes.DEFAULT_TYPE, order_id: int
         return False, "Not enough real stock to deliver."
 
     set_order_status(order, "Completed")
+    await notify_admin_order(context.bot, order["user_id"], order["product_id"], order["qty"], order["total"], order.get("payment_type", "Manual"))
     for user_order in user_orders.get(order["user_id"], []):
         if user_order["id"] == order_id:
             set_order_status(user_order, "Completed")
@@ -2451,6 +2735,9 @@ def stable_unique_usd_amount(base_amount: float, user_id: int, ref: str = "") ->
 
 def save_nowpayments_pending():
     try:
+        if USE_DATABASE:
+            save_bot_state()
+            return
         data = {
             "payments": NOWPAYMENTS_PAYMENTS,
             "processed": list(NOWPAYMENTS_PROCESSED),
@@ -2464,6 +2751,9 @@ def save_nowpayments_pending():
 def load_nowpayments_pending():
     global NOWPAYMENTS_PAYMENTS, NOWPAYMENTS_PROCESSED
     try:
+        if USE_DATABASE:
+            # NOWPayments pending records are loaded together with the main database state.
+            return
         if not os.path.exists(NOWPAYMENTS_PENDING_FILE):
             return
         with open(NOWPAYMENTS_PENDING_FILE, "r", encoding="utf-8") as f:
@@ -2687,6 +2977,7 @@ async def finalize_nowpayments_record(record: dict, payload: dict = None):
         ok, _ = await deliver_accounts_to_user(app_instance.bot, user_id, product_id, qty)
         if ok:
             add_order_record(user_id, product_id, qty, amount, "Completed", "NOWPayments")
+            await notify_admin_order(app_instance.bot, user_id, product_id, qty, amount, "NOWPayments")
             add_transaction_record(
                 user_id,
                 "Order Payment",
@@ -2866,14 +3157,14 @@ async def post_init(application):
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    ensure_user(user_id)
+    ensure_user(user_id, update.effective_user)
     enter_client_mode(user_id)
     await send_client_main_text(update, render_home_text())
 
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    ensure_user(user_id)
+    ensure_user(user_id, update.effective_user)
     if not is_admin(user_id):
         await update.message.reply_text("❌ <b>You are not allowed to open admin panel.</b>", parse_mode="HTML")
         return
@@ -2887,7 +3178,7 @@ async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def addstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    ensure_user(user_id)
+    ensure_user(user_id, update.effective_user)
     if user_id not in ADMIN_IDS:
         await update.message.reply_text("❌ You are not allowed to use this command.")
         return
@@ -2928,7 +3219,7 @@ async def addstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    ensure_user(user_id)
+    ensure_user(user_id, update.effective_user)
     text = update.message.text.strip()
     state = user_state[user_id]
     step = state.get("step", "main")
@@ -2974,6 +3265,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_state[user_id] = {"step": "users_admin"}
             await update.message.reply_text(render_users_admin(), reply_markup=admin_menu(), parse_mode="HTML")
             await update.message.reply_text("Users actions:", reply_markup=users_admin_keyboard(), parse_mode="HTML")
+            return
+
+        if text == "👥 User Details":
+            user_state[user_id] = {"step": "users_admin"}
+            details_text, page, total_pages = render_user_details_page(0)
+            await update.message.reply_text(details_text, reply_markup=users_details_keyboard(page, total_pages), parse_mode="HTML", disable_web_page_preview=True)
             return
 
         if text == "📊 Analytics":
@@ -3530,7 +3827,7 @@ async def run_simple_verify_flow(query, context, user_id: int, record_kind: str)
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
-    ensure_user(user_id)
+    ensure_user(user_id, query.from_user)
     await query.answer()
     data = query.data
 
@@ -4099,6 +4396,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "users_search":
         user_state[user_id] = {"step": "users_search_input"}
         await send_inline_from_callback(query, "🔎 Send User ID now.", admin_cancel_keyboard())
+        return
+
+    if data.startswith("users_details_"):
+        try:
+            page = int(data.replace("users_details_", ""))
+        except Exception:
+            page = 0
+        details_text, page, total_pages = render_user_details_page(page)
+        await send_inline_from_callback(query, details_text, users_details_keyboard(page, total_pages))
         return
 
     # ========= CLIENT FLOWS =========
