@@ -564,20 +564,27 @@ def apply_loaded_state(data: dict):
         CRYPTOMUS_PROCESSED = set(data.get("CRYPTOMUS_PROCESSED", []) or [])
 
 
-def save_bot_state():
+# Fast persistence settings.
+# Old code saved the full database state after EVERY button click/message.
+# That can make the Telegram bot wait 30-60+ seconds when the state grows.
+# This version schedules saving in the background, so buttons reply instantly.
+SAVE_DEBOUNCE_SECONDS = float(os.getenv("SAVE_DEBOUNCE_SECONDS", "2"))
+_save_lock = threading.Lock()
+_save_timer = None
+
+
+def _save_bot_state_now():
+    """Actually write current bot state to storage. Runs in a background thread."""
     try:
         state = build_state_snapshot()
 
         if USE_DATABASE:
             if db is None:
                 raise RuntimeError("DATABASE_URL is set but database.py could not be imported")
+            # Save the whole bot state once as JSONB.
+            # user_profiles is already inside this state, so we do NOT upsert every user
+            # into the users table on every click. That loop was the main speed problem.
             db.save_state(_json_safe(state))
-            if hasattr(db, "upsert_user_profile"):
-                for profile in user_profiles.values():
-                    try:
-                        db.upsert_user_profile(_json_safe(profile))
-                    except Exception as e:
-                        print("⚠️ Failed to save user profile:", e)
             return
 
         tmp_file = BOT_STATE_FILE + ".tmp"
@@ -586,6 +593,34 @@ def save_bot_state():
         os.replace(tmp_file, BOT_STATE_FILE)
     except Exception as e:
         print("⚠️ Failed to save bot state:", e)
+
+
+def _save_bot_state_worker():
+    global _save_timer
+    try:
+        _save_bot_state_now()
+    finally:
+        with _save_lock:
+            _save_timer = None
+
+
+def save_bot_state():
+    """Request a background save without blocking Telegram replies."""
+    global _save_timer
+    try:
+        with _save_lock:
+            if _save_timer is not None and _save_timer.is_alive():
+                return
+            _save_timer = threading.Timer(SAVE_DEBOUNCE_SECONDS, _save_bot_state_worker)
+            _save_timer.daemon = True
+            _save_timer.start()
+    except Exception as e:
+        print("⚠️ Failed to schedule bot state save:", e)
+
+
+def force_save_bot_state():
+    """Use only for rare critical shutdown/manual cases where immediate save is needed."""
+    _save_bot_state_now()
 
 
 def load_bot_state():
