@@ -465,6 +465,11 @@ def _restore_datetime(value):
 
 def build_state_snapshot():
     """Collect all important bot data in one snapshot for persistent storage."""
+    # Clean old/bad emoji icon data before saving.
+    # This does NOT delete products/orders/users; it only converts icon dicts into safe fields.
+    if "normalize_all_product_icons" in globals():
+        normalize_all_product_icons()
+
     state = {
         "user_wallet": user_wallet,
         "user_orders": user_orders,
@@ -515,6 +520,12 @@ def apply_loaded_state(data: dict):
     for pid in PRODUCTS:
         if pid not in product_order:
             product_order.append(pid)
+
+    # Migrate any old/bad saved custom emoji data.
+    # Some previous code may have saved the whole Telegram entity dict inside product["icon"],
+    # which makes buttons show {'type': 'custom_emoji', ...}. This converts it safely.
+    if "normalize_all_product_icons" in globals():
+        normalize_all_product_icons()
 
     loaded_promos = data.get("PROMO_CODES")
     if loaded_promos:
@@ -957,9 +968,12 @@ def escape_html(text: str) -> str:
 # 1) Normal Unicode emoji: stored directly in product["icon"].
 # 2) Telegram custom/animated emoji: stored in product["icon_custom_emoji_id"].
 #
-# For buttons, we use Bot API's icon_custom_emoji_id through api_kwargs so the
-# shop/admin layout stays the same and the custom emoji appears as the button icon
-# on Telegram clients that support this new field.
+# IMPORTANT:
+# A previous emoji build could save the whole Telegram entity dict into product["icon"].
+# Then buttons show text like {'type': 'custom_emoji', 'emoji_id': ...}.
+# The helpers below clean that automatically and keep only:
+#   product["icon"] = fallback emoji text
+#   product["icon_custom_emoji_id"] = Telegram custom emoji ID
 
 def _is_custom_emoji_entity(entity) -> bool:
     entity_type = str(getattr(entity, "type", ""))
@@ -1007,6 +1021,74 @@ def _entity_text_by_utf16(text: str, entity) -> str:
         return ""
 
 
+def _clean_icon_text(value, fallback: str = "🔹") -> str:
+    """Return a safe short emoji text. Never returns a dict string for button labels."""
+    if isinstance(value, dict):
+        for key in ("emoji", "text", "fallback", "icon"):
+            candidate = value.get(key)
+            if candidate and not isinstance(candidate, (dict, list, tuple, set)):
+                candidate = str(candidate).strip()
+                if _looks_like_unicode_emoji(candidate):
+                    return candidate
+        return fallback
+
+    text = str(value or "").strip()
+    if not text or text.startswith("{") or text.startswith("["):
+        return fallback
+    if _looks_like_unicode_emoji(text):
+        return text
+    # Keep old simple icons if they exist, but avoid huge/bad text.
+    if len(text) <= 4 and not any(ch.isspace() for ch in text):
+        return text
+    return fallback
+
+
+def _extract_custom_emoji_id_from_icon_value(value) -> str:
+    """Read a custom emoji ID from old/new saved icon structures."""
+    if isinstance(value, dict):
+        for key in ("icon_custom_emoji_id", "custom_emoji_id", "emoji_id", "emoji-id", "id"):
+            candidate = str(value.get(key) or "").strip()
+            if candidate:
+                return candidate
+    return ""
+
+
+def _product_custom_emoji_id(product_or_temp) -> str:
+    product_or_temp = product_or_temp or {}
+    custom_id = str(product_or_temp.get("icon_custom_emoji_id") or "").strip()
+    if custom_id:
+        return custom_id
+    return _extract_custom_emoji_id_from_icon_value(product_or_temp.get("icon"))
+
+
+def _normal_icon_text(product_or_temp, fallback: str = "📦") -> str:
+    product_or_temp = product_or_temp or {}
+    icon_value = product_or_temp.get("icon", fallback)
+    return _clean_icon_text(icon_value, fallback=("🔹" if _product_custom_emoji_id(product_or_temp) else fallback))
+
+
+def _normalize_product_icon_fields(product: dict):
+    """Migrate icon dict/string problems into clean fields. Does not touch any product data except icon fields."""
+    if not isinstance(product, dict):
+        return product
+    custom_id = _product_custom_emoji_id(product)
+    icon_text = _normal_icon_text(product, fallback="📦")
+    product["icon"] = icon_text
+    if custom_id:
+        product["icon_custom_emoji_id"] = custom_id
+    else:
+        product.pop("icon_custom_emoji_id", None)
+    return product
+
+
+def normalize_all_product_icons():
+    try:
+        for product in PRODUCTS.values():
+            _normalize_product_icon_fields(product)
+    except Exception as e:
+        print("⚠️ Failed to normalize product icons:", e)
+
+
 def _extract_supported_icon_from_message(message):
     """
     Return (icon_text, custom_emoji_id, error).
@@ -1029,8 +1111,7 @@ def _extract_supported_icon_from_message(message):
         cleaned_without_entity = text.replace(fallback, "", 1).strip() if fallback else text.strip()
         if cleaned_without_entity:
             return None, None, "❌ <b>Please send only the emoji, without extra text.</b>"
-        if not _looks_like_unicode_emoji(fallback):
-            fallback = "🔹"
+        fallback = _clean_icon_text(fallback, fallback="🔹")
         return fallback, custom_id, None
 
     if not text:
@@ -1040,12 +1121,8 @@ def _extract_supported_icon_from_message(message):
     return text, None, None
 
 
-def _product_custom_emoji_id(product_or_temp) -> str:
-    return str((product_or_temp or {}).get("icon_custom_emoji_id") or "").strip()
-
-
 def _icon_html(icon_text: str = "📦", custom_emoji_id: str = None) -> str:
-    icon_text = str(icon_text or "📦").strip() or "📦"
+    icon_text = _clean_icon_text(icon_text, fallback="🔹")
     custom_emoji_id = str(custom_emoji_id or "").strip()
     if custom_emoji_id:
         return f'<tg-emoji emoji-id="{escape_html(custom_emoji_id)}">{escape_html(icon_text)}</tg-emoji>'
@@ -1053,13 +1130,15 @@ def _icon_html(icon_text: str = "📦", custom_emoji_id: str = None) -> str:
 
 
 def product_icon_html(product_or_temp) -> str:
-    return _icon_html((product_or_temp or {}).get("icon", "📦"), _product_custom_emoji_id(product_or_temp))
+    return _icon_html(_normal_icon_text(product_or_temp), _product_custom_emoji_id(product_or_temp))
 
 
 def product_label_prefix(product_or_temp) -> str:
+    # If custom emoji ID exists, do NOT put product["icon"] in the text.
+    # The icon should be sent via icon_custom_emoji_id, otherwise Telegram may show fallback text/dict.
     if _product_custom_emoji_id(product_or_temp):
         return ""
-    return str((product_or_temp or {}).get("icon", "📦") or "📦")
+    return _normal_icon_text(product_or_temp, fallback="📦")
 
 
 def product_label_text(product_or_temp, core_text: str) -> str:
@@ -1085,7 +1164,6 @@ def make_product_inline_button(product_or_temp, core_text: str, callback_data: s
     except Exception:
         pass
     return make_inline_button_with_optional_icon(label, callback_data, _product_custom_emoji_id(product_or_temp))
-
 
 # =========================
 # ADVANCED USER / PROMO HELPERS
@@ -4858,6 +4936,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "accounts": [],
             "display_stock": int(temp.get("display_stock", 0)),
         }
+        _normalize_product_icon_fields(PRODUCTS[product_id])
         notify_waitlist[product_id] = set()
         product_order.append(product_id)
         reset_admin_temp(user_id)
@@ -4906,6 +4985,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         product_id = admin_temp[user_id]["selected_product_id"]
         PRODUCTS[product_id]["icon"] = admin_temp[user_id]["new_icon"]
         PRODUCTS[product_id]["icon_custom_emoji_id"] = admin_temp[user_id].get("new_icon_custom_emoji_id")
+        _normalize_product_icon_fields(PRODUCTS[product_id])
+        save_bot_state()
         reset_admin_temp(user_id)
         await send_inline_from_callback(query, "✅ <b>Icon updated.</b>", admin_products_keyboard())
         return
