@@ -951,6 +951,60 @@ def escape_html(text: str) -> str:
 
 
 # =========================
+# EMOJI VALIDATION HELPERS
+# =========================
+def _is_custom_emoji_entity(entity) -> bool:
+    return str(getattr(entity, "type", "")) == "custom_emoji" or str(getattr(entity, "type", "")) == "MessageEntityType.CUSTOM_EMOJI"
+
+
+def _looks_like_unicode_emoji(text: str) -> bool:
+    text = str(text or "").strip()
+    if not text or len(text) > 16:
+        return False
+    if any(ch.isspace() for ch in text):
+        return False
+
+    has_emoji_codepoint = False
+    for ch in text:
+        code = ord(ch)
+        if ch in ("\ufe0f", "\ufe0e", "\u200d"):
+            continue
+        if 0x1F000 <= code <= 0x1FAFF:
+            has_emoji_codepoint = True
+            continue
+        if 0x2600 <= code <= 0x27BF:
+            has_emoji_codepoint = True
+            continue
+        if 0x1F1E6 <= code <= 0x1F1FF:
+            has_emoji_codepoint = True
+            continue
+        if 0xE0020 <= code <= 0xE007F:
+            continue
+        if 0xFE00 <= code <= 0xFE0F:
+            continue
+        return False
+    return has_emoji_codepoint
+
+
+def _extract_supported_icon_from_message(message):
+    """Return (icon, error). Keeps shop layout unchanged and prevents wrong fallback emoji from saving."""
+    text = str(getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
+    entities = list(getattr(message, "entities", None) or [])
+    custom_entities = [e for e in entities if _is_custom_emoji_entity(e)]
+
+    if custom_entities:
+        return None, "❌ <b>This animated/custom emoji cannot be used in the shop button.</b> Please send another normal emoji."
+
+    if not text:
+        return None, "❌ <b>Icon cannot be empty.</b>"
+
+    if not _looks_like_unicode_emoji(text):
+        return None, "❌ <b>This emoji is not supported.</b> Please send another emoji."
+
+    return text, None
+
+
+# =========================
 # ADVANCED USER / PROMO HELPERS
 # =========================
 def generate_unique_promo_code(length: int = 10):
@@ -3936,7 +3990,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ========= PRODUCT ADD =========
     if step == "admin_add_product_icon":
-        admin_temp[user_id]["icon"] = text
+        icon, icon_error = _extract_supported_icon_from_message(update.message)
+        if icon_error:
+            await update.message.reply_text(icon_error, parse_mode="HTML")
+            return
+        admin_temp[user_id]["icon"] = icon
         user_state[user_id] = {"step": "admin_add_product_name"}
         await update.message.reply_text("🆕 <b>Add Product</b>\n\nNow send product name.", reply_markup=admin_menu(), parse_mode="HTML")
         await update.message.reply_text("Cancel if needed.", reply_markup=admin_cancel_keyboard(), parse_mode="HTML")
@@ -4073,9 +4131,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if step == "admin_edit_icon_input":
-        new_icon = text.strip()
-        if not new_icon:
-            await update.message.reply_text("❌ <b>Icon cannot be empty.</b>", parse_mode="HTML")
+        new_icon, icon_error = _extract_supported_icon_from_message(update.message)
+        if icon_error:
+            await update.message.reply_text(icon_error, parse_mode="HTML")
             return
         admin_temp[user_id]["new_icon"] = new_icon
         user_state[user_id] = {"step": "admin_edit_icon_confirm"}
