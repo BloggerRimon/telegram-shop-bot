@@ -951,10 +951,19 @@ def escape_html(text: str) -> str:
 
 
 # =========================
-# EMOJI / ICON HELPERS
+# EMOJI / CUSTOM EMOJI HELPERS
 # =========================
+# Telegram has two different emoji systems:
+# 1) Normal Unicode emoji: stored directly in product["icon"].
+# 2) Telegram custom/animated emoji: stored in product["icon_custom_emoji_id"].
+#
+# For buttons, we use Bot API's icon_custom_emoji_id through api_kwargs so the
+# shop/admin layout stays the same and the custom emoji appears as the button icon
+# on Telegram clients that support this new field.
+
 def _is_custom_emoji_entity(entity) -> bool:
-    return str(getattr(entity, "type", "")) == "custom_emoji" or str(getattr(entity, "type", "")) == "MessageEntityType.CUSTOM_EMOJI"
+    entity_type = str(getattr(entity, "type", ""))
+    return entity_type == "custom_emoji" or entity_type == "MessageEntityType.CUSTOM_EMOJI"
 
 
 def _looks_like_unicode_emoji(text: str) -> bool:
@@ -986,94 +995,96 @@ def _looks_like_unicode_emoji(text: str) -> bool:
     return has_emoji_codepoint
 
 
-def _normalize_icon(icon, fallback: str = "📦") -> dict:
-    """Accept old string icons and new custom emoji icons without changing old data."""
-    if isinstance(icon, dict):
-        icon_type = str(icon.get("type") or "unicode")
-        if icon_type == "custom_emoji" and icon.get("emoji_id"):
-            return {
-                "type": "custom_emoji",
-                "emoji_id": str(icon.get("emoji_id")),
-                "fallback": str(icon.get("fallback") or fallback or "📦"),
-            }
-        text_icon = str(icon.get("text") or icon.get("fallback") or fallback or "📦").strip()
-        return {"type": "unicode", "text": text_icon or fallback or "📦"}
-
-    text_icon = str(icon or fallback or "📦").strip()
-    return {"type": "unicode", "text": text_icon or fallback or "📦"}
-
-
-def product_icon_plain(product_or_icon, fallback: str = "📦") -> str:
-    """Text used inside Telegram buttons. Buttons do not accept MessageEntity objects."""
-    if isinstance(product_or_icon, dict) and ("icon" in product_or_icon):
-        icon = product_or_icon.get("icon", fallback)
-    else:
-        icon = product_or_icon
-    normalized = _normalize_icon(icon, fallback)
-    if normalized.get("type") == "custom_emoji":
-        return normalized.get("fallback") or fallback
-    return normalized.get("text") or fallback
-
-
-def product_icon_html(product_or_icon, fallback: str = "📦") -> str:
-    """HTML text used in normal bot messages, where Telegram custom emoji entities are supported."""
-    if isinstance(product_or_icon, dict) and ("icon" in product_or_icon):
-        icon = product_or_icon.get("icon", fallback)
-    else:
-        icon = product_or_icon
-    normalized = _normalize_icon(icon, fallback)
-    if normalized.get("type") == "custom_emoji":
-        emoji_id = escape_html(normalized.get("emoji_id", ""))
-        alt = escape_html(normalized.get("fallback") or fallback)
-        if emoji_id:
-            return f'<tg-emoji emoji-id="{emoji_id}">{alt}</tg-emoji>'
-        return alt
-    return escape_html(normalized.get("text") or fallback)
+def _entity_text_by_utf16(text: str, entity) -> str:
+    """Telegram MessageEntity offsets are UTF-16 based, not Python indexes."""
+    try:
+        offset = int(getattr(entity, "offset", 0) or 0)
+        length = int(getattr(entity, "length", 0) or 0)
+        raw = str(text or "").encode("utf-16-le")
+        part = raw[offset * 2:(offset + length) * 2]
+        return part.decode("utf-16-le").strip()
+    except Exception:
+        return ""
 
 
 def _extract_supported_icon_from_message(message):
     """
-    Return (icon_data, error).
+    Return (icon_text, custom_emoji_id, error).
 
-    Normal emoji is saved as text.
-    Telegram custom/animated/premium emoji is saved by custom_emoji_id, so it can render in normal HTML messages.
-    Telegram button labels cannot carry entity metadata; there we use the emoji fallback text.
+    Normal emoji => icon_text is the emoji, custom_emoji_id is None.
+    Telegram custom/animated emoji => icon_text is a safe fallback emoji, custom_emoji_id is saved.
     """
     text = str(getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
-    entities = list(getattr(message, "entities", None) or [])
+    entities = list(getattr(message, "entities", None) or getattr(message, "caption_entities", None) or [])
     custom_entities = [e for e in entities if _is_custom_emoji_entity(e)]
 
     if custom_entities:
         if len(custom_entities) != 1:
-            return None, "❌ <b>Please send only one emoji.</b>"
+            return None, None, "❌ <b>Please send only one emoji icon.</b>"
         entity = custom_entities[0]
-        emoji_id = getattr(entity, "custom_emoji_id", None)
-        if not emoji_id:
-            return None, "❌ <b>This animated/custom emoji is not supported.</b> Please send another emoji."
-
-        offset = int(getattr(entity, "offset", 0) or 0)
-        length = int(getattr(entity, "length", 0) or 0)
-        fallback = text[offset: offset + length].strip() if text else ""
-        fallback = fallback or "🔹"
-
-        # Reject if admin sends emoji plus extra words/symbols.
-        without_emoji = (text[:offset] + text[offset + length:]).strip() if text else ""
-        if without_emoji:
-            return None, "❌ <b>Please send only the emoji, without extra text.</b>"
-
-        return {
-            "type": "custom_emoji",
-            "emoji_id": str(emoji_id),
-            "fallback": fallback,
-        }, None
+        custom_id = str(getattr(entity, "custom_emoji_id", "") or "").strip()
+        if not custom_id:
+            return None, None, "❌ <b>Could not read this custom emoji ID.</b> Please send another emoji."
+        fallback = _entity_text_by_utf16(text, entity) or text or "🔹"
+        cleaned_without_entity = text.replace(fallback, "", 1).strip() if fallback else text.strip()
+        if cleaned_without_entity:
+            return None, None, "❌ <b>Please send only the emoji, without extra text.</b>"
+        if not _looks_like_unicode_emoji(fallback):
+            fallback = "🔹"
+        return fallback, custom_id, None
 
     if not text:
-        return None, "❌ <b>Icon cannot be empty.</b>"
-
+        return None, None, "❌ <b>Icon cannot be empty.</b> Please send an emoji."
     if not _looks_like_unicode_emoji(text):
-        return None, "❌ <b>This emoji is not supported.</b> Please send another emoji."
+        return None, None, "❌ <b>This emoji is not supported.</b> Please send another emoji."
+    return text, None, None
 
-    return {"type": "unicode", "text": text}, None
+
+def _product_custom_emoji_id(product_or_temp) -> str:
+    return str((product_or_temp or {}).get("icon_custom_emoji_id") or "").strip()
+
+
+def _icon_html(icon_text: str = "📦", custom_emoji_id: str = None) -> str:
+    icon_text = str(icon_text or "📦").strip() or "📦"
+    custom_emoji_id = str(custom_emoji_id or "").strip()
+    if custom_emoji_id:
+        return f'<tg-emoji emoji-id="{escape_html(custom_emoji_id)}">{escape_html(icon_text)}</tg-emoji>'
+    return escape_html(icon_text)
+
+
+def product_icon_html(product_or_temp) -> str:
+    return _icon_html((product_or_temp or {}).get("icon", "📦"), _product_custom_emoji_id(product_or_temp))
+
+
+def product_label_prefix(product_or_temp) -> str:
+    if _product_custom_emoji_id(product_or_temp):
+        return ""
+    return str((product_or_temp or {}).get("icon", "📦") or "📦")
+
+
+def product_label_text(product_or_temp, core_text: str) -> str:
+    prefix = product_label_prefix(product_or_temp)
+    return f"{prefix} {core_text}".strip() if prefix else str(core_text)
+
+
+def make_inline_button_with_optional_icon(text: str, callback_data: str, custom_emoji_id: str = None):
+    custom_emoji_id = str(custom_emoji_id or "").strip()
+    if custom_emoji_id:
+        return InlineKeyboardButton(
+            text=str(text),
+            callback_data=callback_data,
+            api_kwargs={"icon_custom_emoji_id": custom_emoji_id},
+        )
+    return InlineKeyboardButton(str(text), callback_data=callback_data)
+
+
+def make_product_inline_button(product_or_temp, core_text: str, callback_data: str):
+    label = product_label_text(product_or_temp, core_text)
+    try:
+        label = _short_button_text(label)
+    except Exception:
+        pass
+    return make_inline_button_with_optional_icon(label, callback_data, _product_custom_emoji_id(product_or_temp))
 
 
 # =========================
@@ -1420,9 +1431,10 @@ def admin_product_select_keyboard(action_prefix: str) -> InlineKeyboardMarkup:
     for product_id in product_order:
         product = PRODUCTS[product_id]
         rows.append([
-            InlineKeyboardButton(
-                f"{product_icon_plain(product)} {product['name']} ({product_id})",
-                callback_data=f"{action_prefix}_{product_id}",
+            make_product_inline_button(
+                product,
+                f"{product['name']} ({product_id})",
+                f"{action_prefix}_{product_id}",
             )
         ])
     rows.append([InlineKeyboardButton("⬅️ Back", callback_data="admin_products_back")])
@@ -1434,9 +1446,10 @@ def stock_product_select_keyboard(prefix: str) -> InlineKeyboardMarkup:
     for product_id in product_order:
         product = PRODUCTS[product_id]
         rows.append([
-            InlineKeyboardButton(
-                f"{product_icon_plain(product)} {product['name']} ({product_id})",
-                callback_data=f"{prefix}_{product_id}",
+            make_product_inline_button(
+                product,
+                f"{product['name']} ({product_id})",
+                f"{prefix}_{product_id}",
             )
         ])
     rows.append([InlineKeyboardButton("⬅️ Back", callback_data="stock_back")])
@@ -1878,7 +1891,7 @@ def render_admin_add_product_preview(user_id: int) -> str:
     details_text = "\n".join(temp.get("details", []))
     return (
         "🆕 <b>CONFIRM NEW PRODUCT</b>\n\n"
-        f"<b>Icon:</b> {product_icon_html(temp.get('icon', '📦'))}\n"
+        f"<b>Icon:</b> {product_icon_html(temp)}\n"
         f"<b>Name:</b> {temp.get('name', '')}\n"
         f"<b>Month:</b> {temp.get('month', '')}\n"
         f"<b>Price:</b> {format_money(float(temp.get('price', 0)))}\n"
@@ -1940,13 +1953,14 @@ def render_admin_edit_delivery_guide_preview(product_id: str, new_guide: str) ->
     )
 
 
-def render_admin_edit_icon_preview(product_id: str, new_icon: str) -> str:
+def render_admin_edit_icon_preview(product_id: str, new_icon: str, new_icon_custom_emoji_id: str = None) -> str:
     product = PRODUCTS[product_id]
+    temp_icon = {"icon": new_icon, "icon_custom_emoji_id": new_icon_custom_emoji_id}
     return (
         "😀 <b>CONFIRM ICON UPDATE</b>\n\n"
         f"<b>Product:</b> {product['name']}\n"
         f"<b>Old Icon:</b> {product_icon_html(product)}\n"
-        f"<b>New Icon:</b> {product_icon_html(new_icon)}\n\n"
+        f"<b>New Icon:</b> {product_icon_html(temp_icon)}\n\n"
         "Confirm update?"
     )
 
@@ -2593,13 +2607,12 @@ def shop_menu_keyboard() -> InlineKeyboardMarkup:
             continue
         product = PRODUCTS[product_id]
         stock = get_display_stock(product_id)
-        icon = product_icon_plain(product)
         month = format_duration_text(product.get("month", ""))
         month_part = f" {month}" if month else ""
         stock_text = f"📦 {stock} Pcs" if stock > 0 else "📦 0"
-        label = _short_button_text(f"{icon} {product['name']}{month_part} - {format_money(product['price'])} | {stock_text}")
+        core_label = f"{product['name']}{month_part} - {format_money(product['price'])} | {stock_text}"
         callback = f"shop_buy_{product_id}" if stock > 0 else f"shop_notify_{product_id}"
-        rows.append([InlineKeyboardButton(label, callback_data=callback)])
+        rows.append([make_product_inline_button(product, core_label, callback)])
         if stock <= 0:
             rows.append([InlineKeyboardButton("🔔 Notify Me", callback_data=f"shop_notify_{product_id}")])
     rows.append([InlineKeyboardButton("⬅️ Close", callback_data="close_inline")])
@@ -4062,11 +4075,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ========= PRODUCT ADD =========
     if step == "admin_add_product_icon":
-        icon, icon_error = _extract_supported_icon_from_message(update.message)
+        icon, icon_custom_emoji_id, icon_error = _extract_supported_icon_from_message(update.message)
         if icon_error:
             await update.message.reply_text(icon_error, parse_mode="HTML")
             return
         admin_temp[user_id]["icon"] = icon
+        admin_temp[user_id]["icon_custom_emoji_id"] = icon_custom_emoji_id
         user_state[user_id] = {"step": "admin_add_product_name"}
         await update.message.reply_text("🆕 <b>Add Product</b>\n\nNow send product name.", reply_markup=admin_menu(), parse_mode="HTML")
         await update.message.reply_text("Cancel if needed.", reply_markup=admin_cancel_keyboard(), parse_mode="HTML")
@@ -4203,14 +4217,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if step == "admin_edit_icon_input":
-        new_icon, icon_error = _extract_supported_icon_from_message(update.message)
+        new_icon, new_icon_custom_emoji_id, icon_error = _extract_supported_icon_from_message(update.message)
         if icon_error:
             await update.message.reply_text(icon_error, parse_mode="HTML")
             return
         admin_temp[user_id]["new_icon"] = new_icon
+        admin_temp[user_id]["new_icon_custom_emoji_id"] = new_icon_custom_emoji_id
         user_state[user_id] = {"step": "admin_edit_icon_confirm"}
         await update.message.reply_text(
-            render_admin_edit_icon_preview(admin_temp[user_id]["selected_product_id"], new_icon),
+            render_admin_edit_icon_preview(admin_temp[user_id]["selected_product_id"], new_icon, new_icon_custom_emoji_id),
             reply_markup=admin_confirm_keyboard("admin_confirm_icon_update", "✅ Confirm Icon"),
             parse_mode="HTML",
         )
@@ -4791,7 +4806,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         product_id = data.replace("admin_pick_icon_", "")
         admin_temp[user_id]["selected_product_id"] = product_id
         user_state[user_id] = {"step": "admin_edit_icon_input"}
-        await send_inline_from_callback(query, f"😀 <b>Edit Icon</b>\n\nCurrent: {PRODUCTS[product_id].get('icon', '📦')}\n\nNow send new icon.", admin_cancel_keyboard())
+        await send_inline_from_callback(query, f"😀 <b>Edit Icon</b>\n\nCurrent: {product_icon_html(PRODUCTS[product_id])}\n\nNow send new icon.", admin_cancel_keyboard())
         return
 
     if data.startswith("admin_pick_display_stock_"):
@@ -4836,6 +4851,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         PRODUCTS[product_id] = {
             "name": temp["name"],
             "icon": temp.get("icon", "📦"),
+            "icon_custom_emoji_id": temp.get("icon_custom_emoji_id"),
             "month": temp["month"],
             "price": float(temp["price"]),
             "details": list(temp["details"]),
@@ -4889,6 +4905,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "admin_confirm_icon_update":
         product_id = admin_temp[user_id]["selected_product_id"]
         PRODUCTS[product_id]["icon"] = admin_temp[user_id]["new_icon"]
+        PRODUCTS[product_id]["icon_custom_emoji_id"] = admin_temp[user_id].get("new_icon_custom_emoji_id")
         reset_admin_temp(user_id)
         await send_inline_from_callback(query, "✅ <b>Icon updated.</b>", admin_products_keyboard())
         return
