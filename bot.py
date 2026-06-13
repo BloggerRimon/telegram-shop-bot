@@ -951,7 +951,7 @@ def escape_html(text: str) -> str:
 
 
 # =========================
-# EMOJI VALIDATION HELPERS
+# EMOJI / ICON HELPERS
 # =========================
 def _is_custom_emoji_entity(entity) -> bool:
     return str(getattr(entity, "type", "")) == "custom_emoji" or str(getattr(entity, "type", "")) == "MessageEntityType.CUSTOM_EMOJI"
@@ -986,14 +986,86 @@ def _looks_like_unicode_emoji(text: str) -> bool:
     return has_emoji_codepoint
 
 
+def _normalize_icon(icon, fallback: str = "📦") -> dict:
+    """Accept old string icons and new custom emoji icons without changing old data."""
+    if isinstance(icon, dict):
+        icon_type = str(icon.get("type") or "unicode")
+        if icon_type == "custom_emoji" and icon.get("emoji_id"):
+            return {
+                "type": "custom_emoji",
+                "emoji_id": str(icon.get("emoji_id")),
+                "fallback": str(icon.get("fallback") or fallback or "📦"),
+            }
+        text_icon = str(icon.get("text") or icon.get("fallback") or fallback or "📦").strip()
+        return {"type": "unicode", "text": text_icon or fallback or "📦"}
+
+    text_icon = str(icon or fallback or "📦").strip()
+    return {"type": "unicode", "text": text_icon or fallback or "📦"}
+
+
+def product_icon_plain(product_or_icon, fallback: str = "📦") -> str:
+    """Text used inside Telegram buttons. Buttons do not accept MessageEntity objects."""
+    if isinstance(product_or_icon, dict) and ("icon" in product_or_icon):
+        icon = product_or_icon.get("icon", fallback)
+    else:
+        icon = product_or_icon
+    normalized = _normalize_icon(icon, fallback)
+    if normalized.get("type") == "custom_emoji":
+        return normalized.get("fallback") or fallback
+    return normalized.get("text") or fallback
+
+
+def product_icon_html(product_or_icon, fallback: str = "📦") -> str:
+    """HTML text used in normal bot messages, where Telegram custom emoji entities are supported."""
+    if isinstance(product_or_icon, dict) and ("icon" in product_or_icon):
+        icon = product_or_icon.get("icon", fallback)
+    else:
+        icon = product_or_icon
+    normalized = _normalize_icon(icon, fallback)
+    if normalized.get("type") == "custom_emoji":
+        emoji_id = escape_html(normalized.get("emoji_id", ""))
+        alt = escape_html(normalized.get("fallback") or fallback)
+        if emoji_id:
+            return f'<tg-emoji emoji-id="{emoji_id}">{alt}</tg-emoji>'
+        return alt
+    return escape_html(normalized.get("text") or fallback)
+
+
 def _extract_supported_icon_from_message(message):
-    """Return (icon, error). Keeps shop layout unchanged and prevents wrong fallback emoji from saving."""
+    """
+    Return (icon_data, error).
+
+    Normal emoji is saved as text.
+    Telegram custom/animated/premium emoji is saved by custom_emoji_id, so it can render in normal HTML messages.
+    Telegram button labels cannot carry entity metadata; there we use the emoji fallback text.
+    """
     text = str(getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
     entities = list(getattr(message, "entities", None) or [])
     custom_entities = [e for e in entities if _is_custom_emoji_entity(e)]
 
     if custom_entities:
-        return None, "❌ <b>This animated/custom emoji cannot be used in the shop button.</b> Please send another normal emoji."
+        if len(custom_entities) != 1:
+            return None, "❌ <b>Please send only one emoji.</b>"
+        entity = custom_entities[0]
+        emoji_id = getattr(entity, "custom_emoji_id", None)
+        if not emoji_id:
+            return None, "❌ <b>This animated/custom emoji is not supported.</b> Please send another emoji."
+
+        offset = int(getattr(entity, "offset", 0) or 0)
+        length = int(getattr(entity, "length", 0) or 0)
+        fallback = text[offset: offset + length].strip() if text else ""
+        fallback = fallback or "🔹"
+
+        # Reject if admin sends emoji plus extra words/symbols.
+        without_emoji = (text[:offset] + text[offset + length:]).strip() if text else ""
+        if without_emoji:
+            return None, "❌ <b>Please send only the emoji, without extra text.</b>"
+
+        return {
+            "type": "custom_emoji",
+            "emoji_id": str(emoji_id),
+            "fallback": fallback,
+        }, None
 
     if not text:
         return None, "❌ <b>Icon cannot be empty.</b>"
@@ -1001,7 +1073,7 @@ def _extract_supported_icon_from_message(message):
     if not _looks_like_unicode_emoji(text):
         return None, "❌ <b>This emoji is not supported.</b> Please send another emoji."
 
-    return text, None
+    return {"type": "unicode", "text": text}, None
 
 
 # =========================
@@ -1349,7 +1421,7 @@ def admin_product_select_keyboard(action_prefix: str) -> InlineKeyboardMarkup:
         product = PRODUCTS[product_id]
         rows.append([
             InlineKeyboardButton(
-                f"{product.get('icon', '📦')} {product['name']} ({product_id})",
+                f"{product_icon_plain(product)} {product['name']} ({product_id})",
                 callback_data=f"{action_prefix}_{product_id}",
             )
         ])
@@ -1363,7 +1435,7 @@ def stock_product_select_keyboard(prefix: str) -> InlineKeyboardMarkup:
         product = PRODUCTS[product_id]
         rows.append([
             InlineKeyboardButton(
-                f"{product.get('icon', '📦')} {product['name']} ({product_id})",
+                f"{product_icon_plain(product)} {product['name']} ({product_id})",
                 callback_data=f"{prefix}_{product_id}",
             )
         ])
@@ -1663,7 +1735,7 @@ def render_product_card(product_id: str) -> str:
     product = PRODUCTS[product_id]
     stock = get_display_stock(product_id)
     stock_text = f"{stock} pcs" if stock > 0 else "Stock Out"
-    icon = product.get("icon", "📦")
+    icon = product_icon_html(product)
     duration = format_duration_text(product.get("month", ""))
     duration_line = f"<b>Duration:</b> {duration}\n" if duration else ""
     return (
@@ -1678,7 +1750,7 @@ def render_product_details(product_id: str) -> str:
     product = PRODUCTS[product_id]
     detail_lines = "\n".join(product["details"])
     stock = get_display_stock(product_id)
-    icon = product.get("icon", "📦")
+    icon = product_icon_html(product)
     duration = format_duration_text(product.get("month", ""))
     duration_line = f"<b>Duration:</b> {duration}\n" if duration else ""
     return (
@@ -1792,7 +1864,7 @@ def render_admin_products_list() -> str:
     for idx, product_id in enumerate(product_order, start=1):
         product = PRODUCTS[product_id]
         lines.append(
-            f"\n<b>{idx}.</b> {product.get('icon', '📦')} <b>{product['name']}</b> ({product_id})\n"
+            f"\n<b>{idx}.</b> {product_icon_html(product)} <b>{product['name']}</b> ({product_id})\n"
             f"Month: {product['month']}\n"
             f"Price: {format_money(product['price'])}\n"
             f"Display Stock: {get_display_stock(product_id)} pcs\n"
@@ -1806,7 +1878,7 @@ def render_admin_add_product_preview(user_id: int) -> str:
     details_text = "\n".join(temp.get("details", []))
     return (
         "🆕 <b>CONFIRM NEW PRODUCT</b>\n\n"
-        f"<b>Icon:</b> {temp.get('icon', '📦')}\n"
+        f"<b>Icon:</b> {product_icon_html(temp.get('icon', '📦'))}\n"
         f"<b>Name:</b> {temp.get('name', '')}\n"
         f"<b>Month:</b> {temp.get('month', '')}\n"
         f"<b>Price:</b> {format_money(float(temp.get('price', 0)))}\n"
@@ -1873,8 +1945,8 @@ def render_admin_edit_icon_preview(product_id: str, new_icon: str) -> str:
     return (
         "😀 <b>CONFIRM ICON UPDATE</b>\n\n"
         f"<b>Product:</b> {product['name']}\n"
-        f"<b>Old Icon:</b> {product.get('icon', '📦')}\n"
-        f"<b>New Icon:</b> {new_icon}\n\n"
+        f"<b>Old Icon:</b> {product_icon_html(product)}\n"
+        f"<b>New Icon:</b> {product_icon_html(new_icon)}\n\n"
         "Confirm update?"
     )
 
@@ -1894,7 +1966,7 @@ def render_admin_delete_preview(product_id: str) -> str:
     product = PRODUCTS[product_id]
     return (
         "🗑 <b>DELETE PRODUCT</b>\n\n"
-        f"<b>Product:</b> {product.get('icon', '📦')} {product['name']}\n"
+        f"<b>Product:</b> {product_icon_html(product)} {product['name']}\n"
         f"<b>ID:</b> {product_id}\n"
         f"<b>Display Stock:</b> {get_display_stock(product_id)} pcs\n"
         f"<b>Real Stock:</b> {get_product_stock(product_id)} pcs\n\n"
@@ -1908,7 +1980,7 @@ def render_admin_stock_list() -> str:
     for idx, product_id in enumerate(product_order, start=1):
         product = PRODUCTS[product_id]
         lines.append(
-            f"\n<b>{idx}.</b> {product.get('icon', '📦')} <b>{product['name']}</b> ({product_id})\n"
+            f"\n<b>{idx}.</b> {product_icon_html(product)} <b>{product['name']}</b> ({product_id})\n"
             f"Display Stock: {get_display_stock(product_id)} pcs\n"
             f"Real Stock: {get_product_stock(product_id)} pcs"
         )
@@ -2521,7 +2593,7 @@ def shop_menu_keyboard() -> InlineKeyboardMarkup:
             continue
         product = PRODUCTS[product_id]
         stock = get_display_stock(product_id)
-        icon = product.get("icon", "📦")
+        icon = product_icon_plain(product)
         month = format_duration_text(product.get("month", ""))
         month_part = f" {month}" if month else ""
         stock_text = f"📦 {stock} Pcs" if stock > 0 else "📦 0"
