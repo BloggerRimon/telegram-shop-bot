@@ -230,6 +230,10 @@ def upsert_order(order: dict):
 def upsert_user_profile(profile: dict):
     """Store Telegram profile details for admin User Details page."""
     init_db()
+    # bot.py passes profiles through _json_safe(), which converts datetime values
+    # into {"__datetime__": "..."}. Restore them before writing TIMESTAMPTZ columns.
+    # This fixes: cannot adapt type 'dict' using placeholder '%s'
+    profile = _restore_datetime(profile or {})
     user_id = int(profile.get("user_id"))
     with get_conn() as conn:
         with conn.cursor() as cur:
