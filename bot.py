@@ -465,11 +465,6 @@ def _restore_datetime(value):
 
 def build_state_snapshot():
     """Collect all important bot data in one snapshot for persistent storage."""
-    # Clean old/bad emoji icon data before saving.
-    # This does NOT delete products/orders/users; it only converts icon dicts into safe fields.
-    if "normalize_all_product_icons" in globals():
-        normalize_all_product_icons()
-
     state = {
         "user_wallet": user_wallet,
         "user_orders": user_orders,
@@ -520,12 +515,6 @@ def apply_loaded_state(data: dict):
     for pid in PRODUCTS:
         if pid not in product_order:
             product_order.append(pid)
-
-    # Migrate any old/bad saved custom emoji data.
-    # Some previous code may have saved the whole Telegram entity dict inside product["icon"],
-    # which makes buttons show {'type': 'custom_emoji', ...}. This converts it safely.
-    if "normalize_all_product_icons" in globals():
-        normalize_all_product_icons()
 
     loaded_promos = data.get("PROMO_CODES")
     if loaded_promos:
@@ -865,20 +854,75 @@ def enter_admin_mode(user_id: int):
 
 
 def parse_account_line(line: str):
-    # Stock line can contain unlimited fields separated by |
-    # Example: email | pass | note | recovery | otp data | extra info
-    # We keep first fields for old admin views, but delivery uses raw_fields exactly.
-    parts = [x.strip() for x in str(line or "").split("|")]
-    parts = [x for x in parts if x != ""]
-    if len(parts) < 2:
-        return None
-    email = parts[0]
-    password = parts[1]
-    note = " | ".join(parts[2:]) if len(parts) >= 3 else ""
-    if not email or not password:
-        return None
-    return {"email": email, "password": password, "note": note, "raw_fields": parts, "raw_line": " | ".join(parts)}
+    """Accept any non-empty stock item.
 
+    Supported examples:
+    - email@gmail.com|password|note
+    - https://example.com/activation-link
+    - LICENSE-KEY-12345
+    - any account/code/text line
+
+    Old email|password|note format is kept fully compatible.
+    Raw/link items are stored with raw_line so delivery sends them exactly.
+    """
+    raw_line = str(line or "").strip()
+    if not raw_line:
+        return None
+
+    # Keep old pipe format compatible. It can contain unlimited extra fields.
+    parts = [x.strip() for x in raw_line.split("|")]
+    parts = [x for x in parts if x != ""]
+    if len(parts) >= 2:
+        email = parts[0]
+        password = parts[1]
+        note = " | ".join(parts[2:]) if len(parts) >= 3 else ""
+        if email and password:
+            return {
+                "type": "account",
+                "email": email,
+                "password": password,
+                "note": note,
+                "raw_fields": parts,
+                "raw_line": " | ".join(parts),
+            }
+
+    # New flexible stock format: one line = one stock item.
+    # This supports URLs, invite links, license keys, recovery codes, notes, etc.
+    return {
+        "type": "raw",
+        "email": raw_line,      # fallback for old admin list/buttons
+        "password": "",
+        "note": "",
+        "raw_fields": [raw_line],
+        "raw_line": raw_line,
+    }
+
+
+def get_account_raw_line(acc: dict) -> str:
+    """Return the exact line to show/deliver for any stock format."""
+    if not isinstance(acc, dict):
+        return str(acc or "").strip()
+    raw_line = str(acc.get("raw_line", "") or "").strip()
+    if raw_line:
+        return raw_line
+    raw_fields = acc.get("raw_fields")
+    if isinstance(raw_fields, list) and raw_fields:
+        return " | ".join(str(x).strip() for x in raw_fields if str(x).strip())
+    fields = [
+        str(acc.get("email", "") or "").strip(),
+        str(acc.get("password", "") or "").strip(),
+        str(acc.get("note", "") or "").strip(),
+    ]
+    return " | ".join(x for x in fields if x)
+
+
+def get_account_button_label(acc: dict, max_len: int = 40) -> str:
+    """Short safe label for account list buttons."""
+    label = get_account_raw_line(acc)
+    label = label.replace("\n", " ").strip()
+    if len(label) > max_len:
+        return label[: max_len - 1] + "…"
+    return label or "Stock item"
 
 def get_next_order_id():
     global global_order_id
@@ -962,22 +1006,10 @@ def escape_html(text: str) -> str:
 
 
 # =========================
-# EMOJI / CUSTOM EMOJI HELPERS
+# EMOJI VALIDATION HELPERS
 # =========================
-# Telegram has two different emoji systems:
-# 1) Normal Unicode emoji: stored directly in product["icon"].
-# 2) Telegram custom/animated emoji: stored in product["icon_custom_emoji_id"].
-#
-# IMPORTANT:
-# A previous emoji build could save the whole Telegram entity dict into product["icon"].
-# Then buttons show text like {'type': 'custom_emoji', 'emoji_id': ...}.
-# The helpers below clean that automatically and keep only:
-#   product["icon"] = fallback emoji text
-#   product["icon_custom_emoji_id"] = Telegram custom emoji ID
-
 def _is_custom_emoji_entity(entity) -> bool:
-    entity_type = str(getattr(entity, "type", ""))
-    return entity_type == "custom_emoji" or entity_type == "MessageEntityType.CUSTOM_EMOJI"
+    return str(getattr(entity, "type", "")) == "custom_emoji" or str(getattr(entity, "type", "")) == "MessageEntityType.CUSTOM_EMOJI"
 
 
 def _looks_like_unicode_emoji(text: str) -> bool:
@@ -1009,161 +1041,23 @@ def _looks_like_unicode_emoji(text: str) -> bool:
     return has_emoji_codepoint
 
 
-def _entity_text_by_utf16(text: str, entity) -> str:
-    """Telegram MessageEntity offsets are UTF-16 based, not Python indexes."""
-    try:
-        offset = int(getattr(entity, "offset", 0) or 0)
-        length = int(getattr(entity, "length", 0) or 0)
-        raw = str(text or "").encode("utf-16-le")
-        part = raw[offset * 2:(offset + length) * 2]
-        return part.decode("utf-16-le").strip()
-    except Exception:
-        return ""
-
-
-def _clean_icon_text(value, fallback: str = "🔹") -> str:
-    """Return a safe short emoji text. Never returns a dict string for button labels."""
-    if isinstance(value, dict):
-        for key in ("emoji", "text", "fallback", "icon"):
-            candidate = value.get(key)
-            if candidate and not isinstance(candidate, (dict, list, tuple, set)):
-                candidate = str(candidate).strip()
-                if _looks_like_unicode_emoji(candidate):
-                    return candidate
-        return fallback
-
-    text = str(value or "").strip()
-    if not text or text.startswith("{") or text.startswith("["):
-        return fallback
-    if _looks_like_unicode_emoji(text):
-        return text
-    # Keep old simple icons if they exist, but avoid huge/bad text.
-    if len(text) <= 4 and not any(ch.isspace() for ch in text):
-        return text
-    return fallback
-
-
-def _extract_custom_emoji_id_from_icon_value(value) -> str:
-    """Read a custom emoji ID from old/new saved icon structures."""
-    if isinstance(value, dict):
-        for key in ("icon_custom_emoji_id", "custom_emoji_id", "emoji_id", "emoji-id", "id"):
-            candidate = str(value.get(key) or "").strip()
-            if candidate:
-                return candidate
-    return ""
-
-
-def _product_custom_emoji_id(product_or_temp) -> str:
-    product_or_temp = product_or_temp or {}
-    custom_id = str(product_or_temp.get("icon_custom_emoji_id") or "").strip()
-    if custom_id:
-        return custom_id
-    return _extract_custom_emoji_id_from_icon_value(product_or_temp.get("icon"))
-
-
-def _normal_icon_text(product_or_temp, fallback: str = "📦") -> str:
-    product_or_temp = product_or_temp or {}
-    icon_value = product_or_temp.get("icon", fallback)
-    return _clean_icon_text(icon_value, fallback=("🔹" if _product_custom_emoji_id(product_or_temp) else fallback))
-
-
-def _normalize_product_icon_fields(product: dict):
-    """Migrate icon dict/string problems into clean fields. Does not touch any product data except icon fields."""
-    if not isinstance(product, dict):
-        return product
-    custom_id = _product_custom_emoji_id(product)
-    icon_text = _normal_icon_text(product, fallback="📦")
-    product["icon"] = icon_text
-    if custom_id:
-        product["icon_custom_emoji_id"] = custom_id
-    else:
-        product.pop("icon_custom_emoji_id", None)
-    return product
-
-
-def normalize_all_product_icons():
-    try:
-        for product in PRODUCTS.values():
-            _normalize_product_icon_fields(product)
-    except Exception as e:
-        print("⚠️ Failed to normalize product icons:", e)
-
-
 def _extract_supported_icon_from_message(message):
-    """
-    Return (icon_text, custom_emoji_id, error).
-
-    Normal emoji => icon_text is the emoji, custom_emoji_id is None.
-    Telegram custom/animated emoji => icon_text is a safe fallback emoji, custom_emoji_id is saved.
-    """
+    """Return (icon, error). Keeps shop layout unchanged and prevents wrong fallback emoji from saving."""
     text = str(getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
-    entities = list(getattr(message, "entities", None) or getattr(message, "caption_entities", None) or [])
+    entities = list(getattr(message, "entities", None) or [])
     custom_entities = [e for e in entities if _is_custom_emoji_entity(e)]
 
     if custom_entities:
-        if len(custom_entities) != 1:
-            return None, None, "❌ <b>Please send only one emoji icon.</b>"
-        entity = custom_entities[0]
-        custom_id = str(getattr(entity, "custom_emoji_id", "") or "").strip()
-        if not custom_id:
-            return None, None, "❌ <b>Could not read this custom emoji ID.</b> Please send another emoji."
-        fallback = _entity_text_by_utf16(text, entity) or text or "🔹"
-        cleaned_without_entity = text.replace(fallback, "", 1).strip() if fallback else text.strip()
-        if cleaned_without_entity:
-            return None, None, "❌ <b>Please send only the emoji, without extra text.</b>"
-        fallback = _clean_icon_text(fallback, fallback="🔹")
-        return fallback, custom_id, None
+        return None, "❌ <b>This animated/custom emoji cannot be used in the shop button.</b> Please send another normal emoji."
 
     if not text:
-        return None, None, "❌ <b>Icon cannot be empty.</b> Please send an emoji."
+        return None, "❌ <b>Icon cannot be empty.</b>"
+
     if not _looks_like_unicode_emoji(text):
-        return None, None, "❌ <b>This emoji is not supported.</b> Please send another emoji."
-    return text, None, None
+        return None, "❌ <b>This emoji is not supported.</b> Please send another emoji."
 
+    return text, None
 
-def _icon_html(icon_text: str = "📦", custom_emoji_id: str = None) -> str:
-    icon_text = _clean_icon_text(icon_text, fallback="🔹")
-    custom_emoji_id = str(custom_emoji_id or "").strip()
-    if custom_emoji_id:
-        return f'<tg-emoji emoji-id="{escape_html(custom_emoji_id)}">{escape_html(icon_text)}</tg-emoji>'
-    return escape_html(icon_text)
-
-
-def product_icon_html(product_or_temp) -> str:
-    return _icon_html(_normal_icon_text(product_or_temp), _product_custom_emoji_id(product_or_temp))
-
-
-def product_label_prefix(product_or_temp) -> str:
-    # If custom emoji ID exists, do NOT put product["icon"] in the text.
-    # The icon should be sent via icon_custom_emoji_id, otherwise Telegram may show fallback text/dict.
-    if _product_custom_emoji_id(product_or_temp):
-        return ""
-    return _normal_icon_text(product_or_temp, fallback="📦")
-
-
-def product_label_text(product_or_temp, core_text: str) -> str:
-    prefix = product_label_prefix(product_or_temp)
-    return f"{prefix} {core_text}".strip() if prefix else str(core_text)
-
-
-def make_inline_button_with_optional_icon(text: str, callback_data: str, custom_emoji_id: str = None):
-    custom_emoji_id = str(custom_emoji_id or "").strip()
-    if custom_emoji_id:
-        return InlineKeyboardButton(
-            text=str(text),
-            callback_data=callback_data,
-            api_kwargs={"icon_custom_emoji_id": custom_emoji_id},
-        )
-    return InlineKeyboardButton(str(text), callback_data=callback_data)
-
-
-def make_product_inline_button(product_or_temp, core_text: str, callback_data: str):
-    label = product_label_text(product_or_temp, core_text)
-    try:
-        label = _short_button_text(label)
-    except Exception:
-        pass
-    return make_inline_button_with_optional_icon(label, callback_data, _product_custom_emoji_id(product_or_temp))
 
 # =========================
 # ADVANCED USER / PROMO HELPERS
@@ -1509,10 +1403,9 @@ def admin_product_select_keyboard(action_prefix: str) -> InlineKeyboardMarkup:
     for product_id in product_order:
         product = PRODUCTS[product_id]
         rows.append([
-            make_product_inline_button(
-                product,
-                f"{product['name']} ({product_id})",
-                f"{action_prefix}_{product_id}",
+            InlineKeyboardButton(
+                f"{product.get('icon', '📦')} {product['name']} ({product_id})",
+                callback_data=f"{action_prefix}_{product_id}",
             )
         ])
     rows.append([InlineKeyboardButton("⬅️ Back", callback_data="admin_products_back")])
@@ -1524,10 +1417,9 @@ def stock_product_select_keyboard(prefix: str) -> InlineKeyboardMarkup:
     for product_id in product_order:
         product = PRODUCTS[product_id]
         rows.append([
-            make_product_inline_button(
-                product,
-                f"{product['name']} ({product_id})",
-                f"{prefix}_{product_id}",
+            InlineKeyboardButton(
+                f"{product.get('icon', '📦')} {product['name']} ({product_id})",
+                callback_data=f"{prefix}_{product_id}",
             )
         ])
     rows.append([InlineKeyboardButton("⬅️ Back", callback_data="stock_back")])
@@ -1634,7 +1526,7 @@ def account_serial_keyboard(product_id: str, prefix: str, page: int = 0, page_si
     end = min(start + page_size, len(accounts))
 
     for idx in range(start, end):
-        label = f"#{idx + 1} {accounts[idx]['email']}"
+        label = f"#{idx + 1} {get_account_button_label(accounts[idx])}"
         rows.append([InlineKeyboardButton(label, callback_data=f"{prefix}_{product_id}_{idx}")])
 
     nav_row = []
@@ -1826,7 +1718,7 @@ def render_product_card(product_id: str) -> str:
     product = PRODUCTS[product_id]
     stock = get_display_stock(product_id)
     stock_text = f"{stock} pcs" if stock > 0 else "Stock Out"
-    icon = product_icon_html(product)
+    icon = product.get("icon", "📦")
     duration = format_duration_text(product.get("month", ""))
     duration_line = f"<b>Duration:</b> {duration}\n" if duration else ""
     return (
@@ -1841,7 +1733,7 @@ def render_product_details(product_id: str) -> str:
     product = PRODUCTS[product_id]
     detail_lines = "\n".join(product["details"])
     stock = get_display_stock(product_id)
-    icon = product_icon_html(product)
+    icon = product.get("icon", "📦")
     duration = format_duration_text(product.get("month", ""))
     duration_line = f"<b>Duration:</b> {duration}\n" if duration else ""
     return (
@@ -1955,7 +1847,7 @@ def render_admin_products_list() -> str:
     for idx, product_id in enumerate(product_order, start=1):
         product = PRODUCTS[product_id]
         lines.append(
-            f"\n<b>{idx}.</b> {product_icon_html(product)} <b>{product['name']}</b> ({product_id})\n"
+            f"\n<b>{idx}.</b> {product.get('icon', '📦')} <b>{product['name']}</b> ({product_id})\n"
             f"Month: {product['month']}\n"
             f"Price: {format_money(product['price'])}\n"
             f"Display Stock: {get_display_stock(product_id)} pcs\n"
@@ -1969,7 +1861,7 @@ def render_admin_add_product_preview(user_id: int) -> str:
     details_text = "\n".join(temp.get("details", []))
     return (
         "🆕 <b>CONFIRM NEW PRODUCT</b>\n\n"
-        f"<b>Icon:</b> {product_icon_html(temp)}\n"
+        f"<b>Icon:</b> {temp.get('icon', '📦')}\n"
         f"<b>Name:</b> {temp.get('name', '')}\n"
         f"<b>Month:</b> {temp.get('month', '')}\n"
         f"<b>Price:</b> {format_money(float(temp.get('price', 0)))}\n"
@@ -2031,14 +1923,13 @@ def render_admin_edit_delivery_guide_preview(product_id: str, new_guide: str) ->
     )
 
 
-def render_admin_edit_icon_preview(product_id: str, new_icon: str, new_icon_custom_emoji_id: str = None) -> str:
+def render_admin_edit_icon_preview(product_id: str, new_icon: str) -> str:
     product = PRODUCTS[product_id]
-    temp_icon = {"icon": new_icon, "icon_custom_emoji_id": new_icon_custom_emoji_id}
     return (
         "😀 <b>CONFIRM ICON UPDATE</b>\n\n"
         f"<b>Product:</b> {product['name']}\n"
-        f"<b>Old Icon:</b> {product_icon_html(product)}\n"
-        f"<b>New Icon:</b> {product_icon_html(temp_icon)}\n\n"
+        f"<b>Old Icon:</b> {product.get('icon', '📦')}\n"
+        f"<b>New Icon:</b> {new_icon}\n\n"
         "Confirm update?"
     )
 
@@ -2058,7 +1949,7 @@ def render_admin_delete_preview(product_id: str) -> str:
     product = PRODUCTS[product_id]
     return (
         "🗑 <b>DELETE PRODUCT</b>\n\n"
-        f"<b>Product:</b> {product_icon_html(product)} {product['name']}\n"
+        f"<b>Product:</b> {product.get('icon', '📦')} {product['name']}\n"
         f"<b>ID:</b> {product_id}\n"
         f"<b>Display Stock:</b> {get_display_stock(product_id)} pcs\n"
         f"<b>Real Stock:</b> {get_product_stock(product_id)} pcs\n\n"
@@ -2072,7 +1963,7 @@ def render_admin_stock_list() -> str:
     for idx, product_id in enumerate(product_order, start=1):
         product = PRODUCTS[product_id]
         lines.append(
-            f"\n<b>{idx}.</b> {product_icon_html(product)} <b>{product['name']}</b> ({product_id})\n"
+            f"\n<b>{idx}.</b> {product.get('icon', '📦')} <b>{product['name']}</b> ({product_id})\n"
             f"Display Stock: {get_display_stock(product_id)} pcs\n"
             f"Real Stock: {get_product_stock(product_id)} pcs"
         )
@@ -2095,27 +1986,40 @@ def render_account_list_text(product_id: str, page: int = 0, page_size: int = 15
     ]
     for i in range(start, end):
         acc = accounts[i]
-        lines.append(
-            f"\n<b>#{i + 1}</b>\n"
-            f"Email: <code>{escape_html(acc['email'])}</code>\n"
-            f"Password: <code>{escape_html(acc['password'])}</code>\n"
-            f"Note: {escape_html(acc.get('note', ''))}"
-        )
+        raw_line = get_account_raw_line(acc)
+        if acc.get("type") == "raw" or not str(acc.get("password", "") or "").strip():
+            lines.append(
+                f"\n<b>#{i + 1}</b>\n"
+                f"Item: <code>{escape_html(raw_line)}</code>"
+            )
+        else:
+            lines.append(
+                f"\n<b>#{i + 1}</b>\n"
+                f"Email: <code>{escape_html(acc.get('email', ''))}</code>\n"
+                f"Password: <code>{escape_html(acc.get('password', ''))}</code>\n"
+                f"Note: {escape_html(acc.get('note', ''))}"
+            )
     return "\n".join(lines)
-
 
 def render_selected_account(product_id: str, index: int) -> str:
     product = PRODUCTS[product_id]
     acc = product["accounts"][index]
+    raw_line = get_account_raw_line(acc)
+    if acc.get("type") == "raw" or not str(acc.get("password", "") or "").strip():
+        return (
+            f"🔐 <b>STOCK ITEM DETAILS</b>\n\n"
+            f"<b>Product:</b> {product['name']}\n"
+            f"<b>Serial:</b> #{index + 1}\n\n"
+            f"<b>Item:</b> <code>{escape_html(raw_line)}</code>"
+        )
     return (
         f"🔐 <b>ACCOUNT DETAILS</b>\n\n"
         f"<b>Product:</b> {product['name']}\n"
         f"<b>Serial:</b> #{index + 1}\n\n"
-        f"<b>Email:</b> <code>{escape_html(acc['email'])}</code>\n"
-        f"<b>Password:</b> <code>{escape_html(acc['password'])}</code>\n"
+        f"<b>Email:</b> <code>{escape_html(acc.get('email', ''))}</code>\n"
+        f"<b>Password:</b> <code>{escape_html(acc.get('password', ''))}</code>\n"
         f"<b>Note:</b> {escape_html(acc.get('note', ''))}"
     )
-
 
 def render_promo_list() -> str:
     if not PROMO_CODES:
@@ -2685,12 +2589,13 @@ def shop_menu_keyboard() -> InlineKeyboardMarkup:
             continue
         product = PRODUCTS[product_id]
         stock = get_display_stock(product_id)
+        icon = product.get("icon", "📦")
         month = format_duration_text(product.get("month", ""))
         month_part = f" {month}" if month else ""
         stock_text = f"📦 {stock} Pcs" if stock > 0 else "📦 0"
-        core_label = f"{product['name']}{month_part} - {format_money(product['price'])} | {stock_text}"
+        label = _short_button_text(f"{icon} {product['name']}{month_part} - {format_money(product['price'])} | {stock_text}")
         callback = f"shop_buy_{product_id}" if stock > 0 else f"shop_notify_{product_id}"
-        rows.append([make_product_inline_button(product, core_label, callback)])
+        rows.append([InlineKeyboardButton(label, callback_data=callback)])
         if stock <= 0:
             rows.append([InlineKeyboardButton("🔔 Notify Me", callback_data=f"shop_notify_{product_id}")])
     rows.append([InlineKeyboardButton("⬅️ Close", callback_data="close_inline")])
@@ -2747,20 +2652,7 @@ async def deliver_accounts_to_user(bot, user_id: int, product_id: str, qty: int)
         "",
     ]
     for acc in delivered:
-        raw_fields = acc.get("raw_fields")
-        if isinstance(raw_fields, list) and raw_fields:
-            account_line = " | ".join(str(x).strip() for x in raw_fields if str(x).strip())
-        else:
-            raw_line = str(acc.get("raw_line", "") or "").strip()
-            if raw_line:
-                account_line = raw_line
-            else:
-                fields = [
-                    str(acc.get("email", "") or "").strip(),
-                    str(acc.get("password", "") or "").strip(),
-                    str(acc.get("note", "") or "").strip(),
-                ]
-                account_line = " | ".join(x for x in fields if x)
+        account_line = get_account_raw_line(acc)
         lines.append(f"<code>{escape_html(account_line)}</code>")
 
     guide = get_delivery_guide(product_id)
@@ -4153,12 +4045,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ========= PRODUCT ADD =========
     if step == "admin_add_product_icon":
-        icon, icon_custom_emoji_id, icon_error = _extract_supported_icon_from_message(update.message)
+        icon, icon_error = _extract_supported_icon_from_message(update.message)
         if icon_error:
             await update.message.reply_text(icon_error, parse_mode="HTML")
             return
         admin_temp[user_id]["icon"] = icon
-        admin_temp[user_id]["icon_custom_emoji_id"] = icon_custom_emoji_id
         user_state[user_id] = {"step": "admin_add_product_name"}
         await update.message.reply_text("🆕 <b>Add Product</b>\n\nNow send product name.", reply_markup=admin_menu(), parse_mode="HTML")
         await update.message.reply_text("Cancel if needed.", reply_markup=admin_cancel_keyboard(), parse_mode="HTML")
@@ -4295,15 +4186,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if step == "admin_edit_icon_input":
-        new_icon, new_icon_custom_emoji_id, icon_error = _extract_supported_icon_from_message(update.message)
+        new_icon, icon_error = _extract_supported_icon_from_message(update.message)
         if icon_error:
             await update.message.reply_text(icon_error, parse_mode="HTML")
             return
         admin_temp[user_id]["new_icon"] = new_icon
-        admin_temp[user_id]["new_icon_custom_emoji_id"] = new_icon_custom_emoji_id
         user_state[user_id] = {"step": "admin_edit_icon_confirm"}
         await update.message.reply_text(
-            render_admin_edit_icon_preview(admin_temp[user_id]["selected_product_id"], new_icon, new_icon_custom_emoji_id),
+            render_admin_edit_icon_preview(admin_temp[user_id]["selected_product_id"], new_icon),
             reply_markup=admin_confirm_keyboard("admin_confirm_icon_update", "✅ Confirm Icon"),
             parse_mode="HTML",
         )
@@ -4336,7 +4226,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         account = parse_account_line(text)
         if not account:
-            await update.message.reply_text("❌ <b>Invalid format.</b>\n\nUse:\n<code>email@gmail.com|password123|Private Account</code>", parse_mode="HTML")
+            await update.message.reply_text("❌ <b>Invalid stock item.</b>\n\nSend any account/link/code/text, or old format:\n<code>email@gmail.com|password123|Private Account</code>", parse_mode="HTML")
             return
         PRODUCTS[product_id]["accounts"].append(account)
         PRODUCTS[product_id]["display_stock"] = max(get_display_stock(product_id), get_product_stock(product_id))
@@ -4365,7 +4255,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 PRODUCTS[product_id]["accounts"].append(account)
                 added += 1
         if added == 0:
-            await update.message.reply_text("❌ <b>No valid account line found.</b>\n\nUse:\n<code>email@gmail.com|password123|Private Account</code>", parse_mode="HTML")
+            await update.message.reply_text("❌ <b>No valid stock item found.</b>\n\nSend one item per line, or upload a .txt file.", parse_mode="HTML")
             return
         PRODUCTS[product_id]["display_stock"] = max(get_display_stock(product_id), get_product_stock(product_id))
         user_state[user_id] = {"step": "admin_stock"}
@@ -4388,7 +4278,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         account = parse_account_line(text)
         if not account:
-            await update.message.reply_text("❌ <b>Invalid format.</b>\n\nUse:\n<code>email@gmail.com|password123|Private Account</code>", parse_mode="HTML")
+            await update.message.reply_text("❌ <b>Invalid stock item.</b>\n\nSend any account/link/code/text, or old format:\n<code>email@gmail.com|password123|Private Account</code>", parse_mode="HTML")
             return
         PRODUCTS[product_id]["accounts"][account_index] = account
         user_state[user_id] = {"step": "admin_stock"}
@@ -4884,7 +4774,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         product_id = data.replace("admin_pick_icon_", "")
         admin_temp[user_id]["selected_product_id"] = product_id
         user_state[user_id] = {"step": "admin_edit_icon_input"}
-        await send_inline_from_callback(query, f"😀 <b>Edit Icon</b>\n\nCurrent: {product_icon_html(PRODUCTS[product_id])}\n\nNow send new icon.", admin_cancel_keyboard())
+        await send_inline_from_callback(query, f"😀 <b>Edit Icon</b>\n\nCurrent: {PRODUCTS[product_id].get('icon', '📦')}\n\nNow send new icon.", admin_cancel_keyboard())
         return
 
     if data.startswith("admin_pick_display_stock_"):
@@ -4929,14 +4819,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         PRODUCTS[product_id] = {
             "name": temp["name"],
             "icon": temp.get("icon", "📦"),
-            "icon_custom_emoji_id": temp.get("icon_custom_emoji_id"),
             "month": temp["month"],
             "price": float(temp["price"]),
             "details": list(temp["details"]),
             "accounts": [],
             "display_stock": int(temp.get("display_stock", 0)),
         }
-        _normalize_product_icon_fields(PRODUCTS[product_id])
         notify_waitlist[product_id] = set()
         product_order.append(product_id)
         reset_admin_temp(user_id)
@@ -4984,9 +4872,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "admin_confirm_icon_update":
         product_id = admin_temp[user_id]["selected_product_id"]
         PRODUCTS[product_id]["icon"] = admin_temp[user_id]["new_icon"]
-        PRODUCTS[product_id]["icon_custom_emoji_id"] = admin_temp[user_id].get("new_icon_custom_emoji_id")
-        _normalize_product_icon_fields(PRODUCTS[product_id])
-        save_bot_state()
         reset_admin_temp(user_id)
         await send_inline_from_callback(query, "✅ <b>Icon updated.</b>", admin_products_keyboard())
         return
@@ -5056,14 +4941,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         product_id = data.replace("stock_pick_single_", "")
         admin_temp[user_id]["selected_product_id"] = product_id
         user_state[user_id] = {"step": "stock_add_single_input"}
-        await send_inline_from_callback(query, "Send account in this format:\n<code>email@gmail.com|password|note</code>", admin_cancel_keyboard())
+        await send_inline_from_callback(query, "➕ <b>Add Single Stock Item</b>\n\nSend any one item:\n<code>email@gmail.com|password|note</code>\n<code>https://example.com/link</code>\n<code>LICENSE-KEY-123</code>\n\nYou can also upload a .txt file.", admin_cancel_keyboard())
         return
 
     if data.startswith("stock_pick_bulk_"):
         product_id = data.replace("stock_pick_bulk_", "")
         admin_temp[user_id]["selected_product_id"] = product_id
         user_state[user_id] = {"step": "stock_add_bulk_input"}
-        await send_inline_from_callback(query, "Send multiple accounts line by line:\n<code>email@gmail.com|password|note</code>", admin_cancel_keyboard())
+        await send_inline_from_callback(query, "📥 <b>Add Bulk Stock</b>\n\nSend one stock item per line. Any format is accepted:\n<code>email@gmail.com|password|note</code>\n<code>https://example.com/link</code>\n<code>LICENSE-KEY-123</code>\n\nYou can also upload a .txt file.", admin_cancel_keyboard())
         return
 
     if data.startswith("stock_view_accounts_"):
@@ -5570,6 +5455,75 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
+# DOCUMENT / TXT STOCK UPLOAD
+# =========================
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    ensure_user(user_id, update.effective_user)
+
+    if not is_admin(user_id):
+        return
+
+    step = user_state.get(user_id, {}).get("step")
+    if step not in ("stock_add_single_input", "stock_add_bulk_input"):
+        await update.message.reply_text("❌ Please open Stock > Add Bulk Accounts first, then upload your .txt file.", reply_markup=admin_menu())
+        return
+
+    product_id = admin_temp[user_id].get("selected_product_id")
+    if not product_id or product_id not in PRODUCTS:
+        user_state[user_id] = {"step": "admin_stock"}
+        reset_admin_temp(user_id)
+        await update.message.reply_text("❌ Product not found.", reply_markup=admin_menu())
+        return
+
+    document = update.message.document
+    filename = str(getattr(document, "file_name", "") or "").lower()
+    mime_type = str(getattr(document, "mime_type", "") or "").lower()
+    file_size = int(getattr(document, "file_size", 0) or 0)
+
+    if not (filename.endswith(".txt") or mime_type.startswith("text/")):
+        await update.message.reply_text("❌ Please upload a .txt file only.", parse_mode="HTML")
+        return
+
+    if file_size > 2 * 1024 * 1024:
+        await update.message.reply_text("❌ File too large. Please upload a .txt file under 2MB.", parse_mode="HTML")
+        return
+
+    try:
+        tg_file = await document.get_file()
+        data = await tg_file.download_as_bytearray()
+        try:
+            text = bytes(data).decode("utf-8")
+        except UnicodeDecodeError:
+            text = bytes(data).decode("latin-1", errors="ignore")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Failed to read txt file: {escape_html(e)}", parse_mode="HTML")
+        return
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    added = 0
+    for line in lines:
+        account = parse_account_line(line)
+        if account:
+            PRODUCTS[product_id]["accounts"].append(account)
+            added += 1
+
+    if added == 0:
+        await update.message.reply_text("❌ <b>No valid stock item found in txt file.</b>", parse_mode="HTML")
+        return
+
+    PRODUCTS[product_id]["display_stock"] = max(get_display_stock(product_id), get_product_stock(product_id))
+    user_state[user_id] = {"step": "admin_stock"}
+    reset_admin_temp(user_id)
+    await update.message.reply_text(
+        f"✅ <b>TXT stock imported successfully.</b>\n\n<b>Product:</b> {PRODUCTS[product_id]['name']}\n<b>Added:</b> {added}\n<b>Real Stock:</b> {get_product_stock(product_id)} pcs\n<b>Display Stock:</b> {get_display_stock(product_id)} pcs",
+        reply_markup=admin_menu(),
+        parse_mode="HTML",
+    )
+    await notify_waiters_for_product(context, product_id)
+
+
+# =========================
 # PERSISTENCE WRAPPERS
 # =========================
 async def start_persistent(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -5600,6 +5554,13 @@ async def handle_text_persistent(update: Update, context: ContextTypes.DEFAULT_T
         save_bot_state()
 
 
+async def handle_document_persistent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await handle_document(update, context)
+    finally:
+        save_bot_state()
+
+
 async def handle_callback_persistent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await handle_callback(update, context)
@@ -5621,6 +5582,7 @@ def main():
     app.add_handler(CommandHandler("addstock", addstock_persistent))
 
     app.add_handler(CallbackQueryHandler(handle_callback_persistent))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document_persistent))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_persistent))
 
     # Old custom blockchain scanner disabled. NOWPayments webhook is the main verifier.
