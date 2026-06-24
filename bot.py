@@ -1457,11 +1457,65 @@ def apply_admin_balance_adjustment(admin_id: int):
 # =========================
 # ADMIN NOTIFY REQUEST HELPERS
 # =========================
+def _normalize_notify_user_ids(users) -> set:
+    cleaned = set()
+    for uid in (users or []):
+        try:
+            cleaned.add(int(uid))
+        except Exception:
+            continue
+    return cleaned
+
+
+def normalize_notify_waitlist():
+    """Keep notify waitlist clean and product-id based. Admin counts use this only."""
+    try:
+        # Merge any legacy keys saved by product name back into the correct product_id.
+        name_to_pid = {str(p.get("name", "")).strip(): pid for pid, p in PRODUCTS.items()}
+        for key in list(notify_waitlist.keys()):
+            if key in PRODUCTS:
+                notify_waitlist[key] = _normalize_notify_user_ids(notify_waitlist.get(key, set()))
+                continue
+            pid = name_to_pid.get(str(key).strip())
+            if pid:
+                notify_waitlist.setdefault(pid, set()).update(_normalize_notify_user_ids(notify_waitlist.get(key, set())))
+            notify_waitlist.pop(key, None)
+
+        for pid in PRODUCTS:
+            notify_waitlist.setdefault(pid, set())
+            notify_waitlist[pid] = _normalize_notify_user_ids(notify_waitlist.get(pid, set()))
+    except Exception as e:
+        print("⚠️ Failed to normalize notify waitlist:", e)
+
+
+def sync_notify_waitlist_from_database():
+    """Admin-only lightweight sync, so notify counts show latest saved data without touching other bot data."""
+    if not USE_DATABASE or db is None:
+        normalize_notify_waitlist()
+        return
+    try:
+        data = db.load_state() or {}
+        saved_waitlist = data.get("notify_waitlist", {}) or {}
+        if isinstance(saved_waitlist, dict):
+            for pid, users in saved_waitlist.items():
+                notify_waitlist.setdefault(pid, set()).update(_normalize_notify_user_ids(users))
+        normalize_notify_waitlist()
+    except Exception as e:
+        print("⚠️ Failed to sync notify waitlist from database:", e)
+        normalize_notify_waitlist()
+
+
+def _notify_waiters(product_id: str) -> set:
+    normalize_notify_waitlist()
+    return _normalize_notify_user_ids(notify_waitlist.get(product_id, set()))
+
+
 def _notify_count(product_id: str) -> int:
-    return len(notify_waitlist.get(product_id, set()) or set())
+    return len(_notify_waiters(product_id))
 
 
 def render_admin_notify_panel() -> str:
+    sync_notify_waitlist_from_database()
     total_waiting = sum(_notify_count(pid) for pid in PRODUCTS)
     active_products = len([pid for pid in PRODUCTS if _notify_count(pid) > 0])
     return (
@@ -1473,6 +1527,7 @@ def render_admin_notify_panel() -> str:
 
 
 def render_notify_requests_summary() -> str:
+    sync_notify_waitlist_from_database()
     lines = [
         "🔔 <b>NOTIFY REQUESTS SUMMARY</b>",
         "",
@@ -1497,8 +1552,9 @@ def render_notify_requests_summary() -> str:
 
 
 def render_notify_product_details(product_id: str) -> str:
+    sync_notify_waitlist_from_database()
     product = PRODUCTS.get(product_id, {})
-    waiters = sorted(int(uid) for uid in (notify_waitlist.get(product_id, set()) or set()))
+    waiters = sorted(_notify_waiters(product_id))
     lines = [
         "🔔 <b>PRODUCT NOTIFY DETAILS</b>",
         "",
@@ -1533,6 +1589,7 @@ def admin_notify_keyboard() -> InlineKeyboardMarkup:
 
 
 def admin_notify_product_select_keyboard() -> InlineKeyboardMarkup:
+    sync_notify_waitlist_from_database()
     rows = []
     for product_id in product_order:
         product = PRODUCTS.get(product_id, {})
@@ -5798,10 +5855,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("shop_notify_"):
         product_id = data.replace("shop_notify_", "")
+        normalize_notify_waitlist()
         notify_waitlist.setdefault(product_id, set())
-        before_count = len(notify_waitlist.get(product_id, set()))
-        notify_waitlist[product_id].add(user_id)
-        after_count = len(notify_waitlist.get(product_id, set()))
+        before_count = len(_notify_waiters(product_id))
+        notify_waitlist[product_id].add(int(user_id))
+        notify_waitlist[product_id] = _normalize_notify_user_ids(notify_waitlist.get(product_id, set()))
+        after_count = len(_notify_waiters(product_id))
         if after_count != before_count:
             save_bot_state()
         product = PRODUCTS[product_id]
