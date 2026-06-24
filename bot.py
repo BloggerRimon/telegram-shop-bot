@@ -416,6 +416,7 @@ user_state = {}
 user_mode = {}
 notify_waitlist = {product_id: set() for product_id in PRODUCTS}
 gold_vip_users = set()
+active_flash_deal = {}
 pending_crypto_deposits = {}
 pending_crypto_orders = {}
 used_txids = set()
@@ -485,6 +486,7 @@ def build_state_snapshot():
         "PROMO_CODES": PROMO_CODES,
         "notify_waitlist": {k: list(v) for k, v in notify_waitlist.items()},
         "gold_vip_users": list(gold_vip_users),
+        "active_flash_deal": active_flash_deal,
         "global_order_id": global_order_id,
         "global_tx_id": global_tx_id,
         "next_product_number": next_product_number,
@@ -506,7 +508,7 @@ def build_state_snapshot():
 def apply_loaded_state(data: dict):
     """Apply a loaded state snapshot back into the in-memory bot structures."""
     global PRODUCTS, product_order, PROMO_CODES
-    global gold_vip_users
+    global gold_vip_users, active_flash_deal
     global global_order_id, global_tx_id, next_product_number
     global NOWPAYMENTS_PAYMENTS, NOWPAYMENTS_PROCESSED
     global CRYPTOMUS_PAYMENTS, CRYPTOMUS_PROCESSED
@@ -566,6 +568,11 @@ def apply_loaded_state(data: dict):
 
     gold_vip_users.clear()
     gold_vip_users.update(int(x) for x in (data.get("gold_vip_users", []) or []))
+
+    active_flash_deal.clear()
+    loaded_flash_deal = data.get("active_flash_deal", {}) or {}
+    if isinstance(loaded_flash_deal, dict):
+        active_flash_deal.update(loaded_flash_deal)
 
     global_order_id = int(data.get("global_order_id", global_order_id) or global_order_id)
     global_tx_id = int(data.get("global_tx_id", global_tx_id) or global_tx_id)
@@ -816,6 +823,9 @@ def get_product_vip_price(product_id: str):
 
 
 def get_product_price(product_id: str, user_id: int = None) -> float:
+    flash_price = get_flash_deal_price(product_id) if "get_flash_deal_price" in globals() else None
+    if flash_price is not None:
+        return float(flash_price)
     vip_price = get_product_vip_price(product_id)
     if user_id is not None and is_gold_vip_user(user_id) and vip_price is not None:
         return float(vip_price)
@@ -823,6 +833,9 @@ def get_product_price(product_id: str, user_id: int = None) -> float:
 
 
 def format_product_price_for_user(product_id: str, user_id: int = None) -> str:
+    flash_price = get_flash_deal_price(product_id) if "get_flash_deal_price" in globals() else None
+    if flash_price is not None:
+        return f"{format_money(flash_price)} ⚡"
     vip_price = get_product_vip_price(product_id)
     if user_id is not None and is_gold_vip_user(user_id) and vip_price is not None:
         return f"{format_money(vip_price)} 👑"
@@ -1565,6 +1578,173 @@ def gold_vip_price_confirm_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+async def send_gold_vip_welcome(bot, target_user_id: int):
+    text = (
+        "👑 <b>Congratulations!</b>\n\n"
+        "You are now a <b>Gold VIP</b> member.\n"
+        "You can now see special reseller/VIP prices on selected products.\n\n"
+        "🛍 Open the shop and enjoy your VIP deals."
+    )
+    try:
+        await bot.send_message(chat_id=target_user_id, text=text, parse_mode="HTML")
+    except Exception as e:
+        print(f"⚠️ Failed to send Gold VIP welcome to {target_user_id}:", e)
+
+
+# =========================
+# FLASH DEAL HELPERS
+# =========================
+def _flash_deal_end_at():
+    end_at = active_flash_deal.get("end_at") if isinstance(active_flash_deal, dict) else None
+    if isinstance(end_at, str):
+        try:
+            end_at = datetime.fromisoformat(end_at)
+            active_flash_deal["end_at"] = end_at
+        except Exception:
+            return None
+    return end_at
+
+
+def _flash_seconds_left() -> int:
+    end_at = _flash_deal_end_at()
+    if not end_at:
+        return 0
+    return max(0, int((end_at - now_dt()).total_seconds()))
+
+
+def format_countdown_seconds(seconds: int) -> str:
+    seconds = max(0, int(seconds or 0))
+    minutes, sec = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{sec:02d}"
+    return f"{minutes:02d}:{sec:02d}"
+
+
+def is_flash_deal_active() -> bool:
+    if not isinstance(active_flash_deal, dict) or not active_flash_deal:
+        return False
+    product_id = active_flash_deal.get("product_id")
+    if product_id not in PRODUCTS:
+        active_flash_deal.clear()
+        return False
+    try:
+        if float(active_flash_deal.get("deal_price", 0)) <= 0:
+            active_flash_deal.clear()
+            return False
+    except Exception:
+        active_flash_deal.clear()
+        return False
+    if _flash_seconds_left() <= 0:
+        active_flash_deal.clear()
+        return False
+    return True
+
+
+def get_flash_deal_price(product_id: str):
+    if is_flash_deal_active() and active_flash_deal.get("product_id") == product_id:
+        try:
+            return float(active_flash_deal.get("deal_price"))
+        except Exception:
+            return None
+    return None
+
+
+def render_flash_deal_banner() -> str:
+    if not is_flash_deal_active():
+        return ""
+    product_id = active_flash_deal.get("product_id")
+    product = PRODUCTS.get(product_id, {})
+    deal_price = float(active_flash_deal.get("deal_price", 0))
+    old_price = get_product_base_price(product_id)
+    time_left = format_countdown_seconds(_flash_seconds_left())
+    return (
+        "╭━━━━━━━ ⚡ <b>FLASH DEAL</b> ━━━━━━━╮\n\n"
+        f"{product_icon_html(product)} <b>{escape_html(product.get('name', product_id))}</b>\n\n"
+        f"💸 Regular: <s>{format_money(old_price)}</s>\n"
+        f"🔥 Deal: <b>{format_money(deal_price)}</b>\n\n"
+        f"⏳ Ends in: <b>{time_left}</b>\n\n"
+        "╰━━ 🛒 Grab it before it’s gone ━━╯"
+    )
+
+
+def render_flash_deal_panel() -> str:
+    if not is_flash_deal_active():
+        return "⚡ <b>FLASH DEAL ADMIN</b>\n\nNo active flash deal right now."
+    product_id = active_flash_deal.get("product_id")
+    product = PRODUCTS.get(product_id, {})
+    return (
+        "⚡ <b>FLASH DEAL ADMIN</b>\n\n"
+        "<b>Status:</b> Active\n"
+        f"<b>Product:</b> {product_icon_html(product)} {escape_html(product.get('name', product_id))}\n"
+        f"<b>Regular Price:</b> {format_money(get_product_base_price(product_id))}\n"
+        f"<b>Deal Price:</b> {format_money(float(active_flash_deal.get('deal_price', 0)))}\n"
+        f"<b>Time Left:</b> {format_countdown_seconds(_flash_seconds_left())}"
+    )
+
+
+def flash_deal_admin_keyboard() -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton("⚡ Start Flash Deal", callback_data="flash_start_menu")]]
+    if is_flash_deal_active():
+        rows.append([InlineKeyboardButton("🛑 Cancel Active Deal", callback_data="flash_cancel_active")])
+    rows.append([InlineKeyboardButton("🔄 Refresh", callback_data="flash_refresh")])
+    rows.append([InlineKeyboardButton("⬅️ Close", callback_data="flash_close")])
+    return InlineKeyboardMarkup(rows)
+
+
+def flash_deal_product_select_keyboard() -> InlineKeyboardMarkup:
+    rows = []
+    for product_id in product_order:
+        if product_id not in PRODUCTS:
+            continue
+        product = PRODUCTS[product_id]
+        core_text = f"{product.get('name', product_id)} | {format_money(get_product_base_price(product_id))}"
+        rows.append([make_product_inline_button(product, core_text, f"flash_pick_product_{product_id}")])
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="flash_back")])
+    return InlineKeyboardMarkup(rows)
+
+
+def flash_deal_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Start Flash Deal", callback_data="flash_confirm_start")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="admin_cancel_flow")],
+    ])
+
+
+def render_flash_deal_confirm(admin_id: int) -> str:
+    temp = admin_temp.get(admin_id, {})
+    product_id = temp.get("selected_product_id")
+    product = PRODUCTS.get(product_id, {})
+    deal_price = float(temp.get("flash_deal_price", 0))
+    minutes = int(temp.get("flash_deal_minutes", 0))
+    return (
+        "⚡ <b>CONFIRM FLASH DEAL</b>\n\n"
+        f"<b>Product:</b> {product_icon_html(product)} {escape_html(product.get('name', product_id))}\n"
+        f"<b>Regular Price:</b> {format_money(get_product_base_price(product_id))}\n"
+        f"<b>Deal Price:</b> {format_money(deal_price)}\n"
+        f"<b>Duration:</b> {minutes} minutes\n\n"
+        "After start, users will see the deal price in Shop."
+    )
+
+
+async def broadcast_flash_deal_started(bot, product_id: str, deal_price: float, minutes: int):
+    product = PRODUCTS.get(product_id, {})
+    text = (
+        "⚡ <b>FLASH DEAL LIVE!</b>\n\n"
+        f"{product_icon_html(product)} <b>{escape_html(product.get('name', product_id))}</b>\n"
+        f"💸 Regular: <s>{format_money(get_product_base_price(product_id))}</s>\n"
+        f"🔥 Deal: <b>{format_money(deal_price)}</b>\n"
+        f"⏳ Duration: <b>{minutes} minutes</b>\n\n"
+        "🛒 Open shop and grab it before it ends."
+    )
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🛒 Open Shop", callback_data="back_shop_cards")]])
+    for uid in list(all_users):
+        try:
+            await bot.send_message(chat_id=int(uid), text=text, reply_markup=keyboard, parse_mode="HTML")
+        except Exception:
+            pass
+
+
 # =========================
 # ADMIN NOTIFY REQUEST HELPERS
 # =========================
@@ -1739,7 +1919,7 @@ def admin_menu() -> ReplyKeyboardMarkup:
         ["🎟 Promo Admin", "📦 Orders Admin"],
         ["💳 Deposits Admin", "👤 Users Admin"],
         ["💰 User Balance", "🔔 Notify Requests"],
-        ["👑 Gold VIP"],
+        ["👑 Gold VIP", "⚡ Flash Deal"],
         ["👥 User Details", "📊 Analytics"],
         ["📢 Broadcast"],
         ["🚪 Exit Admin"],
@@ -3151,11 +3331,13 @@ def _short_button_text(text: str, max_len: int = 60) -> str:
 
 
 def render_shop_menu_text() -> str:
-    return (
+    base = (
         "🛒🛒 <b>STORE MENU</b>\n\n"
         "──── ⚡ <b>AUTO DELIVERY</b> ────\n"
         "Tap any product below to continue."
     )
+    flash_banner = render_flash_deal_banner() if "render_flash_deal_banner" in globals() else ""
+    return f"{flash_banner}\n\n{base}" if flash_banner else base
 
 
 def shop_menu_keyboard(user_id: int = None) -> InlineKeyboardMarkup:
@@ -4618,6 +4800,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Gold VIP actions:", reply_markup=gold_vip_admin_keyboard(), parse_mode="HTML")
             return
 
+        if text == "⚡ Flash Deal":
+            user_state[user_id] = {"step": "flash_deal_admin"}
+            reset_admin_temp(user_id)
+            await update.message.reply_text(render_flash_deal_panel(), reply_markup=admin_menu(), parse_mode="HTML")
+            await update.message.reply_text("Flash Deal actions:", reply_markup=flash_deal_admin_keyboard(), parse_mode="HTML")
+            return
+
         if text == "👥 User Details":
             user_state[user_id] = {"step": "users_admin"}
             details_text, page, total_pages = render_user_details_page(0)
@@ -5098,6 +5287,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if action == "add":
             gold_vip_users.add(target_user_id)
             msg = "✅ <b>User added to Gold VIP.</b>"
+            await send_gold_vip_welcome(context.bot, target_user_id)
         else:
             gold_vip_users.discard(target_user_id)
             msg = "✅ <b>User removed from Gold VIP.</b>"
@@ -5109,6 +5299,38 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
         await update.message.reply_text("Gold VIP actions:", reply_markup=gold_vip_admin_keyboard(), parse_mode="HTML")
+        return
+
+    if step == "flash_price_input":
+        product_id = admin_temp[user_id].get("selected_product_id")
+        if product_id not in PRODUCTS:
+            user_state[user_id] = {"step": "flash_deal_admin"}
+            reset_admin_temp(user_id)
+            await update.message.reply_text("❌ Product not found.", reply_markup=admin_menu())
+            return
+        try:
+            amount = float(text)
+            if amount <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("❌ <b>Invalid deal price.</b> Send a valid number like <code>4</code> or <code>3.50</code>.", parse_mode="HTML")
+            return
+        admin_temp[user_id]["flash_deal_price"] = float(amount)
+        user_state[user_id] = {"step": "flash_duration_input"}
+        await update.message.reply_text("⏳ <b>Send deal duration in minutes.</b>\n\nExample: <code>10</code>", reply_markup=admin_menu(), parse_mode="HTML")
+        return
+
+    if step == "flash_duration_input":
+        try:
+            minutes = int(text)
+            if minutes <= 0 or minutes > 1440:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("❌ <b>Invalid duration.</b> Send minutes between 1 and 1440.", parse_mode="HTML")
+            return
+        admin_temp[user_id]["flash_deal_minutes"] = minutes
+        user_state[user_id] = {"step": "flash_confirm"}
+        await update.message.reply_text(render_flash_deal_confirm(user_id), reply_markup=flash_deal_confirm_keyboard(), parse_mode="HTML")
         return
 
     if step == "vip_price_input":
@@ -5543,6 +5765,69 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         user_state[user_id] = {"step": "notify_requests_admin"}
         await send_inline_from_callback(query, render_notify_product_details(product_id), admin_notify_product_back_keyboard())
+        return
+
+    # ========= FLASH DEAL ADMIN =========
+    if data == "flash_close":
+        user_state[user_id] = {"step": "admin_main"}
+        reset_admin_temp(user_id)
+        await send_inline_from_callback(query, "Closed Flash Deal panel.", close_keyboard())
+        return
+
+    if data in ("flash_back", "flash_refresh"):
+        user_state[user_id] = {"step": "flash_deal_admin"}
+        reset_admin_temp(user_id)
+        await send_inline_from_callback(query, render_flash_deal_panel(), flash_deal_admin_keyboard())
+        return
+
+    if data == "flash_start_menu":
+        user_state[user_id] = {"step": "flash_product_pick"}
+        reset_admin_temp(user_id)
+        await send_inline_from_callback(query, "⚡ <b>Start Flash Deal</b>\n\nSelect product below.", flash_deal_product_select_keyboard())
+        return
+
+    if data.startswith("flash_pick_product_"):
+        product_id = data.replace("flash_pick_product_", "")
+        if product_id not in PRODUCTS:
+            await send_inline_from_callback(query, "❌ <b>Product not found.</b>", flash_deal_admin_keyboard())
+            return
+        admin_temp[user_id]["selected_product_id"] = product_id
+        user_state[user_id] = {"step": "flash_price_input"}
+        product = PRODUCTS[product_id]
+        await send_inline_from_callback(
+            query,
+            f"⚡ <b>Set Deal Price</b>\n\n<b>Product:</b> {product_icon_html(product)} {escape_html(product.get('name', product_id))}\n<b>Regular Price:</b> {format_money(get_product_base_price(product_id))}\n\nNow send deal price.",
+            admin_cancel_keyboard(),
+        )
+        return
+
+    if data == "flash_confirm_start":
+        product_id = admin_temp[user_id].get("selected_product_id")
+        deal_price = float(admin_temp[user_id].get("flash_deal_price", 0))
+        minutes = int(admin_temp[user_id].get("flash_deal_minutes", 0))
+        if product_id not in PRODUCTS or deal_price <= 0 or minutes <= 0:
+            await send_inline_from_callback(query, "❌ <b>Flash deal data missing.</b>", flash_deal_admin_keyboard())
+            return
+        active_flash_deal.clear()
+        active_flash_deal.update({
+            "product_id": product_id,
+            "deal_price": float(deal_price),
+            "duration_minutes": int(minutes),
+            "started_at": now_dt(),
+            "end_at": datetime.fromtimestamp(now_dt().timestamp() + minutes * 60),
+            "created_by": int(user_id),
+        })
+        user_state[user_id] = {"step": "flash_deal_admin"}
+        reset_admin_temp(user_id)
+        await send_inline_from_callback(query, "✅ <b>Flash Deal started.</b>", flash_deal_admin_keyboard())
+        await broadcast_flash_deal_started(context.bot, product_id, deal_price, minutes)
+        return
+
+    if data == "flash_cancel_active":
+        active_flash_deal.clear()
+        user_state[user_id] = {"step": "flash_deal_admin"}
+        reset_admin_temp(user_id)
+        await send_inline_from_callback(query, "🛑 <b>Active Flash Deal cancelled.</b>", flash_deal_admin_keyboard())
         return
 
     # ========= GOLD VIP ADMIN =========
