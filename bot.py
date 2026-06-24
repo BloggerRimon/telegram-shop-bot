@@ -3184,8 +3184,10 @@ async def send_shop_cards_message(source, from_callback: bool = False):
         viewer_id = getattr(source, "from_user", None).id if getattr(source, "from_user", None) else None
         await source.message.reply_text(render_shop_menu_text(), reply_markup=shop_menu_keyboard(viewer_id), parse_mode="HTML")
     else:
-        viewer_id = source.effective_user.id if getattr(source, "effective_user", None) else None
-        await source.message.reply_text(render_shop_menu_text(), reply_markup=shop_menu_keyboard(viewer_id), parse_mode="HTML")
+        # source is a Telegram Message here, not an Update.
+        # Use source.reply_text exactly like the previous working version, only passing viewer_id for VIP price.
+        viewer_id = getattr(getattr(source, "from_user", None), "id", None)
+        await source.reply_text(render_shop_menu_text(), reply_markup=shop_menu_keyboard(viewer_id), parse_mode="HTML")
 
 
 
