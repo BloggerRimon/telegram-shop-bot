@@ -378,8 +378,10 @@ Please follow these simple steps to use your new account:
 
 def get_delivery_guide(product_id: str) -> str:
     product = PRODUCTS.get(product_id, {})
-    guide = str(product.get("delivery_guide", "") or "").strip()
-    return guide or DEFAULT_DELIVERY_GUIDE
+    # IMPORTANT: Do not auto-add the fixed/default login guide to every delivery.
+    # If admin added a product-specific delivery guide, show only that guide.
+    # If no guide is set, deliver only the actual stock/account line admin entered.
+    return str(product.get("delivery_guide", "") or "").strip()
 
 # =========================
 # PROMO CODES
@@ -1727,7 +1729,7 @@ def render_flash_deal_confirm(admin_id: int) -> str:
     )
 
 
-async def broadcast_flash_deal_started(bot, product_id: str, deal_price: float, minutes: int):
+async def _send_flash_deal_broadcast_job(bot, product_id: str, deal_price: float, minutes: int, admin_id: int = None):
     product = PRODUCTS.get(product_id, {})
     text = (
         "⚡ <b>FLASH DEAL LIVE!</b>\n\n"
@@ -1738,11 +1740,67 @@ async def broadcast_flash_deal_started(bot, product_id: str, deal_price: float, 
         "🛒 Open shop and grab it before it ends."
     )
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🛒 Open Shop", callback_data="back_shop_cards")]])
-    for uid in list(all_users):
+    targets = sorted(int(uid) for uid in list(all_users))
+    sent = 0
+    failed = 0
+    for uid in targets:
         try:
             await bot.send_message(chat_id=int(uid), text=text, reply_markup=keyboard, parse_mode="HTML")
+            sent += 1
+        except Exception:
+            failed += 1
+        # Yield to the event loop so normal user buttons keep responding during broadcast.
+        await asyncio.sleep(0.03)
+
+    if admin_id:
+        try:
+            await bot.send_message(
+                chat_id=int(admin_id),
+                text=(
+                    "✅ <b>Flash deal broadcast completed</b>\n\n"
+                    f"<b>Sent:</b> {sent}\n"
+                    f"<b>Failed/Blocked:</b> {failed}\n"
+                    f"<b>Total targets:</b> {len(targets)}"
+                ),
+                parse_mode="HTML",
+            )
         except Exception:
             pass
+
+
+def start_flash_deal_broadcast_background(bot, product_id: str, deal_price: float, minutes: int, admin_id: int = None):
+    asyncio.create_task(_send_flash_deal_broadcast_job(bot, product_id, deal_price, minutes, admin_id))
+
+
+async def _send_admin_broadcast_job(bot, admin_id: int, message: str, targets: list):
+    sent = 0
+    failed = 0
+    for target_id in targets:
+        try:
+            await bot.send_message(chat_id=int(target_id), text=message)
+            sent += 1
+        except Exception:
+            failed += 1
+        # Yield to the event loop so normal user buttons keep responding during broadcast.
+        await asyncio.sleep(0.03)
+
+    try:
+        await bot.send_message(
+            chat_id=int(admin_id),
+            text=(
+                "✅ <b>Broadcast completed</b>\n\n"
+                f"<b>Sent:</b> {sent}\n"
+                f"<b>Failed/Blocked:</b> {failed}\n"
+                f"<b>Total targets:</b> {len(targets)}"
+            ),
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+
+def start_admin_broadcast_background(bot, admin_id: int, message: str, targets: list):
+    asyncio.create_task(_send_admin_broadcast_job(bot, admin_id, message, targets))
 
 
 # =========================
@@ -5654,29 +5712,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         targets = sorted(int(uid) for uid in all_users if int(uid) != int(user_id))
-        sent = 0
-        failed = 0
-        await send_inline_from_callback(query, f"📢 <b>Broadcast started...</b>\n\nTargets: {len(targets)}")
-        for target_id in targets:
-            try:
-                await context.bot.send_message(chat_id=target_id, text=message)
-                sent += 1
-            except Exception:
-                failed += 1
-            await asyncio.sleep(0.05)
-
+        await send_inline_from_callback(query, f"📢 <b>Broadcast started in background...</b>\n\nTargets: {len(targets)}")
         reset_admin_temp(user_id)
         user_state[user_id] = {"step": "admin_main"}
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=(
-                "✅ <b>Broadcast completed</b>\n\n"
-                f"<b>Sent:</b> {sent}\n"
-                f"<b>Failed/Blocked:</b> {failed}\n"
-                f"<b>Total targets:</b> {len(targets)}"
-            ),
-            parse_mode="HTML",
-        )
+        start_admin_broadcast_background(context.bot, user_id, message, targets)
         return
 
     if data == "admin_cancel_flow":
@@ -5819,8 +5858,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         })
         user_state[user_id] = {"step": "flash_deal_admin"}
         reset_admin_temp(user_id)
-        await send_inline_from_callback(query, "✅ <b>Flash Deal started.</b>", flash_deal_admin_keyboard())
-        await broadcast_flash_deal_started(context.bot, product_id, deal_price, minutes)
+        await send_inline_from_callback(query, "✅ <b>Flash Deal started.</b>\n\n📢 User notification is sending in background.", flash_deal_admin_keyboard())
+        start_flash_deal_broadcast_background(context.bot, product_id, deal_price, minutes, user_id)
         return
 
     if data == "flash_cancel_active":
