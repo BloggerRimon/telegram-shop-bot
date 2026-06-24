@@ -415,6 +415,7 @@ used_promo_codes = {}
 user_state = {}
 user_mode = {}
 notify_waitlist = {product_id: set() for product_id in PRODUCTS}
+gold_vip_users = set()
 pending_crypto_deposits = {}
 pending_crypto_orders = {}
 used_txids = set()
@@ -483,6 +484,7 @@ def build_state_snapshot():
         "product_order": product_order,
         "PROMO_CODES": PROMO_CODES,
         "notify_waitlist": {k: list(v) for k, v in notify_waitlist.items()},
+        "gold_vip_users": list(gold_vip_users),
         "global_order_id": global_order_id,
         "global_tx_id": global_tx_id,
         "next_product_number": next_product_number,
@@ -504,6 +506,7 @@ def build_state_snapshot():
 def apply_loaded_state(data: dict):
     """Apply a loaded state snapshot back into the in-memory bot structures."""
     global PRODUCTS, product_order, PROMO_CODES
+    global gold_vip_users
     global global_order_id, global_tx_id, next_product_number
     global NOWPAYMENTS_PAYMENTS, NOWPAYMENTS_PROCESSED
     global CRYPTOMUS_PAYMENTS, CRYPTOMUS_PROCESSED
@@ -560,6 +563,9 @@ def apply_loaded_state(data: dict):
     notify_waitlist.update({pid: set(users or []) for pid, users in (data.get("notify_waitlist", {}) or {}).items()})
     for pid in PRODUCTS:
         notify_waitlist.setdefault(pid, set())
+
+    gold_vip_users.clear()
+    gold_vip_users.update(int(x) for x in (data.get("gold_vip_users", []) or []))
 
     global_order_id = int(data.get("global_order_id", global_order_id) or global_order_id)
     global_tx_id = int(data.get("global_tx_id", global_tx_id) or global_tx_id)
@@ -784,6 +790,43 @@ def get_product_stock(product_id: str) -> int:
 
 def get_display_stock(product_id: str) -> int:
     return int(PRODUCTS[product_id].get("display_stock", len(PRODUCTS[product_id]["accounts"])))
+
+
+def is_gold_vip_user(user_id: int) -> bool:
+    try:
+        return int(user_id) in gold_vip_users
+    except Exception:
+        return False
+
+
+def get_product_base_price(product_id: str) -> float:
+    return float(PRODUCTS[product_id].get("price", 0.0))
+
+
+def get_product_vip_price(product_id: str):
+    product = PRODUCTS.get(product_id, {})
+    value = product.get("gold_vip_price")
+    if value in (None, ""):
+        return None
+    try:
+        value = float(value)
+        return value if value > 0 else None
+    except Exception:
+        return None
+
+
+def get_product_price(product_id: str, user_id: int = None) -> float:
+    vip_price = get_product_vip_price(product_id)
+    if user_id is not None and is_gold_vip_user(user_id) and vip_price is not None:
+        return float(vip_price)
+    return get_product_base_price(product_id)
+
+
+def format_product_price_for_user(product_id: str, user_id: int = None) -> str:
+    vip_price = get_product_vip_price(product_id)
+    if user_id is not None and is_gold_vip_user(user_id) and vip_price is not None:
+        return f"{format_money(vip_price)} 👑"
+    return format_money(get_product_base_price(product_id))
 
 
 def format_duration_text(value) -> str:
@@ -1455,6 +1498,74 @@ def apply_admin_balance_adjustment(admin_id: int):
 
 
 # =========================
+# GOLD VIP HELPERS
+# =========================
+def render_gold_vip_panel() -> str:
+    vip_price_count = len([pid for pid in PRODUCTS if get_product_vip_price(pid) is not None])
+    return (
+        "👑 <b>GOLD VIP ADMIN</b>\n\n"
+        f"<b>Total VIP Users:</b> {len(gold_vip_users)}\n"
+        f"<b>Products With VIP Price:</b> {vip_price_count}\n\n"
+        "Manage reseller/VIP users and product VIP prices."
+    )
+
+
+def render_gold_vip_user_list() -> str:
+    lines = ["👑 <b>GOLD VIP USERS</b>", ""]
+    if not gold_vip_users:
+        lines.append("No Gold VIP users added yet.")
+        return "\n".join(lines)
+    for idx, uid in enumerate(sorted(gold_vip_users), start=1):
+        lines.append(f"{idx}. {format_user_link(uid)} | ID: <code>{uid}</code>")
+    return "\n".join(lines)
+
+
+def render_gold_vip_price_list() -> str:
+    lines = ["👑 <b>GOLD VIP PRICE LIST</b>", ""]
+    found = False
+    for product_id in product_order:
+        if product_id not in PRODUCTS:
+            continue
+        vip_price = get_product_vip_price(product_id)
+        if vip_price is None:
+            continue
+        found = True
+        product = PRODUCTS[product_id]
+        lines.append(
+            f"{product_icon_html(product)} <b>{escape_html(product.get('name', product_id))}</b> "
+            f"(<code>{product_id}</code>)\n"
+            f"Normal: {format_money(get_product_base_price(product_id))} | Gold VIP: <b>{format_money(vip_price)}</b>"
+        )
+    if not found:
+        lines.append("No VIP price set yet.")
+    return "\n\n".join(lines)
+
+
+def render_gold_vip_price_preview(admin_id: int) -> str:
+    temp = admin_temp.get(admin_id, {})
+    product_id = temp.get("selected_product_id")
+    product = PRODUCTS.get(product_id, {})
+    new_price = float(temp.get("gold_vip_price", 0))
+    old_vip = get_product_vip_price(product_id)
+    old_vip_text = format_money(old_vip) if old_vip is not None else "Not set"
+    return (
+        "👑 <b>CONFIRM GOLD VIP PRICE</b>\n\n"
+        f"<b>Product:</b> {product_icon_html(product)} {escape_html(product.get('name', product_id))}\n"
+        f"<b>Normal Price:</b> {format_money(get_product_base_price(product_id))}\n"
+        f"<b>Old VIP Price:</b> {old_vip_text}\n"
+        f"<b>New VIP Price:</b> {format_money(new_price)}\n\n"
+        "Only Gold VIP users will see/pay this price."
+    )
+
+
+def gold_vip_price_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Confirm VIP Price", callback_data="vip_confirm_price")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="admin_cancel_flow")],
+    ])
+
+
+# =========================
 # ADMIN NOTIFY REQUEST HELPERS
 # =========================
 def _normalize_notify_user_ids(users) -> set:
@@ -1628,6 +1739,7 @@ def admin_menu() -> ReplyKeyboardMarkup:
         ["🎟 Promo Admin", "📦 Orders Admin"],
         ["💳 Deposits Admin", "👤 Users Admin"],
         ["💰 User Balance", "🔔 Notify Requests"],
+        ["👑 Gold VIP"],
         ["👥 User Details", "📊 Analytics"],
         ["📢 Broadcast"],
         ["🚪 Exit Admin"],
@@ -1814,6 +1926,37 @@ def user_balance_admin_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🔎 Check User Balance", callback_data="balance_check")],
         [InlineKeyboardButton("⬅️ Close", callback_data="balance_close")],
     ]
+    return InlineKeyboardMarkup(rows)
+
+
+def gold_vip_admin_keyboard() -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton("➕ Add VIP User", callback_data="vip_add_user"),
+            InlineKeyboardButton("➖ Remove VIP User", callback_data="vip_remove_user"),
+        ],
+        [InlineKeyboardButton("📋 VIP User List", callback_data="vip_user_list")],
+        [
+            InlineKeyboardButton("💲 Set VIP Price", callback_data="vip_set_price_menu"),
+            InlineKeyboardButton("🗑 Remove VIP Price", callback_data="vip_remove_price_menu"),
+        ],
+        [InlineKeyboardButton("📦 VIP Price List", callback_data="vip_price_list")],
+        [InlineKeyboardButton("⬅️ Close", callback_data="vip_close")],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def gold_vip_product_select_keyboard(prefix: str) -> InlineKeyboardMarkup:
+    rows = []
+    for product_id in product_order:
+        if product_id not in PRODUCTS:
+            continue
+        product = PRODUCTS[product_id]
+        vip_price = get_product_vip_price(product_id)
+        vip_text = format_money(vip_price) if vip_price is not None else "Not set"
+        core_text = f"{product.get('name', product_id)} | VIP: {vip_text}"
+        rows.append([make_product_inline_button(product, core_text, f"{prefix}_{product_id}")])
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="vip_back")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -2160,7 +2303,7 @@ def render_legal_text() -> str:
     )
 
 
-def render_product_card(product_id: str) -> str:
+def render_product_card(product_id: str, user_id: int = None) -> str:
     product = PRODUCTS[product_id]
     stock = get_display_stock(product_id)
     stock_text = f"{stock} pcs" if stock > 0 else "Stock Out"
@@ -2170,12 +2313,12 @@ def render_product_card(product_id: str) -> str:
     return (
         f"{icon} <b>{product['name']}</b>\n"
         f"{duration_line}"
-        f"<b>Price:</b> {format_money(product['price'])}\n"
+        f"<b>Price:</b> {format_product_price_for_user(product_id, user_id)}\n"
         f"<b>Stock:</b> {stock_text}"
     )
 
 
-def render_product_details(product_id: str) -> str:
+def render_product_details(product_id: str, user_id: int = None) -> str:
     product = PRODUCTS[product_id]
     detail_lines = "\n".join(product["details"])
     stock = get_display_stock(product_id)
@@ -2187,21 +2330,22 @@ def render_product_details(product_id: str) -> str:
         f"<b>Icon:</b> {icon}\n"
         f"<b>Name:</b> {product['name']}\n"
         f"{duration_line}"
-        f"<b>Price:</b> {format_money(product['price'])}\n"
+        f"<b>Price:</b> {format_product_price_for_user(product_id, user_id)}\n"
         f"<b>Stock:</b> {stock} pcs\n\n"
         f"{detail_lines}\n\n"
         "<b>Select quantity below:</b>"
     )
 
-def render_buy_summary(product_id: str, qty: int, wallet_balance: float) -> str:
+def render_buy_summary(product_id: str, qty: int, wallet_balance: float, user_id: int = None) -> str:
     product = PRODUCTS[product_id]
-    total = product["price"] * qty
+    unit_price = get_product_price(product_id, user_id)
+    total = unit_price * qty
     remaining = wallet_balance - total
     if wallet_balance >= total:
         return (
             "🛒 <b>ORDER SUMMARY</b>\n\n"
             f"<b>Product:</b> {product['name']}\n"
-            f"<b>Unit Price:</b> {format_money(product['price'])}\n"
+            f"<b>Unit Price:</b> {format_money(unit_price)}\n"
             f"<b>Quantity:</b> {qty}\n"
             f"<b>Total Price:</b> {format_money(total)}\n"
             f"<b>Wallet Balance:</b> {format_money(wallet_balance)}\n"
@@ -2214,7 +2358,7 @@ def render_buy_summary(product_id: str, qty: int, wallet_balance: float) -> str:
     return (
         "🛒 <b>ORDER SUMMARY</b>\n\n"
         f"<b>Product:</b> {product['name']}\n"
-        f"<b>Unit Price:</b> {format_money(product['price'])}\n"
+        f"<b>Unit Price:</b> {format_money(unit_price)}\n"
         f"<b>Quantity:</b> {qty}\n"
         f"<b>Total Price:</b> {format_money(total)}\n"
         f"<b>Wallet Balance:</b> {format_money(wallet_balance)}\n"
@@ -3014,7 +3158,7 @@ def render_shop_menu_text() -> str:
     )
 
 
-def shop_menu_keyboard() -> InlineKeyboardMarkup:
+def shop_menu_keyboard(user_id: int = None) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton("──── ⚡ AUTO DELIVERY ────", callback_data="noop")]]
     for product_id in product_order:
         if product_id not in PRODUCTS:
@@ -3024,7 +3168,7 @@ def shop_menu_keyboard() -> InlineKeyboardMarkup:
         month = format_duration_text(product.get("month", ""))
         month_part = f" {month}" if month else ""
         stock_text = f"📦 {stock} Pcs" if stock > 0 else "📦 0"
-        core_label = f"{product['name']}{month_part} - {format_money(product['price'])} | {stock_text}"
+        core_label = f"{product['name']}{month_part} - {format_product_price_for_user(product_id, user_id)} | {stock_text}"
         callback = f"shop_buy_{product_id}" if stock > 0 else f"shop_notify_{product_id}"
         rows.append([make_product_inline_button(product, core_label, callback)])
         if stock <= 0:
@@ -3037,75 +3181,12 @@ async def send_shop_cards_message(source, from_callback: bool = False):
     # Kept same function name so existing callbacks keep working.
     # New behavior: one compact store menu instead of many product messages.
     if from_callback:
-        await source.message.reply_text(render_shop_menu_text(), reply_markup=shop_menu_keyboard(), parse_mode="HTML")
+        viewer_id = getattr(source, "from_user", None).id if getattr(source, "from_user", None) else None
+        await source.message.reply_text(render_shop_menu_text(), reply_markup=shop_menu_keyboard(viewer_id), parse_mode="HTML")
     else:
-        await source.reply_text(render_shop_menu_text(), reply_markup=shop_menu_keyboard(), parse_mode="HTML")
+        viewer_id = source.effective_user.id if getattr(source, "effective_user", None) else None
+        await source.message.reply_text(render_shop_menu_text(), reply_markup=shop_menu_keyboard(viewer_id), parse_mode="HTML")
 
-
-async def send_html_lines(bot, chat_id: int, lines: list, max_len: int = 3800):
-    """Send long HTML-safe messages without breaking Telegram's 4096 character limit."""
-    chunk = []
-    chunk_len = 0
-    for line in lines:
-        add_len = len(line) + 1
-        if chunk and chunk_len + add_len > max_len:
-            await bot.send_message(chat_id=chat_id, text="\n".join(chunk), parse_mode="HTML", disable_web_page_preview=True)
-            chunk = []
-            chunk_len = 0
-        chunk.append(line)
-        chunk_len += add_len
-    if chunk:
-        await bot.send_message(chat_id=chat_id, text="\n".join(chunk), parse_mode="HTML", disable_web_page_preview=True)
-
-
-async def deliver_accounts_to_user(bot, user_id: int, product_id: str, qty: int):
-    product = PRODUCTS[product_id]
-    available = product["accounts"]
-    if len(available) < qty:
-        await bot.send_message(
-            chat_id=user_id,
-            text="❌ <b>Not enough real account inventory available right now.</b>\n\nPlease contact support.",
-            parse_mode="HTML",
-        )
-        return False, []
-
-    delivered = available[:qty]
-    del available[:qty]
-
-    current_display = get_display_stock(product_id)
-    product["display_stock"] = max(0, current_display - qty)
-
-    lines = [
-        f"✅ <b>Order Completed:</b> {escape_html(product['name'])}",
-        f"<b>Quantity:</b> {qty}",
-        "",
-        "🔐 <b>Your Account Details:</b>",
-        "",
-    ]
-    for acc in delivered:
-        raw_fields = acc.get("raw_fields")
-        if isinstance(raw_fields, list) and raw_fields:
-            account_line = " | ".join(str(x).strip() for x in raw_fields if str(x).strip())
-        else:
-            raw_line = str(acc.get("raw_line", "") or "").strip()
-            if raw_line:
-                account_line = raw_line
-            else:
-                fields = [
-                    str(acc.get("email", "") or "").strip(),
-                    str(acc.get("password", "") or "").strip(),
-                    str(acc.get("note", "") or "").strip(),
-                ]
-                account_line = " | ".join(x for x in fields if x)
-        lines.append(f"<code>{escape_html(account_line)}</code>")
-
-    guide = get_delivery_guide(product_id)
-    if guide:
-        lines.append("")
-        lines.append(escape_html(guide))
-
-    await send_html_lines(bot, user_id, lines)
-    return True, delivered
 
 
 async def process_wallet_purchase(update_or_query, context: ContextTypes.DEFAULT_TYPE, user_id: int, product_id: str, qty: int, total: float):
@@ -4462,6 +4543,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Notify actions:", reply_markup=admin_notify_keyboard(), parse_mode="HTML")
             return
 
+        if text == "👑 Gold VIP":
+            user_state[user_id] = {"step": "gold_vip_admin"}
+            reset_admin_temp(user_id)
+            await update.message.reply_text(render_gold_vip_panel(), reply_markup=admin_menu(), parse_mode="HTML")
+            await update.message.reply_text("Gold VIP actions:", reply_markup=gold_vip_admin_keyboard(), parse_mode="HTML")
+            return
+
         if text == "👥 User Details":
             user_state[user_id] = {"step": "users_admin"}
             details_text, page, total_pages = render_user_details_page(0)
@@ -4931,6 +5019,50 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if step == "vip_user_id_input":
+        try:
+            target_user_id = int(text)
+        except ValueError:
+            await update.message.reply_text("❌ <b>Invalid User ID.</b> Send numeric Telegram user ID.", parse_mode="HTML")
+            return
+        action = admin_temp[user_id].get("vip_action")
+        ensure_user(target_user_id)
+        if action == "add":
+            gold_vip_users.add(target_user_id)
+            msg = "✅ <b>User added to Gold VIP.</b>"
+        else:
+            gold_vip_users.discard(target_user_id)
+            msg = "✅ <b>User removed from Gold VIP.</b>"
+        user_state[user_id] = {"step": "gold_vip_admin"}
+        reset_admin_temp(user_id)
+        await update.message.reply_text(
+            f"{msg}\n\n<b>User ID:</b> <code>{target_user_id}</code>",
+            reply_markup=admin_menu(),
+            parse_mode="HTML",
+        )
+        await update.message.reply_text("Gold VIP actions:", reply_markup=gold_vip_admin_keyboard(), parse_mode="HTML")
+        return
+
+    if step == "vip_price_input":
+        product_id = admin_temp[user_id].get("selected_product_id")
+        if product_id not in PRODUCTS:
+            user_state[user_id] = {"step": "gold_vip_admin"}
+            reset_admin_temp(user_id)
+            await update.message.reply_text("❌ Product not found.", reply_markup=admin_menu())
+            return
+        amount = safe_decimal(text)
+        if amount is None or amount <= 0:
+            await update.message.reply_text("❌ <b>Invalid VIP price.</b> Send a valid number like <code>4</code> or <code>3.50</code>.", parse_mode="HTML")
+            return
+        admin_temp[user_id]["gold_vip_price"] = float(amount)
+        user_state[user_id] = {"step": "vip_price_confirm"}
+        await update.message.reply_text(
+            render_gold_vip_price_preview(user_id),
+            reply_markup=gold_vip_price_confirm_keyboard(),
+            parse_mode="HTML",
+        )
+        return
+
     if step == "users_search_input":
         try:
             target_user_id = int(text)
@@ -4976,14 +5108,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ <b>Only {stock} pcs available.</b>", parse_mode="HTML")
             return
 
-        total = PRODUCTS[product_id]["price"] * qty
+        total = get_product_price(product_id, user_id) * qty
         if user_wallet[user_id] >= total:
             await process_wallet_purchase(update, context, user_id, product_id, qty, total)
             user_state[user_id] = {"step": "main"}
             return
 
         user_state[user_id] = {"step": "buy_payment_method", "product_id": product_id, "qty": qty, "total": total}
-        await update.message.reply_text(render_buy_summary(product_id, qty, user_wallet[user_id]), reply_markup=payment_method_keyboard("buy"), parse_mode="HTML")
+        await update.message.reply_text(render_buy_summary(product_id, qty, user_wallet[user_id], user_id), reply_markup=payment_method_keyboard("buy"), parse_mode="HTML")
         return
 
     if step == "deposit_custom_amount":
@@ -5343,6 +5475,86 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         user_state[user_id] = {"step": "notify_requests_admin"}
         await send_inline_from_callback(query, render_notify_product_details(product_id), admin_notify_product_back_keyboard())
+        return
+
+    # ========= GOLD VIP ADMIN =========
+    if data == "vip_close":
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "admin_main"}
+        await send_inline_from_callback(query, "Closed Gold VIP panel.", close_keyboard())
+        return
+
+    if data == "vip_back":
+        user_state[user_id] = {"step": "gold_vip_admin"}
+        await send_inline_from_callback(query, render_gold_vip_panel(), gold_vip_admin_keyboard())
+        return
+
+    if data == "vip_add_user":
+        reset_admin_temp(user_id)
+        admin_temp[user_id]["vip_action"] = "add"
+        user_state[user_id] = {"step": "vip_user_id_input"}
+        await send_inline_from_callback(query, "👑 <b>Add Gold VIP User</b>\n\nSend user ID now.", admin_cancel_keyboard())
+        return
+
+    if data == "vip_remove_user":
+        reset_admin_temp(user_id)
+        admin_temp[user_id]["vip_action"] = "remove"
+        user_state[user_id] = {"step": "vip_user_id_input"}
+        await send_inline_from_callback(query, "👑 <b>Remove Gold VIP User</b>\n\nSend user ID now.", admin_cancel_keyboard())
+        return
+
+    if data == "vip_user_list":
+        user_state[user_id] = {"step": "gold_vip_admin"}
+        await send_inline_from_callback(query, render_gold_vip_user_list(), gold_vip_admin_keyboard())
+        return
+
+    if data == "vip_price_list":
+        user_state[user_id] = {"step": "gold_vip_admin"}
+        await send_inline_from_callback(query, render_gold_vip_price_list(), gold_vip_admin_keyboard())
+        return
+
+    if data == "vip_set_price_menu":
+        user_state[user_id] = {"step": "vip_price_pick"}
+        await send_inline_from_callback(query, "👑 <b>Set Gold VIP Price</b>\n\nSelect product below.", gold_vip_product_select_keyboard("vip_pick_price"))
+        return
+
+    if data == "vip_remove_price_menu":
+        user_state[user_id] = {"step": "vip_remove_price_pick"}
+        await send_inline_from_callback(query, "🗑 <b>Remove Gold VIP Price</b>\n\nSelect product below.", gold_vip_product_select_keyboard("vip_remove_price"))
+        return
+
+    if data.startswith("vip_pick_price_"):
+        product_id = data.replace("vip_pick_price_", "")
+        if product_id not in PRODUCTS:
+            await send_inline_from_callback(query, "❌ <b>Product not found.</b>", gold_vip_admin_keyboard())
+            return
+        admin_temp[user_id]["selected_product_id"] = product_id
+        user_state[user_id] = {"step": "vip_price_input"}
+        current_vip = get_product_vip_price(product_id)
+        current_vip_text = format_money(current_vip) if current_vip is not None else "Not set"
+        await send_inline_from_callback(
+            query,
+            f"👑 <b>Set Gold VIP Price</b>\n\n<b>Product:</b> {escape_html(PRODUCTS[product_id]['name'])}\n<b>Normal Price:</b> {format_money(get_product_base_price(product_id))}\n<b>Current VIP Price:</b> {current_vip_text}\n\nNow send VIP price.",
+            admin_cancel_keyboard(),
+        )
+        return
+
+    if data.startswith("vip_remove_price_"):
+        product_id = data.replace("vip_remove_price_", "")
+        if product_id in PRODUCTS:
+            PRODUCTS[product_id].pop("gold_vip_price", None)
+        user_state[user_id] = {"step": "gold_vip_admin"}
+        await send_inline_from_callback(query, "✅ <b>VIP price removed.</b>", gold_vip_admin_keyboard())
+        return
+
+    if data == "vip_confirm_price":
+        product_id = admin_temp[user_id].get("selected_product_id")
+        vip_price = float(admin_temp[user_id].get("gold_vip_price", 0))
+        if product_id in PRODUCTS and vip_price > 0:
+            PRODUCTS[product_id]["gold_vip_price"] = vip_price
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "gold_vip_admin"}
+        await send_inline_from_callback(query, "✅ <b>Gold VIP price updated.</b>", gold_vip_admin_keyboard())
         return
 
     if data.startswith("admin_pick_name_"):
@@ -5850,7 +6062,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_inline_from_callback(query, "❌ <b>This product is currently out of stock.</b>", close_keyboard())
             return
         user_state[user_id] = {"step": "buy_qty_select", "product_id": product_id}
-        await send_inline_from_callback(query, render_product_details(product_id), buy_qty_keyboard(product_id))
+        await send_inline_from_callback(query, render_product_details(product_id, user_id), buy_qty_keyboard(product_id))
         return
 
     if data.startswith("shop_notify_"):
@@ -5874,13 +6086,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if qty > stock:
             await send_inline_from_callback(query, f"❌ <b>Only {stock} pcs available.</b>", buy_qty_keyboard(product_id))
             return
-        total = PRODUCTS[product_id]["price"] * qty
+        total = get_product_price(product_id, user_id) * qty
         if user_wallet[user_id] >= total:
             await process_wallet_purchase(query, context, user_id, product_id, qty, total)
             user_state[user_id] = {"step": "main"}
             return
         user_state[user_id] = {"step": "buy_payment_method", "product_id": product_id, "qty": qty, "total": total}
-        await send_inline_from_callback(query, render_buy_summary(product_id, qty, user_wallet[user_id]), payment_method_keyboard("buy"))
+        await send_inline_from_callback(query, render_buy_summary(product_id, qty, user_wallet[user_id], user_id), payment_method_keyboard("buy"))
         return
 
     if data.startswith("buy_custom_"):
@@ -5906,7 +6118,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "buy_back_method":
         state = user_state[user_id]
-        await send_inline_from_callback(query, render_buy_summary(state["product_id"], state["qty"], user_wallet[user_id]), payment_method_keyboard("buy"))
+        await send_inline_from_callback(query, render_buy_summary(state["product_id"], state["qty"], user_wallet[user_id], user_id), payment_method_keyboard("buy"))
         return
 
     if data.startswith("buy_net_"):
