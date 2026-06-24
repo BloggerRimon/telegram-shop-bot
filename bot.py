@@ -1455,6 +1455,103 @@ def apply_admin_balance_adjustment(admin_id: int):
 
 
 # =========================
+# ADMIN NOTIFY REQUEST HELPERS
+# =========================
+def _notify_count(product_id: str) -> int:
+    return len(notify_waitlist.get(product_id, set()) or set())
+
+
+def render_admin_notify_panel() -> str:
+    total_waiting = sum(_notify_count(pid) for pid in PRODUCTS)
+    active_products = len([pid for pid in PRODUCTS if _notify_count(pid) > 0])
+    return (
+        "🔔 <b>NOTIFY REQUESTS</b>\n\n"
+        f"<b>Total Waiting Users:</b> {total_waiting}\n"
+        f"<b>Products With Demand:</b> {active_products}\n\n"
+        "Choose an option below."
+    )
+
+
+def render_notify_requests_summary() -> str:
+    lines = [
+        "🔔 <b>NOTIFY REQUESTS SUMMARY</b>",
+        "",
+    ]
+
+    found = False
+    for product_id in product_order:
+        product = PRODUCTS.get(product_id, {})
+        count = _notify_count(product_id)
+        if count <= 0:
+            continue
+        found = True
+        lines.append(
+            f"{product_icon_html(product)} <b>{escape_html(product.get('name', product_id))}</b> "
+            f"(<code>{product_id}</code>) — <b>{count}</b> waiting"
+        )
+
+    if not found:
+        lines.append("No notify requests found yet.")
+
+    return "\n".join(lines)
+
+
+def render_notify_product_details(product_id: str) -> str:
+    product = PRODUCTS.get(product_id, {})
+    waiters = sorted(int(uid) for uid in (notify_waitlist.get(product_id, set()) or set()))
+    lines = [
+        "🔔 <b>PRODUCT NOTIFY DETAILS</b>",
+        "",
+        f"<b>Product:</b> {product_icon_html(product)} {escape_html(product.get('name', product_id))}",
+        f"<b>Product ID:</b> <code>{product_id}</code>",
+        f"<b>Waiting Users:</b> {len(waiters)}",
+        "",
+    ]
+
+    if not waiters:
+        lines.append("No users are waiting for this product.")
+        return "\n".join(lines)
+
+    lines.append("<b>User List:</b>")
+    for idx, uid in enumerate(waiters[:60], start=1):
+        lines.append(f"{idx}. {format_user_link(uid)} | ID: <code>{uid}</code>")
+
+    if len(waiters) > 60:
+        lines.append(f"\nAnd {len(waiters) - 60} more users...")
+
+    return "\n".join(lines)
+
+
+def admin_notify_keyboard() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton("📊 Summary", callback_data="admin_notify_summary")],
+        [InlineKeyboardButton("📦 Product Details", callback_data="admin_notify_products")],
+        [InlineKeyboardButton("🔄 Refresh", callback_data="admin_notify_refresh")],
+        [InlineKeyboardButton("⬅️ Close", callback_data="admin_notify_close")],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def admin_notify_product_select_keyboard() -> InlineKeyboardMarkup:
+    rows = []
+    for product_id in product_order:
+        product = PRODUCTS.get(product_id, {})
+        count = _notify_count(product_id)
+        core_text = f"{product.get('name', product_id)} ({count} waiting)"
+        rows.append([make_product_inline_button(product, core_text, f"admin_notify_product_{product_id}")])
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="admin_notify_back")])
+    return InlineKeyboardMarkup(rows)
+
+
+def admin_notify_product_back_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Product List", callback_data="admin_notify_products")],
+        [InlineKeyboardButton("📊 Summary", callback_data="admin_notify_summary")],
+        [InlineKeyboardButton("⬅️ Close", callback_data="admin_notify_close")],
+    ])
+
+
+# =========================
 # MENUS
 # =========================
 def main_menu() -> ReplyKeyboardMarkup:
@@ -1473,8 +1570,9 @@ def admin_menu() -> ReplyKeyboardMarkup:
         ["📦 Products", "📥 Stock"],
         ["🎟 Promo Admin", "📦 Orders Admin"],
         ["💳 Deposits Admin", "👤 Users Admin"],
-        ["💰 User Balance", "👥 User Details"],
-        ["📊 Analytics", "📢 Broadcast"],
+        ["💰 User Balance", "🔔 Notify Requests"],
+        ["👥 User Details", "📊 Analytics"],
+        ["📢 Broadcast"],
         ["🚪 Exit Admin"],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -4300,6 +4398,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Balance actions:", reply_markup=user_balance_admin_keyboard(), parse_mode="HTML")
             return
 
+        if text == "🔔 Notify Requests":
+            user_state[user_id] = {"step": "notify_requests_admin"}
+            reset_admin_temp(user_id)
+            await update.message.reply_text(render_admin_notify_panel(), reply_markup=admin_menu(), parse_mode="HTML")
+            await update.message.reply_text("Notify actions:", reply_markup=admin_notify_keyboard(), parse_mode="HTML")
+            return
+
         if text == "👥 User Details":
             user_state[user_id] = {"step": "users_admin"}
             details_text, page, total_pages = render_user_details_page(0)
@@ -5146,6 +5251,41 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         else:
             await send_inline_from_callback(query, f"❌ <b>{escape_html(msg)}</b>", user_balance_admin_keyboard())
+        return
+
+    # ========= NOTIFY REQUESTS ADMIN =========
+    if data == "admin_notify_close":
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "admin_main"}
+        await send_inline_from_callback(query, "Closed notify requests panel.", close_keyboard())
+        return
+
+    if data in ("admin_notify_refresh", "admin_notify_back"):
+        user_state[user_id] = {"step": "notify_requests_admin"}
+        await send_inline_from_callback(query, render_admin_notify_panel(), admin_notify_keyboard())
+        return
+
+    if data == "admin_notify_summary":
+        user_state[user_id] = {"step": "notify_requests_admin"}
+        await send_inline_from_callback(query, render_notify_requests_summary(), admin_notify_keyboard())
+        return
+
+    if data == "admin_notify_products":
+        user_state[user_id] = {"step": "notify_requests_admin"}
+        await send_inline_from_callback(
+            query,
+            "🔔 <b>SELECT PRODUCT</b>\n\nChoose a product to see waiting users.",
+            admin_notify_product_select_keyboard(),
+        )
+        return
+
+    if data.startswith("admin_notify_product_"):
+        product_id = data.replace("admin_notify_product_", "")
+        if product_id not in PRODUCTS:
+            await send_inline_from_callback(query, "❌ <b>Product not found.</b>", admin_notify_keyboard())
+            return
+        user_state[user_id] = {"step": "notify_requests_admin"}
+        await send_inline_from_callback(query, render_notify_product_details(product_id), admin_notify_product_back_keyboard())
         return
 
     if data.startswith("admin_pick_name_"):
