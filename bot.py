@@ -1356,6 +1356,105 @@ def get_user_search_summary_text(user_id: int) -> str:
 
 
 # =========================
+# ADMIN BALANCE HELPERS
+# =========================
+def render_admin_balance_panel() -> str:
+    return (
+        "💰 <b>USER BALANCE ADMIN</b>\n\n"
+        "Add, minus, or check any user wallet balance.\n\n"
+        "Choose an action below."
+    )
+
+
+def render_balance_check_text(target_user_id: int) -> str:
+    ensure_user(int(target_user_id))
+    balance = float(user_wallet.get(int(target_user_id), 0.0))
+    return (
+        "🔎 <b>USER BALANCE</b>\n\n"
+        f"<b>User ID:</b> <code>{int(target_user_id)}</code>\n"
+        f"<b>Wallet Balance:</b> {format_money(balance)}"
+    )
+
+
+def render_balance_adjust_preview(admin_id: int) -> str:
+    temp = admin_temp.get(admin_id, {})
+    action = temp.get("balance_action", "add")
+    target_user_id = int(temp.get("target_user_id"))
+    amount = float(temp.get("balance_amount", 0))
+    reason = str(temp.get("balance_reason") or "Admin adjustment").strip()
+    current_balance = float(user_wallet.get(target_user_id, 0.0))
+    if action == "add":
+        new_balance = current_balance + amount
+        action_text = "➕ Add Balance"
+        change_text = f"+{format_money(amount)}"
+    else:
+        new_balance = current_balance - amount
+        action_text = "➖ Minus Balance"
+        change_text = f"-{format_money(amount)}"
+
+    return (
+        "💰 <b>CONFIRM BALANCE UPDATE</b>\n\n"
+        f"<b>Action:</b> {action_text}\n"
+        f"<b>User ID:</b> <code>{target_user_id}</code>\n"
+        f"<b>Current Balance:</b> {format_money(current_balance)}\n"
+        f"<b>Change:</b> {change_text}\n"
+        f"<b>New Balance:</b> {format_money(new_balance)}\n"
+        f"<b>Reason:</b> {escape_html(reason)}\n\n"
+        "Confirm this wallet update?"
+    )
+
+
+def balance_adjust_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Confirm Update", callback_data="balance_confirm_update")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="admin_cancel_flow")],
+    ])
+
+
+def apply_admin_balance_adjustment(admin_id: int):
+    temp = admin_temp.get(admin_id, {})
+    action = temp.get("balance_action")
+    target_user_id = int(temp.get("target_user_id"))
+    amount = float(temp.get("balance_amount", 0))
+    reason = str(temp.get("balance_reason") or "Admin adjustment").strip()
+
+    ensure_user(target_user_id)
+    old_balance = float(user_wallet.get(target_user_id, 0.0))
+
+    if amount <= 0:
+        return False, "Invalid amount.", old_balance, old_balance
+
+    if action == "minus" and old_balance < amount:
+        return False, "Insufficient wallet balance. Balance cannot go below $0.00.", old_balance, old_balance
+
+    if action == "add":
+        new_balance = old_balance + amount
+        tx_type = "Admin Credit"
+        tx_amount = amount
+    else:
+        new_balance = old_balance - amount
+        tx_type = "Admin Deduct"
+        tx_amount = -amount
+
+    user_wallet[target_user_id] = round(new_balance, 2)
+    add_transaction_record(
+        target_user_id,
+        tx_type,
+        tx_amount,
+        "Completed",
+        {
+            "admin_id": admin_id,
+            "reason": reason,
+            "old_balance": old_balance,
+            "new_balance": user_wallet[target_user_id],
+        },
+    )
+
+    update_user_profile(target_user_id)
+    return True, "Balance updated successfully.", old_balance, user_wallet[target_user_id]
+
+
+# =========================
 # MENUS
 # =========================
 def main_menu() -> ReplyKeyboardMarkup:
@@ -1374,8 +1473,8 @@ def admin_menu() -> ReplyKeyboardMarkup:
         ["📦 Products", "📥 Stock"],
         ["🎟 Promo Admin", "📦 Orders Admin"],
         ["💳 Deposits Admin", "👤 Users Admin"],
-        ["👥 User Details", "📊 Analytics"],
-        ["📢 Broadcast"],
+        ["💰 User Balance", "👥 User Details"],
+        ["📊 Analytics", "📢 Broadcast"],
         ["🚪 Exit Admin"],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -1547,6 +1646,18 @@ def users_admin_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("👥 User Details", callback_data="users_details_0")],
         [InlineKeyboardButton("🔎 Search User ID", callback_data="users_search")],
         [InlineKeyboardButton("⬅️ Close", callback_data="users_close")],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def user_balance_admin_keyboard() -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton("➕ Add Balance", callback_data="balance_add"),
+            InlineKeyboardButton("➖ Minus Balance", callback_data="balance_minus"),
+        ],
+        [InlineKeyboardButton("🔎 Check User Balance", callback_data="balance_check")],
+        [InlineKeyboardButton("⬅️ Close", callback_data="balance_close")],
     ]
     return InlineKeyboardMarkup(rows)
 
@@ -4182,6 +4293,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Users actions:", reply_markup=users_admin_keyboard(), parse_mode="HTML")
             return
 
+        if text == "💰 User Balance":
+            user_state[user_id] = {"step": "balance_admin"}
+            reset_admin_temp(user_id)
+            await update.message.reply_text(render_admin_balance_panel(), reply_markup=admin_menu(), parse_mode="HTML")
+            await update.message.reply_text("Balance actions:", reply_markup=user_balance_admin_keyboard(), parse_mode="HTML")
+            return
+
         if text == "👥 User Details":
             user_state[user_id] = {"step": "users_admin"}
             details_text, page, total_pages = render_user_details_page(0)
@@ -4573,6 +4691,84 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Deposits actions:", reply_markup=deposits_admin_keyboard(), parse_mode="HTML")
         return
 
+    if step == "balance_user_id_input":
+        try:
+            target_user_id = int(text)
+        except ValueError:
+            await update.message.reply_text("❌ <b>Invalid User ID.</b> Send numeric Telegram user ID.", parse_mode="HTML")
+            return
+
+        admin_temp[user_id]["target_user_id"] = target_user_id
+        action = admin_temp[user_id].get("balance_action")
+
+        if action == "check":
+            user_state[user_id] = {"step": "balance_admin"}
+            await update.message.reply_text(render_balance_check_text(target_user_id), reply_markup=admin_menu(), parse_mode="HTML")
+            await update.message.reply_text("Balance actions:", reply_markup=user_balance_admin_keyboard(), parse_mode="HTML")
+            return
+
+        user_state[user_id] = {"step": "balance_amount_input"}
+        current_balance = float(user_wallet.get(target_user_id, 0.0))
+        await update.message.reply_text(
+            "💰 <b>User Balance Update</b>\n\n"
+            f"<b>User ID:</b> <code>{target_user_id}</code>\n"
+            f"<b>Current Balance:</b> {format_money(current_balance)}\n\n"
+            "Now send amount. Example: <code>5</code>",
+            reply_markup=admin_menu(),
+            parse_mode="HTML",
+        )
+        await update.message.reply_text("Cancel if needed.", reply_markup=admin_cancel_keyboard(), parse_mode="HTML")
+        return
+
+    if step == "balance_amount_input":
+        amount = safe_decimal(text)
+        if amount is None or amount <= 0:
+            await update.message.reply_text("❌ <b>Invalid amount.</b> Send a valid number like <code>5</code> or <code>2.50</code>.", parse_mode="HTML")
+            return
+
+        target_user_id = int(admin_temp[user_id]["target_user_id"])
+        action = admin_temp[user_id].get("balance_action")
+        amount_float = float(amount)
+
+        if action == "minus" and float(user_wallet.get(target_user_id, 0.0)) < amount_float:
+            await update.message.reply_text(
+                "❌ <b>Insufficient balance.</b>\n\n"
+                f"Current balance: {format_money(user_wallet.get(target_user_id, 0.0))}\n"
+                f"Minus amount: {format_money(amount_float)}",
+                parse_mode="HTML",
+            )
+            return
+
+        admin_temp[user_id]["balance_amount"] = amount_float
+        user_state[user_id] = {"step": "balance_reason_input"}
+        await update.message.reply_text(
+            "📝 <b>Reason / Note</b>\n\n"
+            "Send a short reason for this wallet update.\n"
+            "Example: <code>Manual service delivered</code>",
+            reply_markup=admin_menu(),
+            parse_mode="HTML",
+        )
+        await update.message.reply_text("Cancel if needed.", reply_markup=admin_cancel_keyboard(), parse_mode="HTML")
+        return
+
+    if step == "balance_reason_input":
+        reason = text.strip()
+        if not reason:
+            await update.message.reply_text("❌ <b>Reason cannot be empty.</b>", parse_mode="HTML")
+            return
+        if len(reason) > 300:
+            await update.message.reply_text("❌ <b>Reason too long.</b> Keep it under 300 characters.", parse_mode="HTML")
+            return
+
+        admin_temp[user_id]["balance_reason"] = reason
+        user_state[user_id] = {"step": "balance_confirm"}
+        await update.message.reply_text(
+            render_balance_adjust_preview(user_id),
+            reply_markup=balance_adjust_confirm_keyboard(),
+            parse_mode="HTML",
+        )
+        return
+
     if step == "users_search_input":
         try:
             target_user_id = int(text)
@@ -4903,6 +5099,53 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reset_admin_temp(user_id)
         user_state[user_id] = {"step": "main"}
         await send_inline_from_callback(query, "❌ <b>Cancelled.</b>", close_keyboard())
+        return
+
+    # ========= USER BALANCE ADMIN =========
+    if data == "balance_close":
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "admin_main"}
+        await send_inline_from_callback(query, "Closed balance panel.", close_keyboard())
+        return
+
+    if data == "balance_add":
+        reset_admin_temp(user_id)
+        admin_temp[user_id]["balance_action"] = "add"
+        user_state[user_id] = {"step": "balance_user_id_input"}
+        await send_inline_from_callback(query, "➕ <b>Add Balance</b>\n\nSend user ID now.", admin_cancel_keyboard())
+        return
+
+    if data == "balance_minus":
+        reset_admin_temp(user_id)
+        admin_temp[user_id]["balance_action"] = "minus"
+        user_state[user_id] = {"step": "balance_user_id_input"}
+        await send_inline_from_callback(query, "➖ <b>Minus Balance</b>\n\nSend user ID now.", admin_cancel_keyboard())
+        return
+
+    if data == "balance_check":
+        reset_admin_temp(user_id)
+        admin_temp[user_id]["balance_action"] = "check"
+        user_state[user_id] = {"step": "balance_user_id_input"}
+        await send_inline_from_callback(query, "🔎 <b>Check User Balance</b>\n\nSend user ID now.", admin_cancel_keyboard())
+        return
+
+    if data == "balance_confirm_update":
+        ok, msg, old_balance, new_balance = apply_admin_balance_adjustment(user_id)
+        if ok:
+            save_bot_state()
+            target_user_id = int(admin_temp.get(user_id, {}).get("target_user_id", 0) or 0)
+            reset_admin_temp(user_id)
+            user_state[user_id] = {"step": "balance_admin"}
+            await send_inline_from_callback(
+                query,
+                "✅ <b>Balance updated.</b>\n\n"
+                f"<b>User ID:</b> <code>{target_user_id}</code>\n"
+                f"<b>Old Balance:</b> {format_money(old_balance)}\n"
+                f"<b>New Balance:</b> {format_money(new_balance)}",
+                user_balance_admin_keyboard(),
+            )
+        else:
+            await send_inline_from_callback(query, f"❌ <b>{escape_html(msg)}</b>", user_balance_admin_keyboard())
         return
 
     if data.startswith("admin_pick_name_"):
