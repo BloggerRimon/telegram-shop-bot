@@ -5798,7 +5798,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("shop_notify_"):
         product_id = data.replace("shop_notify_", "")
+        notify_waitlist.setdefault(product_id, set())
+        before_count = len(notify_waitlist.get(product_id, set()))
         notify_waitlist[product_id].add(user_id)
+        after_count = len(notify_waitlist.get(product_id, set()))
+        if after_count != before_count:
+            save_bot_state()
         product = PRODUCTS[product_id]
         await send_inline_from_callback(query, f"🔔 You will be notified when <b>{product['name']}</b> is back in stock.", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Shop", callback_data="back_shop_cards")]]))
         return
