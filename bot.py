@@ -3191,6 +3191,72 @@ async def send_shop_cards_message(source, from_callback: bool = False):
 
 
 
+async def send_html_lines(bot, chat_id: int, lines: list, max_len: int = 3800):
+    """Send long HTML-safe messages without breaking Telegram's 4096 character limit."""
+    chunk = []
+    chunk_len = 0
+    for line in lines:
+        add_len = len(line) + 1
+        if chunk and chunk_len + add_len > max_len:
+            await bot.send_message(chat_id=chat_id, text="\n".join(chunk), parse_mode="HTML", disable_web_page_preview=True)
+            chunk = []
+            chunk_len = 0
+        chunk.append(line)
+        chunk_len += add_len
+    if chunk:
+        await bot.send_message(chat_id=chat_id, text="\n".join(chunk), parse_mode="HTML", disable_web_page_preview=True)
+
+
+async def deliver_accounts_to_user(bot, user_id: int, product_id: str, qty: int):
+    product = PRODUCTS[product_id]
+    available = product["accounts"]
+    if len(available) < qty:
+        await bot.send_message(
+            chat_id=user_id,
+            text="❌ <b>Not enough real account inventory available right now.</b>\n\nPlease contact support.",
+            parse_mode="HTML",
+        )
+        return False, []
+
+    delivered = available[:qty]
+    del available[:qty]
+
+    current_display = get_display_stock(product_id)
+    product["display_stock"] = max(0, current_display - qty)
+
+    lines = [
+        f"✅ <b>Order Completed:</b> {escape_html(product['name'])}",
+        f"<b>Quantity:</b> {qty}",
+        "",
+        "🔐 <b>Your Account Details:</b>",
+        "",
+    ]
+    for acc in delivered:
+        raw_fields = acc.get("raw_fields")
+        if isinstance(raw_fields, list) and raw_fields:
+            account_line = " | ".join(str(x).strip() for x in raw_fields if str(x).strip())
+        else:
+            raw_line = str(acc.get("raw_line", "") or "").strip()
+            if raw_line:
+                account_line = raw_line
+            else:
+                fields = [
+                    str(acc.get("email", "") or "").strip(),
+                    str(acc.get("password", "") or "").strip(),
+                    str(acc.get("note", "") or "").strip(),
+                ]
+                account_line = " | ".join(x for x in fields if x)
+        lines.append(f"<code>{escape_html(account_line)}</code>")
+
+    guide = get_delivery_guide(product_id)
+    if guide:
+        lines.append("")
+        lines.append(escape_html(guide))
+
+    await send_html_lines(bot, user_id, lines)
+    return True, delivered
+
+
 async def process_wallet_purchase(update_or_query, context: ContextTypes.DEFAULT_TYPE, user_id: int, product_id: str, qty: int, total: float):
     if user_wallet[user_id] < total:
         return False
