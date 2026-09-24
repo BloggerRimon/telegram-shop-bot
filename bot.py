@@ -1675,24 +1675,32 @@ def product_label_text(product_or_temp, core_text: str) -> str:
     return f"{prefix} {core_text}".strip() if prefix else str(core_text)
 
 
-def make_inline_button_with_optional_icon(text: str, callback_data: str, custom_emoji_id: str = None):
-    custom_emoji_id = str(custom_emoji_id or "").strip()
-    if custom_emoji_id:
-        return InlineKeyboardButton(
-            text=str(text),
-            callback_data=callback_data,
-            api_kwargs={"icon_custom_emoji_id": custom_emoji_id},
-        )
-    return InlineKeyboardButton(str(text), callback_data=callback_data)
+def make_inline_button_with_optional_icon(
+    text: str,
+    callback_data: str,
+    custom_emoji_id: str = None,
+    style: str = None,
+):
+    return make_styled_inline_button(
+        str(text),
+        callback_data=callback_data,
+        style=style,
+        icon_custom_emoji_id=custom_emoji_id,
+    )
 
 
-def make_product_inline_button(product_or_temp, core_text: str, callback_data: str):
+def make_product_inline_button(product_or_temp, core_text: str, callback_data: str, style: str = None):
     label = product_label_text(product_or_temp, core_text)
     try:
         label = _short_button_text(label)
     except Exception:
         pass
-    return make_inline_button_with_optional_icon(label, callback_data, _product_custom_emoji_id(product_or_temp))
+    return make_inline_button_with_optional_icon(
+        label,
+        callback_data,
+        _product_custom_emoji_id(product_or_temp),
+        style=style,
+    )
 
 
 def _category_custom_emoji_id(category) -> str:
@@ -1747,9 +1755,14 @@ def category_label_text(category, core_text: str) -> str:
     return f"{prefix} {core_text}".strip() if prefix else str(core_text)
 
 
-def make_category_inline_button(category, core_text: str, callback_data: str):
+def make_category_inline_button(category, core_text: str, callback_data: str, style: str = None):
     label = _short_button_text(category_label_text(category, core_text))
-    return make_inline_button_with_optional_icon(label, callback_data, _category_custom_emoji_id(category))
+    return make_inline_button_with_optional_icon(
+        label,
+        callback_data,
+        _category_custom_emoji_id(category),
+        style=style,
+    )
 
 # =========================
 # ADVANCED USER / PROMO HELPERS
@@ -2709,19 +2722,38 @@ def network_keyboard(prefix: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def buy_qty_keyboard(product_id: str) -> InlineKeyboardMarkup:
+def buy_qty_keyboard(product_id: str, styled: bool = True) -> InlineKeyboardMarkup:
+    action_style = "primary" if styled else None
+    back_style = "primary" if styled else None
+    menu_style = "danger" if styled else None
     rows = [
         [
-            InlineKeyboardButton("🛒 Buy 1x", callback_data=f"buy_qty_{product_id}_1"),
-            InlineKeyboardButton("🛒 Buy 5x", callback_data=f"buy_qty_{product_id}_5"),
+            make_styled_inline_button("🛒 Buy 1x", callback_data=f"buy_qty_{product_id}_1", style=action_style),
+            make_styled_inline_button("🛒 Buy 5x", callback_data=f"buy_qty_{product_id}_5", style=action_style),
         ],
         [
-            InlineKeyboardButton("🛒 Buy 10x", callback_data=f"buy_qty_{product_id}_10"),
-            InlineKeyboardButton("✏️ Custom Qty", callback_data=f"buy_custom_{product_id}"),
+            make_styled_inline_button("🛒 Buy 10x", callback_data=f"buy_qty_{product_id}_10", style=action_style),
+            make_styled_inline_button("✏️ Custom Qty", callback_data=f"buy_custom_{product_id}", style=action_style),
         ],
-        [InlineKeyboardButton("⬅️ Back to Shop", callback_data="back_shop_cards")],
+        [make_styled_inline_button("⬅️ Back to Shop", callback_data="back_shop_cards", style=back_style)],
+        [make_styled_inline_button("🏠 Back to Menu", callback_data="user_back_to_dashboard", style=menu_style)],
     ]
     return InlineKeyboardMarkup(rows)
+
+
+def shop_return_keyboard(styled: bool = True) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [make_styled_inline_button(
+            "⬅️ Back to Shop",
+            callback_data="back_shop_cards",
+            style="primary" if styled else None,
+        )],
+        [make_styled_inline_button(
+            "🏠 Back to Menu",
+            callback_data="user_back_to_dashboard",
+            style="danger" if styled else None,
+        )],
+    ])
 
 
 def final_manual_keyboard(prefix: str) -> InlineKeyboardMarkup:
@@ -3195,6 +3227,14 @@ async def send_inline_from_callback(query, text: str, keyboard=None):
         await query.message.reply_text(text, parse_mode="HTML")
     else:
         await query.message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def send_shop_inline_with_style_fallback(query, text: str, keyboard, fallback_keyboard):
+    try:
+        await send_inline_from_callback(query, text, keyboard)
+    except Exception as e:
+        print(f"Styled shop buttons were rejected; retrying normal buttons: {type(e).__name__}: {e}")
+        await send_inline_from_callback(query, text, fallback_keyboard)
 
 
 # =========================
@@ -4472,7 +4512,7 @@ def render_shop_menu_text() -> str:
     return f"{flash_banner}\n\n{base}" if flash_banner else base
 
 
-def shop_product_rows(product_ids: list, user_id: int = None) -> list:
+def shop_product_rows(product_ids: list, user_id: int = None, styled: bool = True) -> list:
     rows = []
     for product_id in product_ids:
         if product_id not in PRODUCTS:
@@ -4484,13 +4524,26 @@ def shop_product_rows(product_ids: list, user_id: int = None) -> list:
         stock_text = f"📦 {stock} Pcs" if stock > 0 else "📦 0"
         core_label = f"{product['name']}{month_part} - {format_product_price_for_user(product_id, user_id)} | {stock_text}"
         callback = f"shop_buy_{product_id}" if stock > 0 else f"shop_notify_{product_id}"
-        rows.append([make_product_inline_button(product, core_label, callback)])
+        rows.append([
+            make_product_inline_button(
+                product,
+                core_label,
+                callback,
+                style="primary" if styled else None,
+            )
+        ])
         if stock <= 0:
-            rows.append([InlineKeyboardButton("🔔 Notify Me", callback_data=f"shop_notify_{product_id}")])
+            rows.append([
+                make_styled_inline_button(
+                    "🔔 Notify Me",
+                    callback_data=f"shop_notify_{product_id}",
+                    style="success" if styled else None,
+                )
+            ])
     return rows
 
 
-def shop_categories_keyboard(user_id: int = None) -> InlineKeyboardMarkup:
+def shop_categories_keyboard(user_id: int = None, styled: bool = True) -> InlineKeyboardMarkup:
     normalize_shop_order()
     rows = [[InlineKeyboardButton("──── ⚡ AUTO DELIVERY ────", callback_data="noop")]]
     for item in shop_order:
@@ -4498,7 +4551,7 @@ def shop_categories_keyboard(user_id: int = None) -> InlineKeyboardMarkup:
         if item_type == "product":
             product = PRODUCTS.get(item_id)
             if product and product.get("category_id") == DEFAULT_CATEGORY_ID:
-                rows.extend(shop_product_rows([item_id], user_id))
+                rows.extend(shop_product_rows([item_id], user_id, styled=styled))
             continue
         category = CATEGORIES.get(item_id, {})
         if not category or item_id == DEFAULT_CATEGORY_ID:
@@ -4507,19 +4560,43 @@ def shop_categories_keyboard(user_id: int = None) -> InlineKeyboardMarkup:
             f"{category.get('name', item_id)} "
             f"({len(get_category_product_ids(item_id))})"
         )
-        rows.append([make_category_inline_button(category, label, f"shop_category_{item_id}")])
-    rows.append([InlineKeyboardButton("⬅️ Close", callback_data="close_inline")])
+        rows.append([
+            make_category_inline_button(
+                category,
+                label,
+                f"shop_category_{item_id}",
+                style="primary" if styled else None,
+            )
+        ])
+    rows.append([
+        make_styled_inline_button(
+            "🏠 Back to Menu",
+            callback_data="user_back_to_dashboard",
+            style="danger" if styled else None,
+        )
+    ])
     return InlineKeyboardMarkup(rows)
 
 
-def shop_menu_keyboard(user_id: int = None, category_id: str = None) -> InlineKeyboardMarkup:
+def shop_menu_keyboard(user_id: int = None, category_id: str = None, styled: bool = True) -> InlineKeyboardMarkup:
     normalize_categories()
     rows = [[InlineKeyboardButton("──── ⚡ AUTO DELIVERY ────", callback_data="noop")]]
-    rows.extend(shop_product_rows(get_category_product_ids(category_id), user_id))
+    rows.extend(shop_product_rows(get_category_product_ids(category_id), user_id, styled=styled))
     if category_id and category_id != DEFAULT_CATEGORY_ID:
-        rows.append([InlineKeyboardButton("⬅️ Back to Categories", callback_data="back_shop_cards")])
-    else:
-        rows.append([InlineKeyboardButton("⬅️ Close", callback_data="close_inline")])
+        rows.append([
+            make_styled_inline_button(
+                "⬅️ Back to Categories",
+                callback_data="back_shop_cards",
+                style="primary" if styled else None,
+            )
+        ])
+    rows.append([
+        make_styled_inline_button(
+            "🏠 Back to Menu",
+            callback_data="user_back_to_dashboard",
+            style="danger" if styled else None,
+        )
+    ])
     return InlineKeyboardMarkup(rows)
 
 
@@ -4530,6 +4607,7 @@ async def send_shop_cards_message(source, from_callback: bool = False, category_
     if category_id is None or category_id == DEFAULT_CATEGORY_ID:
         text = render_shop_menu_text()
         keyboard = shop_categories_keyboard(viewer_id)
+        fallback_keyboard = shop_categories_keyboard(viewer_id, styled=False)
     else:
         category = CATEGORIES.get(category_id, CATEGORIES[DEFAULT_CATEGORY_ID])
         text = (
@@ -4538,16 +4616,27 @@ async def send_shop_cards_message(source, from_callback: bool = False, category_
             f"{render_shop_menu_text()}"
         )
         keyboard = shop_menu_keyboard(viewer_id, category_id)
+        fallback_keyboard = shop_menu_keyboard(viewer_id, category_id, styled=False)
     if from_callback:
         try:
             await source.edit_message_text(text=text, reply_markup=keyboard, parse_mode="HTML")
         except Exception as e:
             if "message is not modified" in str(e).lower():
                 return
-            print(f"Shop navigation edit failed; sending fallback: {type(e).__name__}: {e}")
-            await source.message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
+            print(f"Shop navigation edit failed; retrying normal buttons: {type(e).__name__}: {e}")
+            try:
+                await source.edit_message_text(text=text, reply_markup=fallback_keyboard, parse_mode="HTML")
+            except Exception as fallback_error:
+                if "message is not modified" in str(fallback_error).lower():
+                    return
+                print(f"Shop navigation fallback edit failed; sending new message: {type(fallback_error).__name__}: {fallback_error}")
+                await source.message.reply_text(text, reply_markup=fallback_keyboard, parse_mode="HTML")
     else:
-        await source.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
+        try:
+            await source.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
+        except Exception as e:
+            print(f"Shop buttons were rejected; retrying normal buttons: {type(e).__name__}: {e}")
+            await source.reply_text(text, reply_markup=fallback_keyboard, parse_mode="HTML")
 
 
 
@@ -8290,6 +8379,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # ========= CLIENT FLOWS =========
+    if data == "user_back_to_dashboard":
+        enter_client_mode(user_id)
+        await edit_user_dashboard_panel(
+            query,
+            render_home_text(user_id),
+            user_dashboard_keyboard(),
+            fallback_keyboards=[
+                user_dashboard_keyboard(),
+                user_dashboard_keyboard(custom_icons=False),
+                user_dashboard_keyboard(styled=False, custom_icons=False),
+            ],
+            fallback_text=render_home_text(user_id, custom_icons=False),
+        )
+        return
+
     if data.startswith("user_dashboard"):
         enter_client_mode(user_id)
 
@@ -8390,10 +8494,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("shop_buy_"):
         product_id = data.replace("shop_buy_", "")
         if get_display_stock(product_id) <= 0:
-            await send_inline_from_callback(query, "❌ <b>This product is currently out of stock.</b>", close_keyboard())
+            await send_shop_inline_with_style_fallback(
+                query,
+                "❌ <b>This product is currently out of stock.</b>",
+                shop_return_keyboard(),
+                shop_return_keyboard(styled=False),
+            )
             return
         user_state[user_id] = {"step": "buy_qty_select", "product_id": product_id}
-        await send_inline_from_callback(query, render_product_details(product_id, user_id), buy_qty_keyboard(product_id))
+        await send_shop_inline_with_style_fallback(
+            query,
+            render_product_details(product_id, user_id),
+            buy_qty_keyboard(product_id),
+            buy_qty_keyboard(product_id, styled=False),
+        )
         return
 
     if data.startswith("shop_notify_"):
@@ -8407,7 +8521,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if after_count != before_count:
             save_bot_state()
         product = PRODUCTS[product_id]
-        await send_inline_from_callback(query, f"🔔 You will be notified when <b>{product['name']}</b> is back in stock.", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Shop", callback_data="back_shop_cards")]]))
+        await send_shop_inline_with_style_fallback(
+            query,
+            f"🔔 You will be notified when <b>{product['name']}</b> is back in stock.",
+            shop_return_keyboard(),
+            shop_return_keyboard(styled=False),
+        )
         return
 
     if data.startswith("buy_qty_"):
@@ -8415,7 +8534,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         qty = int(qty_str)
         stock = get_display_stock(product_id)
         if qty > stock:
-            await send_inline_from_callback(query, f"❌ <b>Only {stock} pcs available.</b>", buy_qty_keyboard(product_id))
+            await send_shop_inline_with_style_fallback(
+                query,
+                f"❌ <b>Only {stock} pcs available.</b>",
+                buy_qty_keyboard(product_id),
+                buy_qty_keyboard(product_id, styled=False),
+            )
             return
         total = get_product_price(product_id, user_id) * qty
         if user_wallet[user_id] >= total:
