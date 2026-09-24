@@ -3874,7 +3874,13 @@ async def send_shop_cards_message(source, from_callback: bool = False, category_
         )
         keyboard = shop_menu_keyboard(viewer_id, category_id)
     if from_callback:
-        await source.message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
+        try:
+            await source.edit_message_text(text=text, reply_markup=keyboard, parse_mode="HTML")
+        except Exception as e:
+            if "message is not modified" in str(e).lower():
+                return
+            print(f"Shop navigation edit failed; sending fallback: {type(e).__name__}: {e}")
+            await source.message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
     else:
         await source.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
 
