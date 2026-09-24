@@ -1566,6 +1566,14 @@ def _extract_supported_icon_from_message(message):
     Normal emoji => icon_text is the emoji, custom_emoji_id is None.
     Telegram custom/animated emoji => icon_text is a safe fallback emoji, custom_emoji_id is saved.
     """
+    sticker = getattr(message, "sticker", None)
+    if sticker is not None:
+        custom_id = str(getattr(sticker, "custom_emoji_id", "") or "").strip()
+        if not custom_id:
+            return None, None, "❌ <b>This sticker is not a Telegram custom emoji.</b> Please send a custom emoji or normal emoji."
+        fallback = _clean_icon_text(getattr(sticker, "emoji", None), fallback="🔹")
+        return fallback, custom_id, None
+
     text = str(getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
     entities = list(getattr(message, "entities", None) or getattr(message, "caption_entities", None) or [])
     custom_entities = [e for e in entities if _is_custom_emoji_entity(e)]
@@ -5473,6 +5481,58 @@ async def addstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Stock added.\n\nProduct: {product['name']}\nAdded: {qty}\nCurrent Real Stock: {get_product_stock(product_id)} pcs\nDisplay Stock: {get_display_stock(product_id)} pcs"
     )
     await notify_waiters_for_product(context, product_id)
+
+
+async def handle_category_icon_message(update: Update, user_id: int, step: str) -> bool:
+    message = update.effective_message
+    category_icon, category_custom_emoji_id, icon_error = _extract_supported_icon_from_message(message)
+    if icon_error:
+        await message.reply_text(icon_error, parse_mode="HTML")
+        return True
+
+    if step == "category_add_icon":
+        category_name = admin_temp.get(user_id, {}).get("category_name")
+        if not category_name:
+            await message.reply_text("❌ <b>Category setup expired.</b> Please start Add Category again.", parse_mode="HTML")
+            return True
+        category_id = generate_new_category_id()
+        CATEGORIES[category_id] = {
+            "id": category_id,
+            "name": category_name,
+            "icon": category_icon,
+            "icon_custom_emoji_id": category_custom_emoji_id,
+            "order": len(category_order),
+        }
+        _normalize_category_icon_fields(CATEGORIES[category_id])
+        category_order.append(category_id)
+        shop_order.append(f"category:{category_id}")
+        confirmation_prefix = "✅ <b>Category added.</b>\n\n"
+        confirmation_suffix = f"\nID: <code>{escape_html(category_id)}</code>"
+    else:
+        category_id = admin_temp.get(user_id, {}).get("selected_category_id")
+        if category_id not in CATEGORIES:
+            reset_admin_temp(user_id)
+            await message.reply_text("❌ <b>Category was not found.</b>", reply_markup=admin_categories_keyboard(), parse_mode="HTML")
+            return True
+        CATEGORIES[category_id]["icon"] = category_icon
+        CATEGORIES[category_id]["icon_custom_emoji_id"] = category_custom_emoji_id
+        _normalize_category_icon_fields(CATEGORIES[category_id])
+        confirmation_prefix = "✅ "
+        confirmation_suffix = ""
+
+    custom_captured = bool(_category_custom_emoji_id(CATEGORIES[category_id]))
+    icon_result = "Category custom emoji icon updated." if custom_captured else "Category normal emoji icon updated."
+    print(f"Category icon update: category_id={category_id}, custom_emoji_captured={custom_captured}")
+    reset_admin_temp(user_id)
+    user_state[user_id] = {"step": "admin_categories"}
+    await message.reply_text(
+        f"{confirmation_prefix}<b>{icon_result}</b>{confirmation_suffix}",
+        reply_markup=admin_categories_keyboard(),
+        parse_mode="HTML",
+    )
+    return True
+
+
 # =========================
 # TEXT HANDLER
 # =========================
@@ -5629,28 +5689,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if step == "category_add_icon":
-        category_icon, category_custom_emoji_id, icon_error = _extract_supported_icon_from_message(update.message)
-        if icon_error:
-            await update.message.reply_text(icon_error, parse_mode="HTML")
-            return
-        category_id = generate_new_category_id()
-        CATEGORIES[category_id] = {
-            "id": category_id,
-            "name": admin_temp[user_id]["category_name"],
-            "icon": category_icon,
-            "icon_custom_emoji_id": category_custom_emoji_id,
-            "order": len(category_order),
-        }
-        _normalize_category_icon_fields(CATEGORIES[category_id])
-        category_order.append(category_id)
-        shop_order.append(f"category:{category_id}")
-        reset_admin_temp(user_id)
-        user_state[user_id] = {"step": "admin_categories"}
-        await update.message.reply_text(
-            f"✅ <b>Category added.</b>\n\nID: <code>{escape_html(category_id)}</code>",
-            reply_markup=admin_categories_keyboard(),
-            parse_mode="HTML",
-        )
+        await handle_category_icon_message(update, user_id, step)
         return
 
     if step == "category_rename_input":
@@ -5670,21 +5709,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if step == "category_icon_input":
-        category_id = admin_temp.get(user_id, {}).get("selected_category_id")
-        if category_id not in CATEGORIES:
-            reset_admin_temp(user_id)
-            await update.message.reply_text("❌ <b>Category was not found.</b>", reply_markup=admin_categories_keyboard(), parse_mode="HTML")
-            return
-        category_icon, category_custom_emoji_id, icon_error = _extract_supported_icon_from_message(update.message)
-        if icon_error:
-            await update.message.reply_text(icon_error, parse_mode="HTML")
-            return
-        CATEGORIES[category_id]["icon"] = category_icon
-        CATEGORIES[category_id]["icon_custom_emoji_id"] = category_custom_emoji_id
-        _normalize_category_icon_fields(CATEGORIES[category_id])
-        reset_admin_temp(user_id)
-        user_state[user_id] = {"step": "admin_categories"}
-        await update.message.reply_text("✅ <b>Category icon updated.</b>", reply_markup=admin_categories_keyboard(), parse_mode="HTML")
+        await handle_category_icon_message(update, user_id, step)
         return
 
     # ========= PRODUCT ADD =========
@@ -7706,6 +7731,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
+# CATEGORY ICON STICKER HANDLER
+# =========================
+async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    ensure_user(user_id, update.effective_user)
+    if user_mode.get(user_id) != "admin":
+        return False
+    step = user_state.get(user_id, {}).get("step")
+    if step not in {"category_add_icon", "category_icon_input"}:
+        return False
+    return await handle_category_icon_message(update, user_id, step)
+
+
+# =========================
 # TXT STOCK UPLOAD HANDLER
 # =========================
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7814,6 +7853,11 @@ async def handle_text_persistent(update: Update, context: ContextTypes.DEFAULT_T
         save_bot_state()
 
 
+async def handle_sticker_persistent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await handle_sticker(update, context):
+        save_bot_state()
+
+
 async def handle_document_persistent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await handle_document(update, context)
@@ -7845,6 +7889,7 @@ def main():
     app.add_handler(CommandHandler("addstock", addstock_persistent))
 
     app.add_handler(CallbackQueryHandler(handle_callback_persistent))
+    app.add_handler(MessageHandler(filters.Sticker.ALL, handle_sticker_persistent))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document_persistent))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_persistent))
 
