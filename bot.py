@@ -13,6 +13,7 @@ from datetime import datetime
 
 from telegram import (
     Update,
+    BotCommand,
     ReplyKeyboardMarkup,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
@@ -58,6 +59,10 @@ PRIVACY_URL = f"{PUBLIC_SITE_URL}/privacy"
 LEGAL_URL = f"{PUBLIC_SITE_URL}/legal"
 
 ADMIN_IDS = {6795246172}
+
+REQUIRED_CHANNEL_ID = os.getenv("REQUIRED_CHANNEL_ID", "").strip()
+REQUIRED_CHANNEL_URL = os.getenv("REQUIRED_CHANNEL_URL", "").strip()
+REQUIRED_CHANNEL_ENABLED = os.getenv("REQUIRED_CHANNEL_ENABLED", "false").strip()
 
 BINANCE_ID = "828543482"
 BYBIT_ID = "199582741"
@@ -655,7 +660,7 @@ def load_bot_state():
             if db is None:
                 raise RuntimeError("DATABASE_URL is set but database.py could not be imported")
             data = db.load_state()
-            if not data:
+            if data is None:
                 print("ℹ️ Database is empty; using code defaults for first run.")
                 save_bot_state()
                 return
@@ -671,6 +676,9 @@ def load_bot_state():
         apply_loaded_state(raw)
         print(f"✅ Loaded bot state from file: {len(all_users)} users, {len(PRODUCTS)} products")
     except Exception as e:
+        if USE_DATABASE:
+            print("FATAL: Failed to load bot state from database; stopping startup to protect existing data:", e)
+            raise
         print("⚠️ Failed to load bot state; using code defaults:", e)
 
 
@@ -895,6 +903,50 @@ def to_evm_topic_address(addr: str) -> str:
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
+
+
+def is_channel_gate_enabled() -> bool:
+    return REQUIRED_CHANNEL_ENABLED.lower() == "true"
+
+
+async def check_required_channel_membership(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    if not is_channel_gate_enabled() or is_admin(user_id):
+        return True
+    if not REQUIRED_CHANNEL_ID:
+        print("⚠️ REQUIRED_CHANNEL_ENABLED is true but REQUIRED_CHANNEL_ID is missing")
+        return False
+
+    channel_id = REQUIRED_CHANNEL_ID
+    if channel_id.lstrip("-").isdigit():
+        channel_id = int(channel_id)
+
+    try:
+        member = await context.bot.get_chat_member(chat_id=channel_id, user_id=user_id)
+        status = str(member.status).lower()
+        if status in {"member", "administrator", "creator"}:
+            return True
+        return status == "restricted" and bool(getattr(member, "is_member", False))
+    except Exception as e:
+        print(f"⚠️ Failed to check required channel membership for {user_id}:", e)
+        return False
+
+
+def required_channel_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📢 Join Channel", url=REQUIRED_CHANNEL_URL)],
+        [InlineKeyboardButton("✅ I’ve Joined", callback_data="required_channel_check")],
+    ])
+
+
+async def ensure_channel_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    user_id = update.effective_user.id
+    if await check_required_channel_membership(context, user_id):
+        return True
+    await update.effective_message.reply_text(
+        "📢 Join our official channel first.",
+        reply_markup=required_channel_keyboard(),
+    )
+    return False
 
 
 def reset_admin_temp(user_id: int):
@@ -4718,6 +4770,15 @@ async def post_init(application):
     global app_loop
     app_loop = asyncio.get_running_loop()
     load_bot_state()
+    await application.bot.set_my_commands([
+        BotCommand("start", "Start bot"),
+        BotCommand("shop", "Open shop"),
+        BotCommand("wallet", "Check wallet"),
+        BotCommand("topup", "Add balance"),
+        BotCommand("orders", "My orders"),
+        BotCommand("support", "Contact support"),
+        BotCommand("myid", "Show user ID"),
+    ])
     load_nowpayments_pending()
     start_nowpayments_webhook_server()
 
@@ -4727,9 +4788,34 @@ async def post_init(application):
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    if not await ensure_channel_access(update, context):
+        return
     ensure_user(user_id, update.effective_user)
     enter_client_mode(user_id)
     await send_client_main_text(update, render_home_text())
+
+
+async def client_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    command = update.message.text.split()[0].split("@")[0].lower()
+
+    if command in {"/shop", "/wallet", "/topup"} and not await ensure_channel_access(update, context):
+        return
+
+    ensure_user(user_id, update.effective_user)
+    enter_client_mode(user_id)
+    if command == "/shop":
+        user_state[user_id] = {"step": "shop"}
+        await send_shop_cards_message(update.message, from_callback=False)
+    elif command == "/wallet":
+        await send_client_main_text(update, render_wallet_text(user_id))
+    elif command == "/topup":
+        user_state[user_id] = {"step": "deposit_amount"}
+        await send_inline_from_text(update, render_deposit_text(), deposit_amount_keyboard())
+    elif command == "/orders":
+        await send_client_main_text(update, render_orders_text(user_id))
+    elif command == "/support":
+        await send_client_main_text(update, render_support_text())
 
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -5490,11 +5576,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ========= NORMAL CLIENT MENUS =========
     if text == "🛍 Shop":
+        if not await ensure_channel_access(update, context):
+            return
         user_state[user_id] = {"step": "shop"}
         await send_shop_cards_message(update.message, from_callback=False)
         return
 
     if text == "💰 Wallet":
+        if not await ensure_channel_access(update, context):
+            return
         user_state[user_id] = {"step": "main"}
         await send_client_main_text(update, render_wallet_text(user_id))
         return
@@ -5505,6 +5595,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text == "💳 Top Up":
+        if not await ensure_channel_access(update, context):
+            return
         user_state[user_id] = {"step": "deposit_amount"}
         await send_inline_from_text(update, render_deposit_text(), deposit_amount_keyboard())
         return
@@ -5615,9 +5707,22 @@ async def run_simple_verify_flow(query, context, user_id: int, record_kind: str)
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
-    ensure_user(user_id, query.from_user)
     await query.answer()
     data = query.data
+
+    if data == "required_channel_check":
+        if await check_required_channel_membership(context, user_id):
+            ensure_user(user_id, query.from_user)
+            enter_client_mode(user_id)
+            await query.message.reply_text(render_home_text(), reply_markup=main_menu(), parse_mode="HTML")
+        else:
+            await query.message.reply_text(
+                "📢 Please join our official channel first.",
+                reply_markup=required_channel_keyboard(),
+            )
+        return
+
+    ensure_user(user_id, query.from_user)
 
     if data == "noop":
         return
@@ -6771,6 +6876,13 @@ async def start_persistent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_bot_state()
 
 
+async def client_menu_command_persistent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await client_menu_command(update, context)
+    finally:
+        save_bot_state()
+
+
 async def admin_command_persistent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await admin_command(update, context)
@@ -6815,6 +6927,7 @@ def main():
     app_instance = app
 
     app.add_handler(CommandHandler("start", start_persistent))
+    app.add_handler(CommandHandler(["shop", "wallet", "topup", "orders", "support"], client_menu_command_persistent))
     app.add_handler(CommandHandler("admin", admin_command_persistent))
     app.add_handler(CommandHandler("myid", myid))
     app.add_handler(CommandHandler("addstock", addstock_persistent))
