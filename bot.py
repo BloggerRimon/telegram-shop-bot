@@ -4537,7 +4537,7 @@ def shop_product_rows(product_ids: list, user_id: int = None, styled: bool = Tru
                 make_styled_inline_button(
                     "🔔 Notify Me",
                     callback_data=f"shop_notify_{product_id}",
-                    style="success" if styled else None,
+                    style="danger" if styled else None,
                 )
             ])
     return rows
