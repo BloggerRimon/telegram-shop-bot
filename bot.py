@@ -373,6 +373,7 @@ CATEGORIES = {
 }
 category_order = [DEFAULT_CATEGORY_ID]
 next_category_number = 1
+shop_order = []
 
 DEFAULT_DELIVERY_GUIDE = """📌 Account Login Guide
 Please follow these simple steps to use your new account:
@@ -493,6 +494,8 @@ def build_state_snapshot():
         normalize_all_product_icons()
     if "normalize_categories" in globals():
         normalize_categories()
+    if "normalize_shop_order" in globals():
+        normalize_shop_order()
 
     state = {
         "user_wallet": user_wallet,
@@ -507,6 +510,7 @@ def build_state_snapshot():
         "product_order": product_order,
         "CATEGORIES": CATEGORIES,
         "category_order": category_order,
+        "shop_order": shop_order,
         "PROMO_CODES": PROMO_CODES,
         "notify_waitlist": {k: list(v) for k, v in notify_waitlist.items()},
         "gold_vip_users": list(gold_vip_users),
@@ -532,7 +536,7 @@ def build_state_snapshot():
 
 def apply_loaded_state(data: dict):
     """Apply a loaded state snapshot back into the in-memory bot structures."""
-    global PRODUCTS, product_order, CATEGORIES, category_order, PROMO_CODES
+    global PRODUCTS, product_order, CATEGORIES, category_order, shop_order, PROMO_CODES
     global gold_vip_users, active_flash_deal
     global global_order_id, global_tx_id, next_product_number, next_category_number
     global NOWPAYMENTS_PAYMENTS, NOWPAYMENTS_PROCESSED
@@ -564,6 +568,13 @@ def apply_loaded_state(data: dict):
     next_category_number = int(data.get("next_category_number", next_category_number) or next_category_number)
     if "normalize_categories" in globals():
         normalize_categories()
+
+    loaded_shop_order = data.get("shop_order")
+    shop_order.clear()
+    if isinstance(loaded_shop_order, list):
+        shop_order.extend(loaded_shop_order)
+    if "normalize_shop_order" in globals():
+        normalize_shop_order()
 
     # Migrate any old/bad saved custom emoji data.
     # Some previous code may have saved the whole Telegram entity dict inside product["icon"],
@@ -1116,6 +1127,116 @@ def get_category_product_ids(category_id: str) -> list:
         product_id for product_id in product_order
         if product_id in PRODUCTS and PRODUCTS[product_id].get("category_id") == category_id
     ]
+
+
+def normalize_shop_order() -> bool:
+    """Keep a safe combined shop order without deleting products or categories."""
+    normalize_categories()
+    changed = False
+
+    valid_product_ids = [product_id for product_id in product_order if product_id in PRODUCTS]
+    for product_id in PRODUCTS:
+        if product_id not in valid_product_ids:
+            valid_product_ids.append(product_id)
+
+    valid_category_ids = [
+        category_id for category_id in category_order
+        if category_id in CATEGORIES and category_id != DEFAULT_CATEGORY_ID
+    ]
+    for category_id in CATEGORIES:
+        if category_id != DEFAULT_CATEGORY_ID and category_id not in valid_category_ids:
+            valid_category_ids.append(category_id)
+
+    valid_items = {
+        *[f"product:{product_id}" for product_id in valid_product_ids],
+        *[f"category:{category_id}" for category_id in valid_category_ids],
+    }
+    cleaned_order = []
+    for item in shop_order:
+        item = str(item)
+        if item in valid_items and item not in cleaned_order:
+            cleaned_order.append(item)
+
+    if not cleaned_order:
+        # Match the shop layout that existed before combined ordering was introduced.
+        cleaned_order.extend(f"category:{category_id}" for category_id in valid_category_ids)
+        cleaned_order.extend(f"product:{product_id}" for product_id in valid_product_ids)
+    else:
+        for product_id in valid_product_ids:
+            item = f"product:{product_id}"
+            if item not in cleaned_order:
+                cleaned_order.append(item)
+        for category_id in valid_category_ids:
+            item = f"category:{category_id}"
+            if item not in cleaned_order:
+                cleaned_order.append(item)
+
+    if cleaned_order != shop_order:
+        shop_order.clear()
+        shop_order.extend(cleaned_order)
+        changed = True
+
+    ordered_products = [item.split(":", 1)[1] for item in shop_order if item.startswith("product:")]
+    if ordered_products != product_order:
+        product_order.clear()
+        product_order.extend(ordered_products)
+        changed = True
+
+    ordered_categories = [DEFAULT_CATEGORY_ID]
+    ordered_categories.extend(item.split(":", 1)[1] for item in shop_order if item.startswith("category:"))
+    if ordered_categories != category_order:
+        category_order.clear()
+        category_order.extend(ordered_categories)
+        changed = True
+
+    for index, category_id in enumerate(category_order):
+        if CATEGORIES[category_id].get("order") != index:
+            CATEGORIES[category_id]["order"] = index
+            changed = True
+    return changed
+
+
+def is_main_shop_order_item(item: str) -> bool:
+    if item.startswith("category:"):
+        return item.split(":", 1)[1] in CATEGORIES
+    if item.startswith("product:"):
+        product = PRODUCTS.get(item.split(":", 1)[1])
+        return bool(product and product.get("category_id") == DEFAULT_CATEGORY_ID)
+    return False
+
+
+def shop_order_move_peers(item: str) -> list:
+    normalize_shop_order()
+    if is_main_shop_order_item(item):
+        return [candidate for candidate in shop_order if is_main_shop_order_item(candidate)]
+    if item.startswith("product:"):
+        return [candidate for candidate in shop_order if candidate.startswith("product:")]
+    return list(shop_order)
+
+
+def can_move_shop_order_item(item: str, direction: int) -> bool:
+    peers = shop_order_move_peers(item)
+    if item not in peers:
+        return False
+    target_index = peers.index(item) + direction
+    return 0 <= target_index < len(peers)
+
+
+def move_shop_order_item(item: str, direction: int) -> bool:
+    normalize_shop_order()
+    peers = shop_order_move_peers(item)
+    if item not in peers:
+        return False
+    peer_index = peers.index(item)
+    target_peer_index = peer_index + direction
+    if target_peer_index < 0 or target_peer_index >= len(peers):
+        return False
+    target_item = peers[target_peer_index]
+    index = shop_order.index(item)
+    target_index = shop_order.index(target_item)
+    shop_order[index], shop_order[target_index] = shop_order[target_index], shop_order[index]
+    normalize_shop_order()
+    return True
 
 
 def enter_client_mode(user_id: int):
@@ -2299,7 +2420,7 @@ def admin_products_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📌 Edit Delivery Guide", callback_data="admin_edit_delivery_guide_menu")],
         [InlineKeyboardButton("😀 Edit Icon", callback_data="admin_edit_icon_menu")],
         [InlineKeyboardButton("📦 Edit Display Stock", callback_data="admin_edit_display_stock_menu")],
-        [InlineKeyboardButton("↕️ Reorder Products", callback_data="admin_reorder_menu")],
+        [InlineKeyboardButton("↕️ Reorder in Shop", callback_data="admin_reorder_menu")],
         [InlineKeyboardButton("🗑 Delete Product", callback_data="admin_delete_product_menu")],
         [InlineKeyboardButton("⬅️ Close", callback_data="admin_products_close")],
     ]
@@ -2312,7 +2433,7 @@ def admin_categories_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📋 View Categories", callback_data="category_view")],
         [InlineKeyboardButton("✏️ Rename Category", callback_data="category_rename_menu")],
         [InlineKeyboardButton("😀 Edit Category Icon", callback_data="category_icon_menu")],
-        [InlineKeyboardButton("↕️ Reorder Categories", callback_data="category_reorder_menu")],
+        [InlineKeyboardButton("↕️ Reorder in Shop", callback_data="category_reorder_menu")],
         [InlineKeyboardButton("🗃 Move Product to Category", callback_data="category_move_product_menu")],
         [InlineKeyboardButton("🗑 Delete Category", callback_data="category_delete_menu")],
         [InlineKeyboardButton("⬅️ Close", callback_data="category_close")],
@@ -2344,12 +2465,14 @@ def category_product_select_keyboard() -> InlineKeyboardMarkup:
 
 
 def category_reorder_selected_keyboard(category_id: str) -> InlineKeyboardMarkup:
-    normalize_categories()
-    idx = category_order.index(category_id)
+    normalize_shop_order()
+    item = f"category:{category_id}"
+    if item not in shop_order:
+        return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Category List", callback_data="category_reorder_menu")]])
     rows = []
-    if idx > 0:
+    if can_move_shop_order_item(item, -1):
         rows.append([InlineKeyboardButton("⬆️ Move Up", callback_data=f"category_move_up_{category_id}")])
-    if idx < len(category_order) - 1:
+    if can_move_shop_order_item(item, 1):
         rows.append([InlineKeyboardButton("⬇️ Move Down", callback_data=f"category_move_down_{category_id}")])
     rows.append([InlineKeyboardButton("⬅️ Category List", callback_data="category_reorder_menu")])
     return InlineKeyboardMarkup(rows)
@@ -2527,11 +2650,14 @@ def broadcast_confirm_keyboard() -> InlineKeyboardMarkup:
 
 
 def admin_reorder_selected_keyboard(product_id: str) -> InlineKeyboardMarkup:
-    idx = product_order.index(product_id)
+    normalize_shop_order()
+    item = f"product:{product_id}"
+    if item not in shop_order:
+        return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="admin_reorder_menu")]])
     rows = []
-    if idx > 0:
+    if can_move_shop_order_item(item, -1):
         rows.append([InlineKeyboardButton("⬆️ Move Up", callback_data=f"admin_move_up_{product_id}")])
-    if idx < len(product_order) - 1:
+    if can_move_shop_order_item(item, 1):
         rows.append([InlineKeyboardButton("⬇️ Move Down", callback_data=f"admin_move_down_{product_id}")])
     rows.append([InlineKeyboardButton("⬅️ Back", callback_data="admin_reorder_menu")])
     return InlineKeyboardMarkup(rows)
@@ -3700,19 +3826,23 @@ def shop_product_rows(product_ids: list, user_id: int = None) -> list:
 
 
 def shop_categories_keyboard(user_id: int = None) -> InlineKeyboardMarkup:
-    normalize_categories()
-    rows = []
-    for category_id in category_order:
-        if category_id == DEFAULT_CATEGORY_ID:
+    normalize_shop_order()
+    rows = [[InlineKeyboardButton("──── ⚡ AUTO DELIVERY ────", callback_data="noop")]]
+    for item in shop_order:
+        item_type, item_id = item.split(":", 1)
+        if item_type == "product":
+            product = PRODUCTS.get(item_id)
+            if product and product.get("category_id") == DEFAULT_CATEGORY_ID:
+                rows.extend(shop_product_rows([item_id], user_id))
             continue
-        category = CATEGORIES.get(category_id, {})
+        category = CATEGORIES.get(item_id, {})
+        if not category or item_id == DEFAULT_CATEGORY_ID:
+            continue
         label = (
-            f"{category.get('icon', '📁')} {category.get('name', category_id)} "
-            f"({len(get_category_product_ids(category_id))})"
+            f"{category.get('icon', '📁')} {category.get('name', item_id)} "
+            f"({len(get_category_product_ids(item_id))})"
         )
-        rows.append([InlineKeyboardButton(_short_button_text(label), callback_data=f"shop_category_{category_id}")])
-    rows.append([InlineKeyboardButton("──── ⚡ AUTO DELIVERY ────", callback_data="noop")])
-    rows.extend(shop_product_rows(get_category_product_ids(DEFAULT_CATEGORY_ID), user_id))
+        rows.append([InlineKeyboardButton(_short_button_text(label), callback_data=f"shop_category_{item_id}")])
     rows.append([InlineKeyboardButton("⬅️ Close", callback_data="close_inline")])
     return InlineKeyboardMarkup(rows)
 
@@ -5380,6 +5510,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "order": len(category_order),
         }
         category_order.append(category_id)
+        shop_order.append(f"category:{category_id}")
         reset_admin_temp(user_id)
         user_state[user_id] = {"step": "admin_categories"}
         await update.message.reply_text(
@@ -6205,7 +6336,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "category_reorder_menu":
         reset_admin_temp(user_id)
         user_state[user_id] = {"step": "category_reorder_pick"}
-        await send_inline_from_callback(query, "↕️ <b>Reorder Categories</b>\n\nSelect a category.", category_select_keyboard("category_reorder_pick"))
+        await send_inline_from_callback(
+            query,
+            "↕️ <b>Reorder in Shop</b>\n\nSelect a category, then move it above or below products and other folders.",
+            category_select_keyboard("category_reorder_pick"),
+        )
         return
 
     if data == "category_move_product_menu":
@@ -6266,23 +6401,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("category_move_up_"):
         category_id = data.replace("category_move_up_", "", 1)
-        if category_id not in category_order:
+        if category_id not in CATEGORIES:
             await send_inline_from_callback(query, "❌ <b>Category was not found.</b>", admin_categories_keyboard())
             return
-        index = category_order.index(category_id)
-        if index > 0:
-            category_order[index], category_order[index - 1] = category_order[index - 1], category_order[index]
+        move_shop_order_item(f"category:{category_id}", -1)
         await send_inline_from_callback(query, "✅ <b>Category moved up.</b>", category_reorder_selected_keyboard(category_id))
         return
 
     if data.startswith("category_move_down_"):
         category_id = data.replace("category_move_down_", "", 1)
-        if category_id not in category_order:
+        if category_id not in CATEGORIES:
             await send_inline_from_callback(query, "❌ <b>Category was not found.</b>", admin_categories_keyboard())
             return
-        index = category_order.index(category_id)
-        if index < len(category_order) - 1:
-            category_order[index], category_order[index + 1] = category_order[index + 1], category_order[index]
+        move_shop_order_item(f"category:{category_id}", 1)
         await send_inline_from_callback(query, "✅ <b>Category moved down.</b>", category_reorder_selected_keyboard(category_id))
         return
 
@@ -6346,6 +6477,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         CATEGORIES.pop(category_id, None)
         if category_id in category_order:
             category_order.remove(category_id)
+        category_item = f"category:{category_id}"
+        if category_item in shop_order:
+            shop_order.remove(category_item)
         reset_admin_temp(user_id)
         user_state[user_id] = {"step": "admin_categories"}
         await send_inline_from_callback(
@@ -6432,7 +6566,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "admin_reorder_menu":
         reset_admin_temp(user_id)
         user_state[user_id] = {"step": "admin_reorder_pick"}
-        await send_inline_from_callback(query, "↕️ <b>Reorder Products</b>\n\nSelect a product below.", admin_product_select_keyboard("admin_pick_reorder"))
+        await send_inline_from_callback(query, "↕️ <b>Reorder in Shop</b>\n\nSelect a product below.", admin_product_select_keyboard("admin_pick_reorder"))
         return
 
     if data == "admin_broadcast_send":
@@ -6756,17 +6890,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("admin_move_up_"):
         product_id = data.replace("admin_move_up_", "")
-        idx = product_order.index(product_id)
-        if idx > 0:
-            product_order[idx], product_order[idx - 1] = product_order[idx - 1], product_order[idx]
+        move_shop_order_item(f"product:{product_id}", -1)
         await send_inline_from_callback(query, "✅ <b>Moved up.</b>", admin_reorder_selected_keyboard(product_id))
         return
 
     if data.startswith("admin_move_down_"):
         product_id = data.replace("admin_move_down_", "")
-        idx = product_order.index(product_id)
-        if idx < len(product_order) - 1:
-            product_order[idx], product_order[idx + 1] = product_order[idx + 1], product_order[idx]
+        move_shop_order_item(f"product:{product_id}", 1)
         await send_inline_from_callback(query, "✅ <b>Moved down.</b>", admin_reorder_selected_keyboard(product_id))
         return
 
@@ -6787,6 +6917,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _normalize_product_icon_fields(PRODUCTS[product_id])
         notify_waitlist[product_id] = set()
         product_order.append(product_id)
+        shop_order.append(f"product:{product_id}")
         reset_admin_temp(user_id)
         user_state[user_id] = {"step": "admin_products"}
         await send_inline_from_callback(query, f"✅ <b>Product added.</b>\n\nID: {product_id}\nName: {PRODUCTS[product_id]['name']}", admin_products_keyboard())
@@ -6852,6 +6983,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         notify_waitlist.pop(product_id, None)
         if product_id in product_order:
             product_order.remove(product_id)
+        product_item = f"product:{product_id}"
+        if product_item in shop_order:
+            shop_order.remove(product_item)
         reset_admin_temp(user_id)
         await send_inline_from_callback(query, "✅ <b>Product deleted.</b>", admin_products_keyboard())
         return
