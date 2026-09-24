@@ -390,6 +390,17 @@ DASHBOARD_EMOJI_KEYS = (
 )
 dashboard_custom_emoji_ids = {key: "" for key in DASHBOARD_EMOJI_KEYS}
 
+DASHBOARD_HEADER_EMOJIS = {
+    "welcome": {"label": "Welcome", "emoji": "👋"},
+    "premium": {"label": "Premium", "emoji": "💼"},
+    "delivery": {"label": "Delivery", "emoji": "⚡"},
+    "secure": {"label": "Secure", "emoji": "🔐"},
+    "support": {"label": "Support", "emoji": "🎧"},
+    "wallet": {"label": "Wallet", "emoji": "💰"},
+    "choose": {"label": "Choose", "emoji": "👇"},
+}
+dashboard_header_custom_emoji_ids = {key: "" for key in DASHBOARD_HEADER_EMOJIS}
+
 DEFAULT_DELIVERY_GUIDE = """📌 Account Login Guide
 Please follow these simple steps to use your new account:
 
@@ -529,6 +540,7 @@ def build_state_snapshot():
         "category_order": category_order,
         "shop_order": shop_order,
         "dashboard_custom_emoji_ids": dashboard_custom_emoji_ids,
+        "dashboard_header_custom_emoji_ids": dashboard_header_custom_emoji_ids,
         "PROMO_CODES": PROMO_CODES,
         "notify_waitlist": {k: list(v) for k, v in notify_waitlist.items()},
         "gold_vip_users": list(gold_vip_users),
@@ -598,6 +610,11 @@ def apply_loaded_state(data: dict):
     if isinstance(loaded_dashboard_emojis, dict):
         for key in DASHBOARD_EMOJI_KEYS:
             dashboard_custom_emoji_ids[key] = str(loaded_dashboard_emojis.get(key) or "").strip()
+
+    loaded_dashboard_header_emojis = data.get("dashboard_header_custom_emoji_ids", {})
+    if isinstance(loaded_dashboard_header_emojis, dict):
+        for key in DASHBOARD_HEADER_EMOJIS:
+            dashboard_header_custom_emoji_ids[key] = str(loaded_dashboard_header_emojis.get(key) or "").strip()
 
     # Migrate any old/bad saved custom emoji data.
     # Some previous code may have saved the whole Telegram entity dict inside product["icon"],
@@ -2564,11 +2581,15 @@ def admin_menu() -> ReplyKeyboardMarkup:
 
 
 def render_dashboard_emoji_admin_text() -> str:
-    lines = ["🎨 <b>DASHBOARD EMOJIS</b>", "", "Select a dashboard button to set its custom emoji:", ""]
+    lines = ["🎨 <b>DASHBOARD EMOJIS</b>", "", "<b>Button Icons:</b>"]
     for key in DASHBOARD_EMOJI_KEYS:
         config = DASHBOARD_BUTTONS[key]
         status = "✅ Set" if dashboard_custom_emoji_ids.get(key) else "❌ Not set"
         lines.append(f"{config['emoji']} <b>{escape_html(config['text'])}:</b> {status}")
+    lines.extend(["", "<b>Header Icons:</b>"])
+    for key, config in DASHBOARD_HEADER_EMOJIS.items():
+        status = "✅ Set" if dashboard_header_custom_emoji_ids.get(key) else "❌ Not set"
+        lines.append(f"{config['emoji']} <b>{escape_html(config['label'])}:</b> {status}")
     return "\n".join(lines)
 
 
@@ -2583,7 +2604,17 @@ def dashboard_emoji_admin_keyboard() -> InlineKeyboardMarkup:
                 callback_data=f"dashboard_emoji_pick_{key}",
             )
         ])
-    rows.append([InlineKeyboardButton("🧹 Clear Emoji", callback_data="dashboard_emoji_clear")])
+    rows.append([InlineKeyboardButton("🧹 Clear Button Emoji", callback_data="dashboard_emoji_clear")])
+    rows.append([InlineKeyboardButton("──── Header Emojis ────", callback_data="noop")])
+    for key, config in DASHBOARD_HEADER_EMOJIS.items():
+        status = "✅ Set" if dashboard_header_custom_emoji_ids.get(key) else "❌ Not set"
+        rows.append([
+            InlineKeyboardButton(
+                f"{config['emoji']} {config['label']} Icon — {status}",
+                callback_data=f"dashboard_header_emoji_pick_{key}",
+            )
+        ])
+    rows.append([InlineKeyboardButton("🧹 Clear Header Emoji", callback_data="dashboard_header_emoji_clear")])
     rows.append([InlineKeyboardButton("⬅️ Back", callback_data="dashboard_emoji_back")])
     return InlineKeyboardMarkup(rows)
 
@@ -2597,6 +2628,20 @@ def dashboard_emoji_clear_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton(
                 f"🧹 {config['text']} — {status}",
                 callback_data=f"dashboard_emoji_clear_{key}",
+            )
+        ])
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="dashboard_emoji_panel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def dashboard_header_emoji_clear_keyboard() -> InlineKeyboardMarkup:
+    rows = []
+    for key, config in DASHBOARD_HEADER_EMOJIS.items():
+        status = "✅ Set" if dashboard_header_custom_emoji_ids.get(key) else "❌ Not set"
+        rows.append([
+            InlineKeyboardButton(
+                f"🧹 {config['label']} — {status}",
+                callback_data=f"dashboard_header_emoji_clear_{key}",
             )
         ])
     rows.append([InlineKeyboardButton("⬅️ Back", callback_data="dashboard_emoji_panel")])
@@ -3083,30 +3128,27 @@ async def send_user_dashboard(message, menu_notice: str = None):
     )
     # Step B: send a separate message so the dashboard is a real InlineKeyboardMarkup.
     user_id = getattr(getattr(message, "chat", None), "id", 0)
-    try:
-        await message.reply_text(
-            render_home_text(user_id),
-            reply_markup=user_dashboard_keyboard(),
-            parse_mode="HTML",
-        )
-    except Exception as e:
-        print(f"Dashboard custom icons were rejected; retrying without icons: {type(e).__name__}: {e}")
+    variants = [(True, True, True)]
+    if any(dashboard_header_custom_emoji_ids.values()):
+        variants.append((False, True, True))
+    variants.extend([(False, False, True), (False, False, False)])
+    last_error = None
+    for header_icons, button_icons, styled in variants:
         try:
             await message.reply_text(
-                render_home_text(user_id),
-                reply_markup=user_dashboard_keyboard(custom_icons=False),
+                render_home_text(user_id, custom_icons=header_icons),
+                reply_markup=user_dashboard_keyboard(styled=styled, custom_icons=button_icons),
                 parse_mode="HTML",
             )
-        except Exception as fallback_error:
+            return
+        except Exception as error:
+            last_error = error
             print(
-                "Dashboard styles were rejected; retrying normal buttons: "
-                f"{type(fallback_error).__name__}: {fallback_error}"
+                "Dashboard render rejected; trying safe fallback: "
+                f"{type(error).__name__}: {error}"
             )
-            await message.reply_text(
-                render_home_text(user_id),
-                reply_markup=user_dashboard_keyboard(styled=False, custom_icons=False),
-                parse_mode="HTML",
-            )
+    if last_error:
+        raise last_error
 
 
 async def edit_user_dashboard_panel(
@@ -3114,6 +3156,7 @@ async def edit_user_dashboard_panel(
     text: str,
     keyboard: InlineKeyboardMarkup,
     fallback_keyboards=None,
+    fallback_text: str = None,
 ):
     try:
         await query.edit_message_text(text=text, reply_markup=keyboard, parse_mode="HTML")
@@ -3127,7 +3170,7 @@ async def edit_user_dashboard_panel(
         for fallback_keyboard in fallback_keyboards:
             try:
                 await query.message.reply_text(
-                    text,
+                    fallback_text or text,
                     reply_markup=fallback_keyboard,
                     parse_mode="HTML",
                 )
@@ -3187,14 +3230,22 @@ def tron_hex_to_base58(hex_addr: str) -> str:
 # =========================
 # RENDER TEXTS
 # =========================
-def render_home_text(user_id: int) -> str:
+def dashboard_header_icon_html(key: str, custom_icons: bool = True) -> str:
+    config = DASHBOARD_HEADER_EMOJIS[key]
+    custom_emoji_id = dashboard_header_custom_emoji_ids.get(key, "") if custom_icons else ""
+    return _icon_html(config["emoji"], custom_emoji_id)
+
+
+def render_home_text(user_id: int, custom_icons: bool = True) -> str:
     wallet_balance = float(user_wallet.get(user_id, 0.0))
     return (
-        "👋 <b>Welcome back, Supreme Leader</b>\n\n"
-        "💼 Premium digital subscriptions\n"
-        "⚡ Instant delivery • 🔐 Secure orders • 🎧 Support\n\n"
-        f"💰 <b>Wallet:</b> {wallet_balance:.2f} USDT\n\n"
-        "Choose an option below 👇"
+        f"{dashboard_header_icon_html('welcome', custom_icons)} <b>Welcome back, Supreme Leader</b>\n\n"
+        f"{dashboard_header_icon_html('premium', custom_icons)} Premium digital subscriptions\n"
+        f"{dashboard_header_icon_html('delivery', custom_icons)} Instant delivery • "
+        f"{dashboard_header_icon_html('secure', custom_icons)} Secure orders • "
+        f"{dashboard_header_icon_html('support', custom_icons)} Support\n\n"
+        f"{dashboard_header_icon_html('wallet', custom_icons)} <b>Wallet:</b> {wallet_balance:.2f} USDT\n\n"
+        f"Choose an option below {dashboard_header_icon_html('choose', custom_icons)}"
     )
 
 
@@ -6050,11 +6101,21 @@ async def handle_dashboard_emoji_message(update: Update, user_id: int) -> bool:
 
     message = update.effective_message
     dashboard_key = admin_temp.get(user_id, {}).get("selected_dashboard_emoji_key")
-    if dashboard_key not in DASHBOARD_BUTTONS:
+    header_key = admin_temp.get(user_id, {}).get("selected_dashboard_header_emoji_key")
+    if dashboard_key in DASHBOARD_BUTTONS:
+        target_ids = dashboard_custom_emoji_ids
+        target_label = DASHBOARD_BUTTONS[dashboard_key]["text"]
+        target_kind = "button"
+    elif header_key in DASHBOARD_HEADER_EMOJIS:
+        dashboard_key = header_key
+        target_ids = dashboard_header_custom_emoji_ids
+        target_label = DASHBOARD_HEADER_EMOJIS[header_key]["label"]
+        target_kind = "header"
+    else:
         reset_admin_temp(user_id)
         user_state[user_id] = {"step": "dashboard_emoji_admin"}
         await message.reply_text(
-            "❌ <b>Dashboard emoji setup expired.</b> Please select a button again.",
+            "❌ <b>Dashboard emoji setup expired.</b> Please select an icon again.",
             reply_markup=dashboard_emoji_admin_keyboard(),
             parse_mode="HTML",
         )
@@ -6069,12 +6130,12 @@ async def handle_dashboard_emoji_message(update: Update, user_id: int) -> bool:
         )
         return True
 
-    dashboard_custom_emoji_ids[dashboard_key] = custom_emoji_id
-    print(f"Dashboard emoji update: key={dashboard_key}, custom_emoji_captured=True")
+    target_ids[dashboard_key] = custom_emoji_id
+    print(f"Dashboard emoji update: type={target_kind}, key={dashboard_key}, custom_emoji_captured=True")
     reset_admin_temp(user_id)
     user_state[user_id] = {"step": "dashboard_emoji_admin"}
     await message.reply_text(
-        f"✅ <b>{escape_html(DASHBOARD_BUTTONS[dashboard_key]['text'])} custom emoji updated.</b>\n\n"
+        f"✅ <b>{escape_html(target_label)} custom emoji updated.</b>\n\n"
         f"{render_dashboard_emoji_admin_text()}",
         reply_markup=dashboard_emoji_admin_keyboard(),
         parse_mode="HTML",
@@ -6212,7 +6273,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-    if step == "dashboard_emoji_input":
+    if step in {"dashboard_emoji_input", "dashboard_header_emoji_input"}:
         await handle_dashboard_emoji_message(update, user_id)
         return
 
@@ -7035,7 +7096,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # ========= DASHBOARD EMOJI ADMIN =========
-    if data.startswith("dashboard_emoji_") and not is_admin(user_id):
+    if (
+        data.startswith("dashboard_emoji_") or data.startswith("dashboard_header_emoji_")
+    ) and not is_admin(user_id):
         await send_inline_from_callback(query, "❌ <b>You are not allowed.</b>", close_keyboard())
         return
 
@@ -7100,6 +7163,55 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_inline_from_callback(
             query,
             "Send the custom/animated emoji you want to use for this dashboard button.",
+            dashboard_emoji_input_keyboard(),
+        )
+        return
+
+    if data == "dashboard_header_emoji_clear":
+        user_state[user_id] = {"step": "dashboard_emoji_admin"}
+        await send_inline_from_callback(
+            query,
+            "🧹 <b>Clear Header Emoji</b>\n\nSelect the dashboard header icon whose custom emoji you want to clear.",
+            dashboard_header_emoji_clear_keyboard(),
+        )
+        return
+
+    if data.startswith("dashboard_header_emoji_clear_"):
+        header_key = data.replace("dashboard_header_emoji_clear_", "", 1)
+        if header_key not in DASHBOARD_HEADER_EMOJIS:
+            await send_inline_from_callback(
+                query,
+                "❌ <b>Dashboard header icon was not found.</b>",
+                dashboard_emoji_admin_keyboard(),
+            )
+            return
+        dashboard_header_custom_emoji_ids[header_key] = ""
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "dashboard_emoji_admin"}
+        print(f"Dashboard emoji update: type=header, key={header_key}, custom_emoji_captured=False")
+        await send_inline_from_callback(
+            query,
+            f"✅ <b>{escape_html(DASHBOARD_HEADER_EMOJIS[header_key]['label'])} custom emoji cleared.</b>\n\n"
+            f"{render_dashboard_emoji_admin_text()}",
+            dashboard_emoji_admin_keyboard(),
+        )
+        return
+
+    if data.startswith("dashboard_header_emoji_pick_"):
+        header_key = data.replace("dashboard_header_emoji_pick_", "", 1)
+        if header_key not in DASHBOARD_HEADER_EMOJIS:
+            await send_inline_from_callback(
+                query,
+                "❌ <b>Dashboard header icon was not found.</b>",
+                dashboard_emoji_admin_keyboard(),
+            )
+            return
+        reset_admin_temp(user_id)
+        admin_temp.setdefault(user_id, {})["selected_dashboard_header_emoji_key"] = header_key
+        user_state[user_id] = {"step": "dashboard_header_emoji_input"}
+        await send_inline_from_callback(
+            query,
+            "Send the custom/animated emoji you want to use for this dashboard header icon.",
             dashboard_emoji_input_keyboard(),
         )
         return
@@ -8187,9 +8299,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 render_home_text(user_id),
                 user_dashboard_keyboard(),
                 fallback_keyboards=[
+                    user_dashboard_keyboard(),
                     user_dashboard_keyboard(custom_icons=False),
                     user_dashboard_keyboard(styled=False, custom_icons=False),
                 ],
+                fallback_text=render_home_text(user_id, custom_icons=False),
             )
             return
 
@@ -8524,7 +8638,7 @@ async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_mode.get(user_id) != "admin":
         return False
     step = user_state.get(user_id, {}).get("step")
-    if step == "dashboard_emoji_input":
+    if step in {"dashboard_emoji_input", "dashboard_header_emoji_input"}:
         return await handle_dashboard_emoji_message(update, user_id)
     if step not in {"category_add_icon", "category_icon_input"}:
         return False
@@ -8543,7 +8657,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = user_state.get(user_id, {})
     step = state.get("step")
-    if step == "dashboard_emoji_input":
+    if step in {"dashboard_emoji_input", "dashboard_header_emoji_input"}:
         await handle_dashboard_emoji_message(update, user_id)
         return
     if step not in ("stock_add_single_input", "stock_add_bulk_input"):
@@ -8610,7 +8724,7 @@ async def handle_dashboard_emoji_media(update: Update, context: ContextTypes.DEF
     ensure_user(user_id, update.effective_user)
     if not is_admin(user_id):
         return False
-    if user_state.get(user_id, {}).get("step") != "dashboard_emoji_input":
+    if user_state.get(user_id, {}).get("step") not in {"dashboard_emoji_input", "dashboard_header_emoji_input"}:
         return False
     return await handle_dashboard_emoji_message(update, user_id)
 
