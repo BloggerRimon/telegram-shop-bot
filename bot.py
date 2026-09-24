@@ -3008,6 +3008,197 @@ def render_orders_text(user_id: int) -> str:
     return "\n".join(lines)
 
 
+USER_ORDERS_PAGE_SIZE = 6
+
+
+def _latest_user_orders(user_id: int) -> list:
+    orders = user_orders.get(user_id, [])
+    return [order for order in reversed(orders) if isinstance(order, dict)]
+
+
+def find_user_order_by_id(user_id: int, order_id):
+    wanted_id = str(order_id)
+    for order in user_orders.get(user_id, []):
+        if isinstance(order, dict) and str(order.get("id")) == wanted_id:
+            return order
+    return None
+
+
+def format_order_status(status) -> str:
+    raw_status = str(status or "").strip()
+    if not raw_status:
+        return "N/A"
+    normalized = raw_status.lower().replace("-", "_").replace(" ", "_")
+    labels = {
+        "completed": "Completed",
+        "pending": "Pending",
+        "pending_manual": "Pending Manual",
+        "pending_auto": "Pending Auto",
+        "processing": "Processing",
+        "rejected": "Rejected",
+        "cancelled": "Cancelled",
+        "canceled": "Cancelled",
+        "failed": "Failed",
+    }
+    return labels.get(normalized, raw_status.replace("_", " ").title())
+
+
+def _order_product_name(order: dict) -> str:
+    return str(order.get("product") or order.get("product_name") or "N/A")
+
+
+def _order_total_text(order: dict) -> str:
+    try:
+        return format_money(order.get("total"))
+    except (TypeError, ValueError):
+        return "N/A"
+
+
+def _order_date_text(order: dict) -> str:
+    try:
+        return format_dt(order.get("created_at"))
+    except (AttributeError, TypeError, ValueError):
+        return "N/A"
+
+
+def _order_price_type(order: dict) -> str:
+    raw_value = order.get("price_type") or order.get("applied_price_type")
+    if raw_value:
+        normalized = str(raw_value).strip().lower().replace("-", "_").replace(" ", "_")
+        labels = {
+            "normal": "Normal price",
+            "normal_price": "Normal price",
+            "vip": "Gold VIP price",
+            "vip_price": "Gold VIP price",
+            "gold_vip": "Gold VIP price",
+            "gold_vip_price": "Gold VIP price",
+            "flash": "Flash deal price",
+            "flash_deal": "Flash deal price",
+            "flash_deal_price": "Flash deal price",
+        }
+        return labels.get(normalized, str(raw_value))
+    if order.get("is_flash_deal") is True:
+        return "Flash deal price"
+    if order.get("is_vip") is True or order.get("is_gold_vip") is True:
+        return "Gold VIP price"
+    return "N/A"
+
+
+def _order_payment_reference(order: dict) -> str:
+    reference_keys = (
+        "payment_reference",
+        "transaction_reference",
+        "transaction_id",
+        "txid",
+        "payment_id",
+        "provider_payment_id",
+    )
+    for key in reference_keys:
+        value = order.get(key)
+        if value not in (None, ""):
+            return str(value)
+    meta = order.get("meta")
+    if isinstance(meta, dict):
+        for key in reference_keys:
+            value = meta.get(key)
+            if value not in (None, ""):
+                return str(value)
+    return "N/A"
+
+
+def render_user_orders_page(user_id: int, page: int = 0):
+    orders = _latest_user_orders(user_id)
+    total_orders = len(orders)
+    total_pages = max(1, (total_orders + USER_ORDERS_PAGE_SIZE - 1) // USER_ORDERS_PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    if not orders:
+        return "📦 <b>MY ORDERS</b>\n\nNo orders found.", page, total_pages
+    start = page * USER_ORDERS_PAGE_SIZE
+    end = min(start + USER_ORDERS_PAGE_SIZE, total_orders)
+    text = (
+        "📦 <b>MY ORDERS</b>\n\n"
+        "Tap an order below to view its full details.\n\n"
+        f"Showing <b>{start + 1}-{end}</b> of <b>{total_orders}</b>\n"
+        f"Page <b>{page + 1}</b> of <b>{total_pages}</b>"
+    )
+    return text, page, total_pages
+
+
+def user_orders_keyboard(user_id: int, page: int = 0) -> InlineKeyboardMarkup:
+    orders = _latest_user_orders(user_id)
+    total_pages = max(1, (len(orders) + USER_ORDERS_PAGE_SIZE - 1) // USER_ORDERS_PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * USER_ORDERS_PAGE_SIZE
+    page_orders = orders[start:start + USER_ORDERS_PAGE_SIZE]
+    rows = []
+    for order in page_orders:
+        order_id = order.get("id")
+        product_name = _order_product_name(order).replace("\n", " ").strip()
+        if len(product_name) > 18:
+            product_name = product_name[:17] + "…"
+        label = (
+            f"Order #{order_id if order_id not in (None, '') else 'N/A'} • "
+            f"{product_name} • {_order_total_text(order)} • {format_order_status(order.get('status'))}"
+        )
+        if len(label) > 64:
+            label = label[:63] + "…"
+        order_id_text = str(order_id) if order_id not in (None, "") else ""
+        callback_data = (
+            f"user_order_view_{order_id_text}_{page}"
+            if order_id_text.isdigit()
+            else "user_order_unavailable"
+        )
+        rows.append([InlineKeyboardButton(label, callback_data=callback_data)])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"user_orders_page_{page - 1}"))
+    if page + 1 < total_pages:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"user_orders_page_{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton("✖️ Close", callback_data="user_orders_close")])
+    return InlineKeyboardMarkup(rows)
+
+
+def render_user_order_details(user_id: int, order_id) -> str:
+    order = find_user_order_by_id(user_id, order_id)
+    if not order:
+        return "📦 <b>ORDER DETAILS</b>\n\nOrder not found."
+    value = lambda item: escape_html(item if item not in (None, "") else "N/A")
+    return (
+        "📦 <b>ORDER DETAILS</b>\n\n"
+        f"<b>Order ID:</b> #{value(order.get('id'))}\n"
+        f"<b>Product:</b> {value(_order_product_name(order))}\n"
+        f"<b>Product ID:</b> <code>{value(order.get('product_id'))}</code>\n"
+        f"<b>Quantity:</b> {value(order.get('qty'))}\n"
+        f"<b>Total Price:</b> {_order_total_text(order)}\n"
+        f"<b>Payment Type:</b> {value(order.get('payment_type'))}\n"
+        f"<b>Price Type:</b> {value(_order_price_type(order))}\n"
+        f"<b>Status:</b> {value(format_order_status(order.get('status')))}\n"
+        f"<b>Date/Time:</b> {value(_order_date_text(order))}\n"
+        f"<b>Payment Reference:</b> <code>{value(_order_payment_reference(order))}</code>"
+    )
+
+
+def user_order_details_keyboard(page: int = 0) -> InlineKeyboardMarkup:
+    page = max(0, page)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💬 Contact Support", url=SUPPORT_URL)],
+        [InlineKeyboardButton("⬅️ Back to Orders", callback_data=f"user_orders_page_{page}")],
+        [InlineKeyboardButton("✖️ Close", callback_data="user_orders_close")],
+    ])
+
+
+async def edit_user_orders_message(query, text: str, keyboard=None):
+    try:
+        await query.edit_message_text(text=text, reply_markup=keyboard, parse_mode="HTML")
+    except Exception as e:
+        if "message is not modified" in str(e).lower():
+            return
+        print(f"⚠️ Failed to edit user order navigation: {type(e).__name__}: {e}")
+        await query.message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+
 def render_transactions_text(user_id: int) -> str:
     txs = user_transactions[user_id]
     if not txs:
@@ -5390,7 +5581,8 @@ async def client_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         user_state[user_id] = {"step": "deposit_amount"}
         await send_inline_from_text(update, render_deposit_text(), deposit_amount_keyboard())
     elif command == "/orders":
-        await send_client_main_text(update, render_orders_text(user_id))
+        text, page, _ = render_user_orders_page(user_id)
+        await send_inline_from_text(update, text, user_orders_keyboard(user_id, page))
     elif command == "/support":
         await send_client_main_text(update, render_support_text())
 
@@ -6387,7 +6579,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "📦 Orders":
         user_state[user_id] = {"step": "main"}
-        await send_client_main_text(update, render_orders_text(user_id))
+        orders_text, page, _ = render_user_orders_page(user_id)
+        await send_inline_from_text(update, orders_text, user_orders_keyboard(user_id, page))
         return
 
     if text == "🎟 Promo":
@@ -7414,6 +7607,49 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if code in PROMO_CODES:
             PROMO_CODES.pop(code, None)
             await send_inline_from_callback(query, f"✅ <b>Promo deleted.</b>\n\nCode: {code}", admin_promo_keyboard())
+        return
+
+    # ========= USER ORDERS =========
+    if data == "user_orders_close":
+        await edit_user_orders_message(query, "📦 <b>MY ORDERS</b>\n\nClosed.")
+        return
+
+    if data == "user_order_unavailable":
+        await edit_user_orders_message(
+            query,
+            "📦 <b>ORDER DETAILS</b>\n\nThis order has no usable order ID.",
+            user_order_details_keyboard(0),
+        )
+        return
+
+    if data.startswith("user_orders_page_"):
+        try:
+            requested_page = int(data.rsplit("_", 1)[1])
+        except (TypeError, ValueError):
+            requested_page = 0
+        text, page, _ = render_user_orders_page(user_id, requested_page)
+        await edit_user_orders_message(query, text, user_orders_keyboard(user_id, page))
+        return
+
+    if data.startswith("user_order_view_"):
+        try:
+            order_id, page_text = data[len("user_order_view_"):].rsplit("_", 1)
+            page = max(0, int(page_text))
+        except (TypeError, ValueError):
+            order_id, page = "", 0
+        order = find_user_order_by_id(user_id, order_id)
+        if not order:
+            await edit_user_orders_message(
+                query,
+                "📦 <b>ORDER DETAILS</b>\n\nOrder not found.",
+                user_order_details_keyboard(page),
+            )
+            return
+        await edit_user_orders_message(
+            query,
+            render_user_order_details(user_id, order_id),
+            user_order_details_keyboard(page),
+        )
         return
 
     # ========= ORDERS ADMIN =========
