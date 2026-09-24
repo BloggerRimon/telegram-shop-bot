@@ -2454,14 +2454,38 @@ def make_user_dashboard_button(text: str, callback_data: str) -> InlineKeyboardB
     return InlineKeyboardButton(text, callback_data=callback_data)
 
 
-def user_dashboard_keyboard() -> InlineKeyboardMarkup:
-    button = make_user_dashboard_button
+def make_styled_inline_button(text: str, callback_data=None, url=None, style=None) -> InlineKeyboardButton:
+    button_kwargs = {}
+    if callback_data is not None:
+        button_kwargs["callback_data"] = callback_data
+    if url is not None:
+        button_kwargs["url"] = url
+    # Telegram predefined styles only: primary, success, danger, or the neutral default.
+    if style in {"primary", "success", "danger"}:
+        try:
+            return InlineKeyboardButton(text, style=style, **button_kwargs)
+        except TypeError:
+            try:
+                return InlineKeyboardButton(text, api_kwargs={"style": style}, **button_kwargs)
+            except (TypeError, ValueError):
+                pass
+    return InlineKeyboardButton(text, **button_kwargs)
+
+
+def user_dashboard_keyboard(styled: bool = True) -> InlineKeyboardMarkup:
+    def button(text: str, callback_data: str, style: str):
+        return make_styled_inline_button(
+            text,
+            callback_data=callback_data,
+            style=style if styled else None,
+        )
+
     return InlineKeyboardMarkup([
-        [button("🛍 Shop", "user_dashboard_shop"), button("📦 My Orders", "user_dashboard_orders")],
-        [button("💰 Wallet", "user_dashboard_wallet"), button("💳 Top Up", "user_dashboard_topup")],
-        [button("🎁 Promo", "user_dashboard_promo"), button("👥 Refer & Earn", "user_dashboard_refer")],
-        [button("🆔 Profile", "user_dashboard_profile"), button("🧾 Transactions", "user_dashboard_transactions")],
-        [button("🎧 Support", "user_dashboard_support")],
+        [button("🛍 Shop", "user_dashboard_shop", "primary"), button("📦 My Orders", "user_dashboard_orders", "primary")],
+        [button("💰 Wallet", "user_dashboard_wallet", "success"), button("💳 Top Up", "user_dashboard_topup", "success")],
+        [button("🎁 Promo", "user_dashboard_promo", "success"), button("👥 Refer & Earn", "user_dashboard_refer", "success")],
+        [button("🆔 Profile", "user_dashboard_profile", "primary"), button("🧾 Transactions", "user_dashboard_transactions", "primary")],
+        [button("🎧 Support", "user_dashboard_support", "danger")],
     ])
 
 
@@ -2960,21 +2984,38 @@ async def send_user_dashboard(message, menu_notice: str = None):
     )
     # Step B: send a separate message so the dashboard is a real InlineKeyboardMarkup.
     user_id = getattr(getattr(message, "chat", None), "id", 0)
-    await message.reply_text(
-        render_home_text(user_id),
-        reply_markup=user_dashboard_keyboard(),
-        parse_mode="HTML",
-    )
+    try:
+        await message.reply_text(
+            render_home_text(user_id),
+            reply_markup=user_dashboard_keyboard(),
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        print(f"Dashboard button styles were rejected; using normal buttons: {type(e).__name__}: {e}")
+        await message.reply_text(
+            render_home_text(user_id),
+            reply_markup=user_dashboard_keyboard(styled=False),
+            parse_mode="HTML",
+        )
 
 
-async def edit_user_dashboard_panel(query, text: str, keyboard: InlineKeyboardMarkup):
+async def edit_user_dashboard_panel(
+    query,
+    text: str,
+    keyboard: InlineKeyboardMarkup,
+    fallback_keyboard: InlineKeyboardMarkup = None,
+):
     try:
         await query.edit_message_text(text=text, reply_markup=keyboard, parse_mode="HTML")
     except Exception as e:
         if "message is not modified" in str(e).lower():
             return
         print(f"User dashboard edit failed; sending fallback: {type(e).__name__}: {e}")
-        await query.message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
+        await query.message.reply_text(
+            text,
+            reply_markup=fallback_keyboard or keyboard,
+            parse_mode="HTML",
+        )
 
 
 async def send_admin_main_text(update: Update, text: str):
@@ -7893,7 +7934,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         enter_client_mode(user_id)
 
         if data == "user_dashboard":
-            await edit_user_dashboard_panel(query, render_home_text(user_id), user_dashboard_keyboard())
+            await edit_user_dashboard_panel(
+                query,
+                render_home_text(user_id),
+                user_dashboard_keyboard(),
+                fallback_keyboard=user_dashboard_keyboard(styled=False),
+            )
             return
 
         if data == "user_dashboard_shop":
