@@ -3165,6 +3165,29 @@ def render_user_order_details(user_id: int, order_id) -> str:
     if not order:
         return "📦 <b>ORDER DETAILS</b>\n\nOrder not found."
     value = lambda item: escape_html(item if item not in (None, "") else "N/A")
+    product_id = order.get("product_id")
+    product = PRODUCTS.get(product_id) if isinstance(product_id, str) else None
+    product_details = ""
+    if isinstance(product, dict):
+        plain_details = product.get("details")
+        if isinstance(plain_details, list):
+            product_details = "\n".join(
+                escape_html(detail)
+                for detail in plain_details
+                if detail not in (None, "") and str(detail).strip()
+            )
+        rich_details = product.get("details_rich")
+        if isinstance(rich_details, dict):
+            rich_text = rich_details.get("text")
+            if isinstance(rich_text, str) and rich_text.strip():
+                product_details = render_serialized_entities_html(
+                    rich_text, rich_details.get("entities")
+                ) or product_details
+    details_section = (
+        f"📋 <b>Product Details:</b>\n{product_details}"
+        if product_details
+        else "📋 <b>Product Details:</b> N/A"
+    )
     return (
         "📦 <b>ORDER DETAILS</b>\n\n"
         f"<b>Order ID:</b> #{value(order.get('id'))}\n"
@@ -3176,7 +3199,8 @@ def render_user_order_details(user_id: int, order_id) -> str:
         f"<b>Price Type:</b> {value(_order_price_type(order))}\n"
         f"<b>Status:</b> {value(format_order_status(order.get('status')))}\n"
         f"<b>Date/Time:</b> {value(_order_date_text(order))}\n"
-        f"<b>Payment Reference:</b> <code>{value(_order_payment_reference(order))}</code>"
+        f"<b>Payment Reference:</b> <code>{value(_order_payment_reference(order))}</code>\n\n"
+        f"{details_section}"
     )
 
 
