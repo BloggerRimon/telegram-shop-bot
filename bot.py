@@ -909,29 +909,63 @@ def is_channel_gate_enabled() -> bool:
     return REQUIRED_CHANNEL_ENABLED.lower() == "true"
 
 
+def _required_channel_chat_id():
+    channel_id = REQUIRED_CHANNEL_ID
+    if channel_id.lstrip("-").isdigit():
+        return int(channel_id)
+    return channel_id
+
+
+def _normalize_chat_member_status(raw_status) -> str:
+    status = str(getattr(raw_status, "value", raw_status) or "").strip().lower()
+    if "." in status:
+        status = status.rsplit(".", 1)[-1]
+    return status
+
+
 async def check_required_channel_membership(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
-    if not is_channel_gate_enabled() or is_admin(user_id):
+    if not is_channel_gate_enabled():
+        print(f"ℹ️ Channel membership check skipped because gate is disabled. user_id={user_id}")
+        return True
+    if is_admin(user_id):
+        print(f"ℹ️ Channel membership check bypassed for admin user_id={user_id}")
         return True
     if not REQUIRED_CHANNEL_ID:
         print("⚠️ REQUIRED_CHANNEL_ENABLED is true but REQUIRED_CHANNEL_ID is missing")
         return False
 
-    channel_id = REQUIRED_CHANNEL_ID
-    if channel_id.lstrip("-").isdigit():
-        channel_id = int(channel_id)
+    channel_id = _required_channel_chat_id()
+    print(f"ℹ️ Checking channel membership: channel_id={channel_id!r}, user_id={user_id}")
 
     try:
-        member = await context.bot.get_chat_member(chat_id=channel_id, user_id=user_id)
+        try:
+            member = await context.bot.get_chat_member(chat_id=channel_id, user_id=user_id)
+        except Exception as direct_error:
+            if not isinstance(channel_id, str) or not channel_id.startswith("@"):
+                raise
+            print(
+                f"⚠️ Direct channel membership check failed for channel_id={channel_id!r}, "
+                f"user_id={user_id}. Trying resolved numeric channel ID. "
+                f"Error: {type(direct_error).__name__}: {direct_error}"
+            )
+            channel = await context.bot.get_chat(chat_id=channel_id)
+            resolved_channel_id = int(channel.id)
+            print(f"ℹ️ Resolved REQUIRED_CHANNEL_ID to numeric chat_id={resolved_channel_id}")
+            member = await context.bot.get_chat_member(chat_id=resolved_channel_id, user_id=user_id)
+
         raw_status = getattr(member, "status", "")
-        status = str(getattr(raw_status, "value", raw_status)).lower()
-        if "." in status:
-            status = status.rsplit(".", 1)[-1]
+        status = _normalize_chat_member_status(raw_status)
+        is_member = getattr(member, "is_member", None)
+        print(
+            f"ℹ️ Channel membership result: channel_id={channel_id!r}, user_id={user_id}, "
+            f"raw_status={raw_status!r}, normalized_status={status!r}, is_member={is_member!r}"
+        )
         if status in {"member", "administrator", "creator"}:
             return True
-        return status == "restricted" and bool(getattr(member, "is_member", False))
+        return status == "restricted" and bool(is_member)
     except Exception as e:
         print(
-            f"⚠️ Channel membership check failed for user_id={user_id}. "
+            f"⚠️ Channel membership check failed for channel_id={channel_id!r}, user_id={user_id}. "
             f"Make sure bot is admin in REQUIRED_CHANNEL_ID. Error: {type(e).__name__}: {e}"
         )
         return False
@@ -4838,6 +4872,91 @@ async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Your Telegram ID: {update.effective_user.id}")
 
 
+async def checkchannel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ You are not allowed to use this command.")
+        return
+
+    channel_id = _required_channel_chat_id()
+    lines = [
+        "🔎 <b>CHANNEL CONFIG CHECK</b>",
+        "",
+        f"<b>REQUIRED_CHANNEL_ENABLED:</b> <code>{escape_html(REQUIRED_CHANNEL_ENABLED)}</code>",
+        f"<b>REQUIRED_CHANNEL_ID:</b> <code>{escape_html(REQUIRED_CHANNEL_ID)}</code>",
+        f"<b>REQUIRED_CHANNEL_URL:</b> <code>{escape_html(REQUIRED_CHANNEL_URL)}</code>",
+    ]
+    try:
+        chat = await context.bot.get_chat(chat_id=channel_id)
+        lines.extend([
+            "",
+            "<b>get_chat result:</b> ✅ Success",
+            f"<b>Channel title:</b> {escape_html(getattr(chat, 'title', '') or 'N/A')}",
+            f"<b>Numeric chat ID:</b> <code>{getattr(chat, 'id', 'N/A')}</code>",
+        ])
+    except Exception as e:
+        lines.extend([
+            "",
+            "<b>get_chat result:</b> ❌ Failed",
+            f"<b>Error:</b> <code>{escape_html(type(e).__name__)}: {escape_html(str(e))}</code>",
+        ])
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML", disable_web_page_preview=True)
+
+
+async def checkmember_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    admin_id = update.effective_user.id
+    if not is_admin(admin_id):
+        await update.message.reply_text("❌ You are not allowed to use this command.")
+        return
+    if len(context.args) != 1:
+        await update.message.reply_text("Usage: /checkmember USER_ID")
+        return
+
+    try:
+        target_user_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ USER_ID must be numeric.")
+        return
+
+    channel_id = _required_channel_chat_id()
+    try:
+        checked_channel_id = channel_id
+        try:
+            member = await context.bot.get_chat_member(chat_id=checked_channel_id, user_id=target_user_id)
+        except Exception:
+            if not isinstance(channel_id, str) or not channel_id.startswith("@"):
+                raise
+            channel = await context.bot.get_chat(chat_id=channel_id)
+            checked_channel_id = int(channel.id)
+            member = await context.bot.get_chat_member(chat_id=checked_channel_id, user_id=target_user_id)
+        raw_status = getattr(member, "status", "")
+        normalized_status = _normalize_chat_member_status(raw_status)
+        is_member = getattr(member, "is_member", None)
+        passed = normalized_status in {"member", "administrator", "creator"} or (
+            normalized_status == "restricted" and bool(is_member)
+        )
+        await update.message.reply_text(
+            "🔎 <b>CHANNEL MEMBER CHECK</b>\n\n"
+            f"<b>Configured channel:</b> <code>{escape_html(str(channel_id))}</code>\n"
+            f"<b>Checked channel ID:</b> <code>{escape_html(str(checked_channel_id))}</code>\n"
+            f"<b>User ID:</b> <code>{target_user_id}</code>\n"
+            f"<b>Raw status:</b> <code>{escape_html(repr(raw_status))}</code>\n"
+            f"<b>Normalized status:</b> <code>{escape_html(normalized_status)}</code>\n"
+            f"<b>is_member:</b> <code>{escape_html(repr(is_member))}</code>\n"
+            f"<b>Final result:</b> {'✅ PASS' if passed else '❌ FAIL'}",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        await update.message.reply_text(
+            "❌ <b>CHANNEL MEMBER CHECK FAILED</b>\n\n"
+            f"<b>Channel:</b> <code>{escape_html(str(channel_id))}</code>\n"
+            f"<b>User ID:</b> <code>{target_user_id}</code>\n"
+            f"<b>Error:</b> <code>{escape_html(type(e).__name__)}: {escape_html(str(e))}</code>\n\n"
+            "Make sure the bot is an admin in REQUIRED_CHANNEL_ID.",
+            parse_mode="HTML",
+        )
+
+
 async def addstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     ensure_user(user_id, update.effective_user)
@@ -6936,6 +7055,8 @@ def main():
     app.add_handler(CommandHandler(["shop", "wallet", "topup", "orders", "support"], client_menu_command_persistent))
     app.add_handler(CommandHandler("admin", admin_command_persistent))
     app.add_handler(CommandHandler("myid", myid))
+    app.add_handler(CommandHandler("checkchannel", checkchannel_command))
+    app.add_handler(CommandHandler("checkmember", checkmember_command))
     app.add_handler(CommandHandler("addstock", addstock_persistent))
 
     app.add_handler(CallbackQueryHandler(handle_callback_persistent))
