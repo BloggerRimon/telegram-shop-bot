@@ -3681,10 +3681,31 @@ def render_shop_menu_text() -> str:
     return f"{flash_banner}\n\n{base}" if flash_banner else base
 
 
-def shop_categories_keyboard() -> InlineKeyboardMarkup:
-    normalize_categories()
+def shop_product_rows(product_ids: list, user_id: int = None) -> list:
     rows = []
+    for product_id in product_ids:
+        if product_id not in PRODUCTS:
+            continue
+        product = PRODUCTS[product_id]
+        stock = get_display_stock(product_id)
+        month = format_duration_text(product.get("month", ""))
+        month_part = f" {month}" if month else ""
+        stock_text = f"📦 {stock} Pcs" if stock > 0 else "📦 0"
+        core_label = f"{product['name']}{month_part} - {format_product_price_for_user(product_id, user_id)} | {stock_text}"
+        callback = f"shop_buy_{product_id}" if stock > 0 else f"shop_notify_{product_id}"
+        rows.append([make_product_inline_button(product, core_label, callback)])
+        if stock <= 0:
+            rows.append([InlineKeyboardButton("🔔 Notify Me", callback_data=f"shop_notify_{product_id}")])
+    return rows
+
+
+def shop_categories_keyboard(user_id: int = None) -> InlineKeyboardMarkup:
+    normalize_categories()
+    rows = [[InlineKeyboardButton("──── ⚡ AUTO DELIVERY ────", callback_data="noop")]]
+    rows.extend(shop_product_rows(get_category_product_ids(DEFAULT_CATEGORY_ID), user_id))
     for category_id in category_order:
+        if category_id == DEFAULT_CATEGORY_ID:
+            continue
         category = CATEGORIES.get(category_id, {})
         label = (
             f"{category.get('icon', '📁')} {category.get('name', category_id)} "
@@ -3698,21 +3719,8 @@ def shop_categories_keyboard() -> InlineKeyboardMarkup:
 def shop_menu_keyboard(user_id: int = None, category_id: str = None) -> InlineKeyboardMarkup:
     normalize_categories()
     rows = [[InlineKeyboardButton("──── ⚡ AUTO DELIVERY ────", callback_data="noop")]]
-    selected_product_ids = get_category_product_ids(category_id) if category_id else list(product_order)
-    for product_id in selected_product_ids:
-        if product_id not in PRODUCTS:
-            continue
-        product = PRODUCTS[product_id]
-        stock = get_display_stock(product_id)
-        month = format_duration_text(product.get("month", ""))
-        month_part = f" {month}" if month else ""
-        stock_text = f"📦 {stock} Pcs" if stock > 0 else "📦 0"
-        core_label = f"{product['name']}{month_part} - {format_product_price_for_user(product_id, user_id)} | {stock_text}"
-        callback = f"shop_buy_{product_id}" if stock > 0 else f"shop_notify_{product_id}"
-        rows.append([make_product_inline_button(product, core_label, callback)])
-        if stock <= 0:
-            rows.append([InlineKeyboardButton("🔔 Notify Me", callback_data=f"shop_notify_{product_id}")])
-    if len(CATEGORIES) > 1:
+    rows.extend(shop_product_rows(get_category_product_ids(category_id), user_id))
+    if category_id and category_id != DEFAULT_CATEGORY_ID:
         rows.append([InlineKeyboardButton("⬅️ Back to Categories", callback_data="back_shop_cards")])
     else:
         rows.append([InlineKeyboardButton("⬅️ Close", callback_data="close_inline")])
@@ -3722,23 +3730,18 @@ def shop_menu_keyboard(user_id: int = None, category_id: str = None) -> InlineKe
 async def send_shop_cards_message(source, from_callback: bool = False, category_id: str = None):
     # Kept same function name so existing callbacks keep working.
     normalize_categories()
-    show_categories = category_id is None and len(CATEGORIES) > 1
-    if show_categories:
-        text = "🗂 <b>SHOP CATEGORIES</b>\n\nChoose a folder below to view products."
-        keyboard = shop_categories_keyboard()
+    viewer_id = getattr(getattr(source, "from_user", None), "id", None)
+    if category_id is None or category_id == DEFAULT_CATEGORY_ID:
+        text = render_shop_menu_text()
+        keyboard = shop_categories_keyboard(viewer_id)
     else:
-        if category_id is None:
-            category_id = category_order[0]
         category = CATEGORIES.get(category_id, CATEGORIES[DEFAULT_CATEGORY_ID])
         text = (
             f"{escape_html(category.get('icon', '📁'))} "
             f"<b>{escape_html(category.get('name', category_id))}</b>\n\n"
             f"{render_shop_menu_text()}"
         )
-        keyboard = shop_menu_keyboard(
-            getattr(getattr(source, "from_user", None), "id", None),
-            category_id,
-        )
+        keyboard = shop_menu_keyboard(viewer_id, category_id)
     if from_callback:
         await source.message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
     else:
@@ -7180,7 +7183,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("shop_category_"):
         category_id = data.replace("shop_category_", "", 1)
-        if category_id not in CATEGORIES:
+        if category_id == DEFAULT_CATEGORY_ID or category_id not in CATEGORIES:
             await send_shop_cards_message(query, from_callback=True)
             return
         user_state[user_id] = {"step": "shop", "category_id": category_id}
