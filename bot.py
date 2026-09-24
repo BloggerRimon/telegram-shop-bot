@@ -3227,8 +3227,8 @@ def render_user_order_details(user_id: int, order_id) -> str:
         f"<b>Status:</b> {value(format_order_status(order.get('status')))}\n"
         f"<b>Date/Time:</b> {value(_order_date_text(order))}\n"
         f"<b>Payment Reference:</b> <code>{value(_order_payment_reference(order))}</code>\n\n"
-        f"{details_section}\n\n"
-        f"{delivered_section}"
+        f"{delivered_section}\n\n"
+        f"{details_section}"
     )
 
 
