@@ -17,6 +17,7 @@ from telegram import (
     ReplyKeyboardMarkup,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
+    MessageEntity,
 )
 from telegram.ext import (
     Application,
@@ -2101,12 +2102,54 @@ def start_flash_deal_broadcast_background(bot, product_id: str, deal_price: floa
     asyncio.create_task(_send_flash_deal_broadcast_job(bot, product_id, deal_price, minutes, admin_id))
 
 
-async def _send_admin_broadcast_job(bot, admin_id: int, message: str, targets: list):
+def serialize_message_entities(entities) -> list:
+    serialized = []
+    for entity in entities or []:
+        try:
+            entity_data = entity.to_dict() if hasattr(entity, "to_dict") else dict(entity)
+            json.dumps(entity_data)
+            serialized.append(entity_data)
+        except Exception as e:
+            print(f"Broadcast entity serialization failed: {type(e).__name__}")
+            return []
+    return serialized
+
+
+def deserialize_message_entities(entity_data: list, bot=None) -> list:
+    entities = []
+    for item in entity_data or []:
+        try:
+            if isinstance(item, MessageEntity):
+                entities.append(item)
+            elif isinstance(item, dict):
+                entities.append(MessageEntity.de_json(dict(item), bot))
+        except Exception as e:
+            print(f"Broadcast entity deserialization failed: {type(e).__name__}")
+            return []
+    return entities
+
+
+async def send_rich_broadcast_message(bot, chat_id: int, message: str, entity_data: list = None, reply_markup=None):
+    entities = deserialize_message_entities(entity_data, bot)
+    if entities:
+        try:
+            return await bot.send_message(
+                chat_id=int(chat_id),
+                text=message,
+                entities=entities,
+                reply_markup=reply_markup,
+            )
+        except Exception as e:
+            print(f"Rich broadcast send failed for user_id={int(chat_id)}; using plain text: {type(e).__name__}")
+    return await bot.send_message(chat_id=int(chat_id), text=message, reply_markup=reply_markup)
+
+
+async def _send_admin_broadcast_job(bot, admin_id: int, message: str, entity_data: list, targets: list):
     sent = 0
     failed = 0
     for target_id in targets:
         try:
-            await bot.send_message(chat_id=int(target_id), text=message)
+            await send_rich_broadcast_message(bot, int(target_id), message, entity_data)
             sent += 1
         except Exception:
             failed += 1
@@ -2128,8 +2171,8 @@ async def _send_admin_broadcast_job(bot, admin_id: int, message: str, targets: l
         pass
 
 
-def start_admin_broadcast_background(bot, admin_id: int, message: str, targets: list):
-    asyncio.create_task(_send_admin_broadcast_job(bot, admin_id, message, targets))
+def start_admin_broadcast_background(bot, admin_id: int, message: str, entity_data: list, targets: list):
+    asyncio.create_task(_send_admin_broadcast_job(bot, admin_id, message, entity_data, targets))
 
 
 # =========================
@@ -5469,19 +5512,29 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     if step == "admin_broadcast_input":
-        if len(text) > 4096:
+        broadcast_text = update.message.text or ""
+        if len(broadcast_text) > 4096:
             await update.message.reply_text("❌ Broadcast message is too long. Keep it under 4096 characters.", reply_markup=admin_menu())
             return
-        admin_temp[user_id]["broadcast_text"] = text
+        if not broadcast_text.strip():
+            await update.message.reply_text("❌ Broadcast message cannot be empty.", reply_markup=admin_menu())
+            return
+        broadcast_entities = serialize_message_entities(update.message.entities)
+        admin_temp[user_id]["broadcast_text"] = broadcast_text
+        admin_temp[user_id]["broadcast_entities"] = broadcast_entities
         user_state[user_id] = {"step": "admin_broadcast_confirm"}
         await update.message.reply_text(
             "📢 <b>Broadcast Preview</b>\n\n"
             f"<b>Users:</b> {max(0, len(all_users) - 1)}\n\n"
-            "<b>Message:</b>\n"
-            f"{escape_html(text)}\n\n"
-            "Send this message to all saved users?",
-            reply_markup=broadcast_confirm_keyboard(),
+            "The message below will be sent with its Telegram formatting and emoji entities.",
             parse_mode="HTML",
+        )
+        await send_rich_broadcast_message(
+            context.bot,
+            update.effective_chat.id,
+            broadcast_text,
+            broadcast_entities,
+            reply_markup=broadcast_confirm_keyboard(),
         )
         return
 
@@ -6583,12 +6636,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not message:
             await send_inline_from_callback(query, "❌ <b>No broadcast message found.</b>", close_keyboard())
             return
+        entity_data = list(admin_temp.get(user_id, {}).get("broadcast_entities") or [])
 
         targets = sorted(int(uid) for uid in all_users if int(uid) != int(user_id))
         await send_inline_from_callback(query, f"📢 <b>Broadcast started in background...</b>\n\nTargets: {len(targets)}")
         reset_admin_temp(user_id)
         user_state[user_id] = {"step": "admin_main"}
-        start_admin_broadcast_background(context.bot, user_id, message, targets)
+        start_admin_broadcast_background(context.bot, user_id, message, entity_data, targets)
         return
 
     if data == "admin_cancel_flow":
