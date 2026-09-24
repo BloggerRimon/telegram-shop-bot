@@ -361,6 +361,19 @@ PRODUCTS = {
 }
 product_order = ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9"]
 
+DEFAULT_CATEGORY_ID = "cat_default"
+DEFAULT_CATEGORY_NAME = "Uncategorized"
+CATEGORIES = {
+    DEFAULT_CATEGORY_ID: {
+        "id": DEFAULT_CATEGORY_ID,
+        "name": DEFAULT_CATEGORY_NAME,
+        "icon": "🗂",
+        "order": 0,
+    }
+}
+category_order = [DEFAULT_CATEGORY_ID]
+next_category_number = 1
+
 DEFAULT_DELIVERY_GUIDE = """📌 Account Login Guide
 Please follow these simple steps to use your new account:
 
@@ -478,6 +491,8 @@ def build_state_snapshot():
     # This does NOT delete products/orders/users; it only converts icon dicts into safe fields.
     if "normalize_all_product_icons" in globals():
         normalize_all_product_icons()
+    if "normalize_categories" in globals():
+        normalize_categories()
 
     state = {
         "user_wallet": user_wallet,
@@ -490,6 +505,8 @@ def build_state_snapshot():
         "all_transactions": all_transactions,
         "PRODUCTS": PRODUCTS,
         "product_order": product_order,
+        "CATEGORIES": CATEGORIES,
+        "category_order": category_order,
         "PROMO_CODES": PROMO_CODES,
         "notify_waitlist": {k: list(v) for k, v in notify_waitlist.items()},
         "gold_vip_users": list(gold_vip_users),
@@ -497,6 +514,7 @@ def build_state_snapshot():
         "global_order_id": global_order_id,
         "global_tx_id": global_tx_id,
         "next_product_number": next_product_number,
+        "next_category_number": next_category_number,
     }
 
     # These globals are defined later in the file. If they already exist, keep them too.
@@ -514,9 +532,9 @@ def build_state_snapshot():
 
 def apply_loaded_state(data: dict):
     """Apply a loaded state snapshot back into the in-memory bot structures."""
-    global PRODUCTS, product_order, PROMO_CODES
+    global PRODUCTS, product_order, CATEGORIES, category_order, PROMO_CODES
     global gold_vip_users, active_flash_deal
-    global global_order_id, global_tx_id, next_product_number
+    global global_order_id, global_tx_id, next_product_number, next_category_number
     global NOWPAYMENTS_PAYMENTS, NOWPAYMENTS_PROCESSED
     global CRYPTOMUS_PAYMENTS, CRYPTOMUS_PROCESSED
 
@@ -532,6 +550,20 @@ def apply_loaded_state(data: dict):
     for pid in PRODUCTS:
         if pid not in product_order:
             product_order.append(pid)
+
+    loaded_categories = data.get("CATEGORIES")
+    if isinstance(loaded_categories, dict) and loaded_categories:
+        CATEGORIES.clear()
+        CATEGORIES.update(loaded_categories)
+
+    loaded_category_order = data.get("category_order")
+    if isinstance(loaded_category_order, list):
+        category_order.clear()
+        category_order.extend(loaded_category_order)
+
+    next_category_number = int(data.get("next_category_number", next_category_number) or next_category_number)
+    if "normalize_categories" in globals():
+        normalize_categories()
 
     # Migrate any old/bad saved custom emoji data.
     # Some previous code may have saved the whole Telegram entity dict inside product["icon"],
@@ -1000,6 +1032,90 @@ def generate_new_product_id() -> str:
         next_product_number += 1
         if product_id not in PRODUCTS:
             return product_id
+
+
+def normalize_categories() -> bool:
+    """Add category metadata without removing or replacing any existing product."""
+    global next_category_number
+    changed = False
+
+    if DEFAULT_CATEGORY_ID not in CATEGORIES:
+        CATEGORIES[DEFAULT_CATEGORY_ID] = {
+            "id": DEFAULT_CATEGORY_ID,
+            "name": DEFAULT_CATEGORY_NAME,
+            "icon": "🗂",
+            "order": 0,
+        }
+        changed = True
+
+    for category_id, category in list(CATEGORIES.items()):
+        if not isinstance(category, dict):
+            CATEGORIES[category_id] = {
+                "id": category_id,
+                "name": str(category or category_id),
+                "icon": "📁",
+            }
+            changed = True
+            continue
+        if category.get("id") != category_id:
+            category["id"] = category_id
+            changed = True
+        if not str(category.get("name") or "").strip():
+            category["name"] = DEFAULT_CATEGORY_NAME if category_id == DEFAULT_CATEGORY_ID else category_id
+            changed = True
+        if not _looks_like_unicode_emoji(str(category.get("icon") or "")):
+            category["icon"] = "🗂" if category_id == DEFAULT_CATEGORY_ID else "📁"
+            changed = True
+
+    cleaned_order = []
+    for category_id in category_order:
+        if category_id in CATEGORIES and category_id not in cleaned_order:
+            cleaned_order.append(category_id)
+    for category_id in CATEGORIES:
+        if category_id not in cleaned_order:
+            cleaned_order.append(category_id)
+    if cleaned_order != category_order:
+        category_order.clear()
+        category_order.extend(cleaned_order)
+        changed = True
+
+    for index, category_id in enumerate(category_order):
+        if CATEGORIES[category_id].get("order") != index:
+            CATEGORIES[category_id]["order"] = index
+            changed = True
+
+    for product in PRODUCTS.values():
+        category_id = product.get("category_id")
+        if category_id not in CATEGORIES:
+            product["category_id"] = DEFAULT_CATEGORY_ID
+            changed = True
+
+    used_numbers = []
+    for category_id in CATEGORIES:
+        if category_id.startswith("cat") and category_id[3:].isdigit():
+            used_numbers.append(int(category_id[3:]))
+    safe_next = max([next_category_number, *[number + 1 for number in used_numbers]])
+    if safe_next != next_category_number:
+        next_category_number = safe_next
+        changed = True
+    return changed
+
+
+def generate_new_category_id() -> str:
+    global next_category_number
+    while True:
+        category_id = f"cat{next_category_number}"
+        next_category_number += 1
+        if category_id not in CATEGORIES:
+            return category_id
+
+
+def get_category_product_ids(category_id: str) -> list:
+    normalize_categories()
+    return [
+        product_id for product_id in product_order
+        if product_id in PRODUCTS and PRODUCTS[product_id].get("category_id") == category_id
+    ]
 
 
 def enter_client_mode(user_id: int):
@@ -2066,6 +2182,7 @@ def main_menu() -> ReplyKeyboardMarkup:
 def admin_menu() -> ReplyKeyboardMarkup:
     keyboard = [
         ["📦 Products", "📥 Stock"],
+        ["🗂 Categories"],
         ["🎟 Promo Admin", "📦 Orders Admin"],
         ["💳 Deposits Admin", "👤 Users Admin"],
         ["💰 User Balance", "🔔 Notify Requests"],
@@ -2186,6 +2303,55 @@ def admin_products_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🗑 Delete Product", callback_data="admin_delete_product_menu")],
         [InlineKeyboardButton("⬅️ Close", callback_data="admin_products_close")],
     ]
+    return InlineKeyboardMarkup(rows)
+
+
+def admin_categories_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Add Category", callback_data="category_add")],
+        [InlineKeyboardButton("📋 View Categories", callback_data="category_view")],
+        [InlineKeyboardButton("✏️ Rename Category", callback_data="category_rename_menu")],
+        [InlineKeyboardButton("😀 Edit Category Icon", callback_data="category_icon_menu")],
+        [InlineKeyboardButton("↕️ Reorder Categories", callback_data="category_reorder_menu")],
+        [InlineKeyboardButton("🗃 Move Product to Category", callback_data="category_move_product_menu")],
+        [InlineKeyboardButton("🗑 Delete Category", callback_data="category_delete_menu")],
+        [InlineKeyboardButton("⬅️ Close", callback_data="category_close")],
+    ])
+
+
+def category_select_keyboard(action_prefix: str, include_default: bool = True) -> InlineKeyboardMarkup:
+    normalize_categories()
+    rows = []
+    for category_id in category_order:
+        if category_id not in CATEGORIES or (not include_default and category_id == DEFAULT_CATEGORY_ID):
+            continue
+        category = CATEGORIES[category_id]
+        label = f"{category.get('icon', '📁')} {category.get('name', category_id)}"
+        rows.append([InlineKeyboardButton(_short_button_text(label), callback_data=f"{action_prefix}_{category_id}")])
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="category_back")])
+    return InlineKeyboardMarkup(rows)
+
+
+def category_product_select_keyboard() -> InlineKeyboardMarkup:
+    rows = []
+    for product_id in product_order:
+        if product_id not in PRODUCTS:
+            continue
+        product = PRODUCTS[product_id]
+        rows.append([make_product_inline_button(product, product.get("name", product_id), f"category_move_product_{product_id}")])
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="category_back")])
+    return InlineKeyboardMarkup(rows)
+
+
+def category_reorder_selected_keyboard(category_id: str) -> InlineKeyboardMarkup:
+    normalize_categories()
+    idx = category_order.index(category_id)
+    rows = []
+    if idx > 0:
+        rows.append([InlineKeyboardButton("⬆️ Move Up", callback_data=f"category_move_up_{category_id}")])
+    if idx < len(category_order) - 1:
+        rows.append([InlineKeyboardButton("⬇️ Move Down", callback_data=f"category_move_down_{category_id}")])
+    rows.append([InlineKeyboardButton("⬅️ Category List", callback_data="category_reorder_menu")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -2772,6 +2938,31 @@ def render_admin_products_list() -> str:
             f"Price: {format_money(product['price'])}\n"
             f"Display Stock: {get_display_stock(product_id)} pcs\n"
             f"Real Stock: {get_product_stock(product_id)} pcs"
+        )
+    return "\n".join(lines)
+
+
+def render_admin_categories_text() -> str:
+    normalize_categories()
+    return (
+        "🗂 <b>CATEGORIES</b>\n\n"
+        f"<b>Total Categories:</b> {len(CATEGORIES)}\n"
+        f"<b>Total Products:</b> {len(PRODUCTS)}\n\n"
+        "Choose a category action below."
+    )
+
+
+def render_admin_categories_list() -> str:
+    normalize_categories()
+    lines = ["📋 <b>CATEGORY LIST</b>", ""]
+    for index, category_id in enumerate(category_order, start=1):
+        category = CATEGORIES.get(category_id, {})
+        default_text = " (Default)" if category_id == DEFAULT_CATEGORY_ID else ""
+        lines.append(
+            f"{index}. {escape_html(category.get('icon', '📁'))} "
+            f"<b>{escape_html(category.get('name', category_id))}</b>{default_text}\n"
+            f"   ID: <code>{escape_html(category_id)}</code> | "
+            f"Products: {len(get_category_product_ids(category_id))}"
         )
     return "\n".join(lines)
 
@@ -3490,9 +3681,25 @@ def render_shop_menu_text() -> str:
     return f"{flash_banner}\n\n{base}" if flash_banner else base
 
 
-def shop_menu_keyboard(user_id: int = None) -> InlineKeyboardMarkup:
+def shop_categories_keyboard() -> InlineKeyboardMarkup:
+    normalize_categories()
+    rows = []
+    for category_id in category_order:
+        category = CATEGORIES.get(category_id, {})
+        label = (
+            f"{category.get('icon', '📁')} {category.get('name', category_id)} "
+            f"({len(get_category_product_ids(category_id))})"
+        )
+        rows.append([InlineKeyboardButton(_short_button_text(label), callback_data=f"shop_category_{category_id}")])
+    rows.append([InlineKeyboardButton("⬅️ Close", callback_data="close_inline")])
+    return InlineKeyboardMarkup(rows)
+
+
+def shop_menu_keyboard(user_id: int = None, category_id: str = None) -> InlineKeyboardMarkup:
+    normalize_categories()
     rows = [[InlineKeyboardButton("──── ⚡ AUTO DELIVERY ────", callback_data="noop")]]
-    for product_id in product_order:
+    selected_product_ids = get_category_product_ids(category_id) if category_id else list(product_order)
+    for product_id in selected_product_ids:
         if product_id not in PRODUCTS:
             continue
         product = PRODUCTS[product_id]
@@ -3505,21 +3712,37 @@ def shop_menu_keyboard(user_id: int = None) -> InlineKeyboardMarkup:
         rows.append([make_product_inline_button(product, core_label, callback)])
         if stock <= 0:
             rows.append([InlineKeyboardButton("🔔 Notify Me", callback_data=f"shop_notify_{product_id}")])
-    rows.append([InlineKeyboardButton("⬅️ Close", callback_data="close_inline")])
+    if len(CATEGORIES) > 1:
+        rows.append([InlineKeyboardButton("⬅️ Back to Categories", callback_data="back_shop_cards")])
+    else:
+        rows.append([InlineKeyboardButton("⬅️ Close", callback_data="close_inline")])
     return InlineKeyboardMarkup(rows)
 
 
-async def send_shop_cards_message(source, from_callback: bool = False):
+async def send_shop_cards_message(source, from_callback: bool = False, category_id: str = None):
     # Kept same function name so existing callbacks keep working.
-    # New behavior: one compact store menu instead of many product messages.
-    if from_callback:
-        viewer_id = getattr(source, "from_user", None).id if getattr(source, "from_user", None) else None
-        await source.message.reply_text(render_shop_menu_text(), reply_markup=shop_menu_keyboard(viewer_id), parse_mode="HTML")
+    normalize_categories()
+    show_categories = category_id is None and len(CATEGORIES) > 1
+    if show_categories:
+        text = "🗂 <b>SHOP CATEGORIES</b>\n\nChoose a folder below to view products."
+        keyboard = shop_categories_keyboard()
     else:
-        # source is a Telegram Message here, not an Update.
-        # Use source.reply_text exactly like the previous working version, only passing viewer_id for VIP price.
-        viewer_id = getattr(getattr(source, "from_user", None), "id", None)
-        await source.reply_text(render_shop_menu_text(), reply_markup=shop_menu_keyboard(viewer_id), parse_mode="HTML")
+        if category_id is None:
+            category_id = category_order[0]
+        category = CATEGORIES.get(category_id, CATEGORIES[DEFAULT_CATEGORY_ID])
+        text = (
+            f"{escape_html(category.get('icon', '📁'))} "
+            f"<b>{escape_html(category.get('name', category_id))}</b>\n\n"
+            f"{render_shop_menu_text()}"
+        )
+        keyboard = shop_menu_keyboard(
+            getattr(getattr(source, "from_user", None), "id", None),
+            category_id,
+        )
+    if from_callback:
+        await source.message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
+    else:
+        await source.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
 
 
 
@@ -5018,6 +5241,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Choose a products action below.", reply_markup=admin_products_keyboard(), parse_mode="HTML")
             return
 
+        if text == "🗂 Categories":
+            user_state[user_id] = {"step": "admin_categories"}
+            reset_admin_temp(user_id)
+            await update.message.reply_text(render_admin_categories_text(), reply_markup=admin_menu(), parse_mode="HTML")
+            await update.message.reply_text("Category actions:", reply_markup=admin_categories_keyboard(), parse_mode="HTML")
+            return
+
         if text == "📥 Stock":
             user_state[user_id] = {"step": "admin_stock"}
             await update.message.reply_text("📥 <b>STOCK MANAGEMENT</b>\n\nChoose an option below.", reply_markup=admin_menu(), parse_mode="HTML")
@@ -5113,6 +5343,78 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=broadcast_confirm_keyboard(),
             parse_mode="HTML",
         )
+        return
+
+    # ========= CATEGORY MANAGEMENT =========
+    if step == "category_add_name":
+        category_name = text.strip()
+        if not category_name:
+            await update.message.reply_text("❌ <b>Category name cannot be empty.</b>", parse_mode="HTML")
+            return
+        if len(category_name) > 60:
+            await update.message.reply_text("❌ <b>Category name is too long.</b> Keep it under 60 characters.", parse_mode="HTML")
+            return
+        admin_temp[user_id]["category_name"] = category_name
+        user_state[user_id] = {"step": "category_add_icon"}
+        await update.message.reply_text(
+            "😀 <b>Add Category</b>\n\nSend one normal emoji for this category.\nExample: 📁",
+            reply_markup=admin_cancel_keyboard(),
+            parse_mode="HTML",
+        )
+        return
+
+    if step == "category_add_icon":
+        category_icon = text.strip()
+        if not _looks_like_unicode_emoji(category_icon):
+            await update.message.reply_text("❌ <b>Invalid icon.</b> Send one normal Unicode emoji.", parse_mode="HTML")
+            return
+        category_id = generate_new_category_id()
+        CATEGORIES[category_id] = {
+            "id": category_id,
+            "name": admin_temp[user_id]["category_name"],
+            "icon": category_icon,
+            "order": len(category_order),
+        }
+        category_order.append(category_id)
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "admin_categories"}
+        await update.message.reply_text(
+            f"✅ <b>Category added.</b>\n\nID: <code>{escape_html(category_id)}</code>",
+            reply_markup=admin_categories_keyboard(),
+            parse_mode="HTML",
+        )
+        return
+
+    if step == "category_rename_input":
+        category_name = text.strip()
+        category_id = admin_temp.get(user_id, {}).get("selected_category_id")
+        if category_id not in CATEGORIES:
+            reset_admin_temp(user_id)
+            await update.message.reply_text("❌ <b>Category was not found.</b>", reply_markup=admin_categories_keyboard(), parse_mode="HTML")
+            return
+        if not category_name or len(category_name) > 60:
+            await update.message.reply_text("❌ <b>Send a category name between 1 and 60 characters.</b>", parse_mode="HTML")
+            return
+        CATEGORIES[category_id]["name"] = category_name
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "admin_categories"}
+        await update.message.reply_text("✅ <b>Category renamed.</b>", reply_markup=admin_categories_keyboard(), parse_mode="HTML")
+        return
+
+    if step == "category_icon_input":
+        category_icon = text.strip()
+        category_id = admin_temp.get(user_id, {}).get("selected_category_id")
+        if category_id not in CATEGORIES:
+            reset_admin_temp(user_id)
+            await update.message.reply_text("❌ <b>Category was not found.</b>", reply_markup=admin_categories_keyboard(), parse_mode="HTML")
+            return
+        if not _looks_like_unicode_emoji(category_icon):
+            await update.message.reply_text("❌ <b>Invalid icon.</b> Send one normal Unicode emoji.", parse_mode="HTML")
+            return
+        CATEGORIES[category_id]["icon"] = category_icon
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "admin_categories"}
+        await update.message.reply_text("✅ <b>Category icon updated.</b>", reply_markup=admin_categories_keyboard(), parse_mode="HTML")
         return
 
     # ========= PRODUCT ADD =========
@@ -5852,6 +6154,203 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "noop":
         return
 
+    # ========= CATEGORY ADMIN =========
+    if data.startswith("category_") and not is_admin(user_id):
+        await send_inline_from_callback(query, "❌ <b>You are not allowed.</b>", close_keyboard())
+        return
+
+    if data == "category_close":
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "admin_main"}
+        await send_inline_from_callback(query, "Closed categories panel.", close_keyboard())
+        return
+
+    if data == "category_back":
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "admin_categories"}
+        await send_inline_from_callback(query, render_admin_categories_text(), admin_categories_keyboard())
+        return
+
+    if data == "category_add":
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "category_add_name"}
+        await send_inline_from_callback(query, "➕ <b>Add Category</b>\n\nSend the category name.", admin_cancel_keyboard())
+        return
+
+    if data == "category_view":
+        user_state[user_id] = {"step": "admin_categories"}
+        await send_inline_from_callback(query, render_admin_categories_list(), admin_categories_keyboard())
+        return
+
+    if data == "category_rename_menu":
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "category_rename_pick"}
+        await send_inline_from_callback(
+            query,
+            f"✏️ <b>Rename Category</b>\n\nSelect a category. The default {DEFAULT_CATEGORY_NAME} category is kept unchanged.",
+            category_select_keyboard("category_rename_pick", include_default=False),
+        )
+        return
+
+    if data == "category_icon_menu":
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "category_icon_pick"}
+        await send_inline_from_callback(query, "😀 <b>Edit Category Icon</b>\n\nSelect a category.", category_select_keyboard("category_icon_pick"))
+        return
+
+    if data == "category_reorder_menu":
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "category_reorder_pick"}
+        await send_inline_from_callback(query, "↕️ <b>Reorder Categories</b>\n\nSelect a category.", category_select_keyboard("category_reorder_pick"))
+        return
+
+    if data == "category_move_product_menu":
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "category_move_product_pick"}
+        await send_inline_from_callback(query, "🗃 <b>Move Product to Category</b>\n\nSelect a product.", category_product_select_keyboard())
+        return
+
+    if data == "category_delete_menu":
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "category_delete_pick"}
+        await send_inline_from_callback(
+            query,
+            "🗑 <b>Delete Category</b>\n\nSelect a category. Products will be moved to the default category.",
+            category_select_keyboard("category_delete_pick", include_default=False),
+        )
+        return
+
+    if data.startswith("category_rename_pick_"):
+        category_id = data.replace("category_rename_pick_", "", 1)
+        if category_id == DEFAULT_CATEGORY_ID or category_id not in CATEGORIES:
+            await send_inline_from_callback(query, "❌ <b>The default category cannot be renamed.</b>", admin_categories_keyboard())
+            return
+        admin_temp[user_id]["selected_category_id"] = category_id
+        user_state[user_id] = {"step": "category_rename_input"}
+        await send_inline_from_callback(
+            query,
+            f"✏️ <b>Rename Category</b>\n\nCurrent: <b>{escape_html(CATEGORIES[category_id]['name'])}</b>\n\nSend the new name.",
+            admin_cancel_keyboard(),
+        )
+        return
+
+    if data.startswith("category_icon_pick_"):
+        category_id = data.replace("category_icon_pick_", "", 1)
+        if category_id not in CATEGORIES:
+            await send_inline_from_callback(query, "❌ <b>Category was not found.</b>", admin_categories_keyboard())
+            return
+        admin_temp[user_id]["selected_category_id"] = category_id
+        user_state[user_id] = {"step": "category_icon_input"}
+        await send_inline_from_callback(
+            query,
+            f"😀 <b>Edit Category Icon</b>\n\nCategory: <b>{escape_html(CATEGORIES[category_id]['name'])}</b>\n\nSend one normal emoji.",
+            admin_cancel_keyboard(),
+        )
+        return
+
+    if data.startswith("category_reorder_pick_"):
+        category_id = data.replace("category_reorder_pick_", "", 1)
+        if category_id not in CATEGORIES:
+            await send_inline_from_callback(query, "❌ <b>Category was not found.</b>", admin_categories_keyboard())
+            return
+        await send_inline_from_callback(
+            query,
+            f"↕️ <b>Reorder Category</b>\n\nSelected: <b>{escape_html(CATEGORIES[category_id]['name'])}</b>",
+            category_reorder_selected_keyboard(category_id),
+        )
+        return
+
+    if data.startswith("category_move_up_"):
+        category_id = data.replace("category_move_up_", "", 1)
+        if category_id not in category_order:
+            await send_inline_from_callback(query, "❌ <b>Category was not found.</b>", admin_categories_keyboard())
+            return
+        index = category_order.index(category_id)
+        if index > 0:
+            category_order[index], category_order[index - 1] = category_order[index - 1], category_order[index]
+        await send_inline_from_callback(query, "✅ <b>Category moved up.</b>", category_reorder_selected_keyboard(category_id))
+        return
+
+    if data.startswith("category_move_down_"):
+        category_id = data.replace("category_move_down_", "", 1)
+        if category_id not in category_order:
+            await send_inline_from_callback(query, "❌ <b>Category was not found.</b>", admin_categories_keyboard())
+            return
+        index = category_order.index(category_id)
+        if index < len(category_order) - 1:
+            category_order[index], category_order[index + 1] = category_order[index + 1], category_order[index]
+        await send_inline_from_callback(query, "✅ <b>Category moved down.</b>", category_reorder_selected_keyboard(category_id))
+        return
+
+    if data.startswith("category_move_product_"):
+        product_id = data.replace("category_move_product_", "", 1)
+        if product_id not in PRODUCTS:
+            await send_inline_from_callback(query, "❌ <b>Product was not found.</b>", admin_categories_keyboard())
+            return
+        admin_temp[user_id]["selected_product_id"] = product_id
+        user_state[user_id] = {"step": "category_move_target_pick"}
+        await send_inline_from_callback(
+            query,
+            f"🗃 <b>Move Product</b>\n\nProduct: <b>{escape_html(PRODUCTS[product_id]['name'])}</b>\n\nSelect the destination category.",
+            category_select_keyboard("category_move_target"),
+        )
+        return
+
+    if data.startswith("category_move_target_"):
+        category_id = data.replace("category_move_target_", "", 1)
+        product_id = admin_temp.get(user_id, {}).get("selected_product_id")
+        if category_id not in CATEGORIES or product_id not in PRODUCTS:
+            reset_admin_temp(user_id)
+            await send_inline_from_callback(query, "❌ <b>Product or category was not found.</b>", admin_categories_keyboard())
+            return
+        PRODUCTS[product_id]["category_id"] = category_id
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "admin_categories"}
+        await send_inline_from_callback(query, "✅ <b>Product moved to category.</b>", admin_categories_keyboard())
+        return
+
+    if data.startswith("category_delete_pick_"):
+        category_id = data.replace("category_delete_pick_", "", 1)
+        if category_id == DEFAULT_CATEGORY_ID or category_id not in CATEGORIES:
+            await send_inline_from_callback(query, "❌ <b>The default category cannot be deleted.</b>", admin_categories_keyboard())
+            return
+        product_count = len(get_category_product_ids(category_id))
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Confirm Delete", callback_data=f"category_confirm_delete_{category_id}")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="category_back")],
+        ])
+        await send_inline_from_callback(
+            query,
+            f"🗑 <b>Delete Category?</b>\n\n"
+            f"Category: <b>{escape_html(CATEGORIES[category_id]['name'])}</b>\n"
+            f"Products to move to {DEFAULT_CATEGORY_NAME}: <b>{product_count}</b>\n\n"
+            "No products will be deleted.",
+            keyboard,
+        )
+        return
+
+    if data.startswith("category_confirm_delete_"):
+        category_id = data.replace("category_confirm_delete_", "", 1)
+        if category_id == DEFAULT_CATEGORY_ID or category_id not in CATEGORIES:
+            await send_inline_from_callback(query, "❌ <b>The default category cannot be deleted.</b>", admin_categories_keyboard())
+            return
+        moved_count = 0
+        for product in PRODUCTS.values():
+            if product.get("category_id") == category_id:
+                product["category_id"] = DEFAULT_CATEGORY_ID
+                moved_count += 1
+        CATEGORIES.pop(category_id, None)
+        if category_id in category_order:
+            category_order.remove(category_id)
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "admin_categories"}
+        await send_inline_from_callback(
+            query,
+            f"✅ <b>Category deleted.</b>\n\nProducts moved to {DEFAULT_CATEGORY_NAME}: <b>{moved_count}</b>",
+            admin_categories_keyboard(),
+        )
+        return
+
     # ========= PRODUCT ADMIN =========
     if data == "admin_products_close":
         await send_inline_from_callback(query, "Closed products panel.", close_keyboard())
@@ -6274,6 +6773,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "name": temp["name"],
             "icon": temp.get("icon", "📦"),
             "icon_custom_emoji_id": temp.get("icon_custom_emoji_id"),
+            "category_id": DEFAULT_CATEGORY_ID,
             "month": temp["month"],
             "price": float(temp["price"]),
             "details": list(temp["details"]),
@@ -6676,6 +7176,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "back_shop_cards":
         user_state[user_id] = {"step": "shop"}
         await send_shop_cards_message(query, from_callback=True)
+        return
+
+    if data.startswith("shop_category_"):
+        category_id = data.replace("shop_category_", "", 1)
+        if category_id not in CATEGORIES:
+            await send_shop_cards_message(query, from_callback=True)
+            return
+        user_state[user_id] = {"step": "shop", "category_id": category_id}
+        await send_shop_cards_message(query, from_callback=True, category_id=category_id)
         return
 
     if data.startswith("shop_buy_"):
