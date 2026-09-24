@@ -2204,6 +2204,20 @@ def deserialize_message_entities(entity_data: list, bot=None) -> list:
     return entities
 
 
+def render_serialized_entities_html(text: str, entity_data: list) -> str:
+    from telegram import Chat, Message
+
+    entities = deserialize_message_entities(entity_data)
+    if not entities:
+        return ""
+    try:
+        message = Message(message_id=0, date=datetime.now(), chat=Chat(id=0, type="private"), text=text, entities=entities)
+        return message.text_html
+    except Exception as e:
+        print(f"Rich product details rendering failed; using plain text: {type(e).__name__}")
+        return ""
+
+
 async def send_rich_broadcast_message(bot, chat_id: int, message: str, entity_data: list = None, reply_markup=None):
     entities = deserialize_message_entities(entity_data, bot)
     if entities:
@@ -3066,6 +3080,11 @@ def render_product_card(product_id: str, user_id: int = None) -> str:
 def render_product_details(product_id: str, user_id: int = None) -> str:
     product = PRODUCTS[product_id]
     detail_lines = "\n".join(product["details"])
+    rich_details = product.get("details_rich")
+    if isinstance(rich_details, dict):
+        detail_lines = render_serialized_entities_html(
+            rich_details.get("text", detail_lines), rich_details.get("entities")
+        ) or detail_lines
     stock = get_display_stock(product_id)
     icon = product_icon_html(product)
     duration = format_duration_text(product.get("month", ""))
@@ -3261,12 +3280,17 @@ def render_admin_edit_month_preview(product_id: str, new_month: str) -> str:
     )
 
 
-def render_admin_edit_details_preview(product_id: str, new_details: list) -> str:
+def render_admin_edit_details_preview(product_id: str, new_details: list, new_details_rich: dict = None) -> str:
     product = PRODUCTS[product_id]
+    details_text = "\n".join(new_details)
+    if isinstance(new_details_rich, dict):
+        details_text = render_serialized_entities_html(
+            new_details_rich.get("text", details_text), new_details_rich.get("entities")
+        ) or details_text
     return (
         "📝 <b>CONFIRM DETAILS UPDATE</b>\n\n"
         f"<b>Product:</b> {product['name']}\n\n"
-        f"<b>New Details:</b>\n" + "\n".join(new_details) + "\n\nConfirm update?"
+        f"<b>New Details:</b>\n{details_text}\n\nConfirm update?"
     )
 
 
@@ -5845,9 +5869,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ <b>Please send at least one detail line.</b>", parse_mode="HTML")
             return
         admin_temp[user_id]["new_details"] = details
+        details_entities = serialize_message_entities(update.message.entities)
+        admin_temp[user_id]["new_details_rich"] = (
+            {"text": update.message.text or "", "entities": details_entities} if details_entities else None
+        )
         user_state[user_id] = {"step": "admin_edit_details_confirm"}
         await update.message.reply_text(
-            render_admin_edit_details_preview(admin_temp[user_id]["selected_product_id"], details),
+            render_admin_edit_details_preview(
+                admin_temp[user_id]["selected_product_id"], details, admin_temp[user_id]["new_details_rich"]
+            ),
             reply_markup=admin_confirm_keyboard("admin_confirm_details_update", "✅ Confirm Details"),
             parse_mode="HTML",
         )
@@ -7127,6 +7157,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "admin_confirm_details_update":
         product_id = admin_temp[user_id]["selected_product_id"]
         PRODUCTS[product_id]["details"] = list(admin_temp[user_id]["new_details"])
+        rich_details = admin_temp[user_id].get("new_details_rich")
+        if rich_details:
+            PRODUCTS[product_id]["details_rich"] = rich_details
+        else:
+            PRODUCTS[product_id].pop("details_rich", None)
         save_bot_state()
         reset_admin_temp(user_id)
         await send_inline_from_callback(query, "✅ <b>Details updated.</b>", admin_products_keyboard())
