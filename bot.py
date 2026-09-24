@@ -15,6 +15,7 @@ from telegram import (
     Update,
     BotCommand,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     MessageEntity,
@@ -2445,15 +2446,29 @@ def admin_notify_product_back_keyboard() -> InlineKeyboardMarkup:
 # =========================
 # MENUS
 # =========================
-def main_menu() -> ReplyKeyboardMarkup:
-    keyboard = [
-        ["🛍 Shop", "💰 Wallet"],
-        ["💳 Top Up", "🎟 Promo"],
-        ["📦 Orders", "🆔 User ID"],
-        ["🧾 Transactions", "👥 Refer & Earn"],
-        ["💬 Support"],
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+def main_menu() -> ReplyKeyboardRemove:
+    return ReplyKeyboardRemove()
+
+
+def make_user_dashboard_button(text: str, callback_data: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(text, callback_data=callback_data)
+
+
+def user_dashboard_keyboard() -> InlineKeyboardMarkup:
+    button = make_user_dashboard_button
+    return InlineKeyboardMarkup([
+        [button("🛍 Shop", "user_dashboard_shop"), button("💰 Wallet", "user_dashboard_wallet")],
+        [button("💳 Top Up", "user_dashboard_topup"), button("🎟 Promo", "user_dashboard_promo")],
+        [button("📦 Orders", "user_dashboard_orders"), button("🆔 User ID", "user_dashboard_profile")],
+        [button("🧾 Transactions", "user_dashboard_transactions"), button("👥 Refer & Earn", "user_dashboard_refer")],
+        [button("🆘 Support", "user_dashboard_support")],
+    ])
+
+
+def user_dashboard_back_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [make_user_dashboard_button("⬅️ Back to Menu", "user_dashboard")],
+    ])
 
 
 def admin_menu() -> ReplyKeyboardMarkup:
@@ -2471,7 +2486,7 @@ def admin_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
-def deposit_amount_keyboard() -> InlineKeyboardMarkup:
+def deposit_amount_keyboard(back_callback: str = "close_inline") -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton("$5", callback_data="dep_amt_5"),
@@ -2482,7 +2497,10 @@ def deposit_amount_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("$20", callback_data="dep_amt_20"),
         ],
         [InlineKeyboardButton("✏️ Custom Amount", callback_data="dep_custom")],
-        [InlineKeyboardButton("⬅️ Close", callback_data="close_inline")],
+        [InlineKeyboardButton(
+            "⬅️ Back to Menu" if back_callback == "user_dashboard" else "⬅️ Close",
+            callback_data=back_callback,
+        )],
     ]
     return InlineKeyboardMarkup(rows)
 
@@ -2933,6 +2951,31 @@ async def send_client_main_text(update: Update, text: str):
     await update.message.reply_text(text, reply_markup=main_menu(), parse_mode="HTML")
 
 
+async def send_user_dashboard(message, menu_notice: str = None):
+    # Step A: ReplyKeyboardRemove serializes remove_keyboard=True and clears any legacy user/admin keyboard.
+    await message.reply_text(
+        menu_notice or "Opening menu...",
+        reply_markup=ReplyKeyboardRemove(),
+        parse_mode="HTML",
+    )
+    # Step B: send a separate message so the dashboard is a real InlineKeyboardMarkup.
+    await message.reply_text(
+        render_home_text(),
+        reply_markup=user_dashboard_keyboard(),
+        parse_mode="HTML",
+    )
+
+
+async def edit_user_dashboard_panel(query, text: str, keyboard: InlineKeyboardMarkup):
+    try:
+        await query.edit_message_text(text=text, reply_markup=keyboard, parse_mode="HTML")
+    except Exception as e:
+        if "message is not modified" in str(e).lower():
+            return
+        print(f"User dashboard edit failed; sending fallback: {type(e).__name__}: {e}")
+        await query.message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+
 async def send_admin_main_text(update: Update, text: str):
     await update.message.reply_text(text, reply_markup=admin_menu(), parse_mode="HTML")
 
@@ -2983,9 +3026,8 @@ def tron_hex_to_base58(hex_addr: str) -> str:
 # =========================
 def render_home_text() -> str:
     return (
-        "👑 <b>SupremeLeader Premium Shop</b>\n\n"
-        "Welcome to your premium digital marketplace.\n"
-        "<b>Please select an option below:</b>"
+        "👑 <b>Supreme Leader Shop</b>\n\n"
+        "Choose an option below:"
     )
 
 
@@ -5619,7 +5661,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     ensure_user(user_id, update.effective_user)
     enter_client_mode(user_id)
-    await send_client_main_text(update, render_home_text())
+    await send_user_dashboard(update.message)
 
 
 async def client_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -5845,11 +5887,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = user_state[user_id]
     step = state.get("step", "main")
 
+    if user_mode[user_id] != "admin" and text == "Menu":
+        enter_client_mode(user_id)
+        await send_user_dashboard(update.message)
+        return
+
     # ========= ADMIN MAIN MENUS =========
     if user_mode[user_id] == "admin":
         if text == "🚪 Exit Admin":
             enter_client_mode(user_id)
-            await send_client_main_text(update, "✅ <b>Admin mode off.</b>\n\nBack to client menu.")
+            await send_user_dashboard(update.message, "✅ <b>Admin mode off.</b>")
             return
 
         if text == "📦 Products":
@@ -6678,7 +6725,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(
-        "Please use the fixed menu below.",
+        "Please use the Menu button below.",
         reply_markup=admin_menu() if user_mode[user_id] == "admin" else main_menu()
     )
 # =========================
@@ -6750,7 +6797,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if await check_required_channel_membership(context, user_id):
             ensure_user(user_id, query.from_user)
             enter_client_mode(user_id)
-            await query.message.reply_text(render_home_text(), reply_markup=main_menu(), parse_mode="HTML")
+            await send_user_dashboard(query.message)
         else:
             await query.message.reply_text(
                 "📢 Please join our official channel first.",
@@ -7837,6 +7884,75 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # ========= CLIENT FLOWS =========
+    if data.startswith("user_dashboard"):
+        enter_client_mode(user_id)
+
+        if data == "user_dashboard":
+            await edit_user_dashboard_panel(query, render_home_text(), user_dashboard_keyboard())
+            return
+
+        if data == "user_dashboard_shop":
+            if not await ensure_channel_access(update, context):
+                return
+            user_state[user_id] = {"step": "shop"}
+            await send_shop_cards_message(query, from_callback=True)
+            return
+
+        if data == "user_dashboard_wallet":
+            if not await ensure_channel_access(update, context):
+                return
+            await edit_user_dashboard_panel(
+                query, render_wallet_text(user_id), user_dashboard_back_keyboard()
+            )
+            return
+
+        if data == "user_dashboard_topup":
+            if not await ensure_channel_access(update, context):
+                return
+            user_state[user_id] = {"step": "deposit_amount"}
+            await edit_user_dashboard_panel(
+                query, render_deposit_text(), deposit_amount_keyboard("user_dashboard")
+            )
+            return
+
+        if data == "user_dashboard_orders":
+            orders_text, page, _ = render_user_orders_page(user_id)
+            await edit_user_orders_message(query, orders_text, user_orders_keyboard(user_id, page))
+            return
+
+        if data == "user_dashboard_transactions":
+            await edit_user_dashboard_panel(
+                query, render_transactions_text(user_id), user_dashboard_back_keyboard()
+            )
+            return
+
+        if data == "user_dashboard_profile":
+            await edit_user_dashboard_panel(
+                query, render_user_id_text(user_id), user_dashboard_back_keyboard()
+            )
+            return
+
+        if data == "user_dashboard_promo":
+            user_state[user_id] = {"step": "awaiting_promo"}
+            await edit_user_dashboard_panel(
+                query,
+                "🎟 <b>PROMO</b>\n\nPlease send your promo code.",
+                user_dashboard_back_keyboard(),
+            )
+            return
+
+        if data == "user_dashboard_refer":
+            await edit_user_dashboard_panel(
+                query, render_refer_text(user_id), user_dashboard_back_keyboard()
+            )
+            return
+
+        if data == "user_dashboard_support":
+            await edit_user_dashboard_panel(
+                query, render_support_text(), user_dashboard_back_keyboard()
+            )
+            return
+
     if data == "close_inline":
         await send_inline_from_callback(query, "Closed.", close_keyboard())
         return
