@@ -493,6 +493,8 @@ def build_state_snapshot():
     # This does NOT delete products/orders/users; it only converts icon dicts into safe fields.
     if "normalize_all_product_icons" in globals():
         normalize_all_product_icons()
+    if "normalize_all_category_icons" in globals():
+        normalize_all_category_icons()
     if "normalize_categories" in globals():
         normalize_categories()
     if "normalize_shop_order" in globals():
@@ -582,6 +584,8 @@ def apply_loaded_state(data: dict):
     # which makes buttons show {'type': 'custom_emoji', ...}. This converts it safely.
     if "normalize_all_product_icons" in globals():
         normalize_all_product_icons()
+    if "normalize_all_category_icons" in globals():
+        normalize_all_category_icons()
 
     loaded_promos = data.get("PROMO_CODES")
     if loaded_promos:
@@ -1075,8 +1079,14 @@ def normalize_categories() -> bool:
         if not str(category.get("name") or "").strip():
             category["name"] = DEFAULT_CATEGORY_NAME if category_id == DEFAULT_CATEGORY_ID else category_id
             changed = True
-        if not _looks_like_unicode_emoji(str(category.get("icon") or "")):
-            category["icon"] = "🗂" if category_id == DEFAULT_CATEGORY_ID else "📁"
+        fallback_icon = "🗂" if category_id == DEFAULT_CATEGORY_ID else "📁"
+        old_icon = category.get("icon")
+        old_custom_id = category.get("icon_custom_emoji_id")
+        if "_normalize_category_icon_fields" in globals():
+            _normalize_category_icon_fields(category, fallback=fallback_icon)
+        elif not _looks_like_unicode_emoji(str(category.get("icon") or "")):
+            category["icon"] = fallback_icon
+        if category.get("icon") != old_icon or category.get("icon_custom_emoji_id") != old_custom_id:
             changed = True
 
     cleaned_order = []
@@ -1624,6 +1634,63 @@ def make_product_inline_button(product_or_temp, core_text: str, callback_data: s
     except Exception:
         pass
     return make_inline_button_with_optional_icon(label, callback_data, _product_custom_emoji_id(product_or_temp))
+
+
+def _category_custom_emoji_id(category) -> str:
+    category = category or {}
+    custom_id = str(category.get("icon_custom_emoji_id") or "").strip()
+    if custom_id:
+        return custom_id
+    return _extract_custom_emoji_id_from_icon_value(category.get("icon"))
+
+
+def _category_normal_icon_text(category, fallback: str = "📁") -> str:
+    category = category or {}
+    icon_value = category.get("icon", fallback)
+    safe_fallback = "🔹" if _category_custom_emoji_id(category) else fallback
+    return _clean_icon_text(icon_value, fallback=safe_fallback)
+
+
+def _normalize_category_icon_fields(category: dict, fallback: str = "📁"):
+    """Clean only category icon fields; never changes category IDs, order, or products."""
+    if not isinstance(category, dict):
+        return category
+    custom_id = _category_custom_emoji_id(category)
+    category["icon"] = _category_normal_icon_text(category, fallback=fallback)
+    if custom_id:
+        category["icon_custom_emoji_id"] = custom_id
+    else:
+        category.pop("icon_custom_emoji_id", None)
+    return category
+
+
+def normalize_all_category_icons():
+    try:
+        for category_id, category in CATEGORIES.items():
+            fallback = "🗂" if category_id == DEFAULT_CATEGORY_ID else "📁"
+            _normalize_category_icon_fields(category, fallback=fallback)
+    except Exception as e:
+        print(f"Failed to normalize category icons: {type(e).__name__}")
+
+
+def category_icon_html(category) -> str:
+    return _icon_html(_category_normal_icon_text(category), _category_custom_emoji_id(category))
+
+
+def category_label_prefix(category) -> str:
+    if _category_custom_emoji_id(category):
+        return ""
+    return _category_normal_icon_text(category)
+
+
+def category_label_text(category, core_text: str) -> str:
+    prefix = category_label_prefix(category)
+    return f"{prefix} {core_text}".strip() if prefix else str(core_text)
+
+
+def make_category_inline_button(category, core_text: str, callback_data: str):
+    label = _short_button_text(category_label_text(category, core_text))
+    return make_inline_button_with_optional_icon(label, callback_data, _category_custom_emoji_id(category))
 
 # =========================
 # ADVANCED USER / PROMO HELPERS
@@ -2490,8 +2557,13 @@ def category_select_keyboard(action_prefix: str, include_default: bool = True) -
         if category_id not in CATEGORIES or (not include_default and category_id == DEFAULT_CATEGORY_ID):
             continue
         category = CATEGORIES[category_id]
-        label = f"{category.get('icon', '📁')} {category.get('name', category_id)}"
-        rows.append([InlineKeyboardButton(_short_button_text(label), callback_data=f"{action_prefix}_{category_id}")])
+        rows.append([
+            make_category_inline_button(
+                category,
+                category.get("name", category_id),
+                f"{action_prefix}_{category_id}",
+            )
+        ])
     rows.append([InlineKeyboardButton("⬅️ Back", callback_data="category_back")])
     return InlineKeyboardMarkup(rows)
 
@@ -3128,7 +3200,7 @@ def render_admin_categories_list() -> str:
         category = CATEGORIES.get(category_id, {})
         default_text = " (Default)" if category_id == DEFAULT_CATEGORY_ID else ""
         lines.append(
-            f"{index}. {escape_html(category.get('icon', '📁'))} "
+            f"{index}. {category_icon_html(category)} "
             f"<b>{escape_html(category.get('name', category_id))}</b>{default_text}\n"
             f"   ID: <code>{escape_html(category_id)}</code> | "
             f"Products: {len(get_category_product_ids(category_id))}"
@@ -3882,10 +3954,10 @@ def shop_categories_keyboard(user_id: int = None) -> InlineKeyboardMarkup:
         if not category or item_id == DEFAULT_CATEGORY_ID:
             continue
         label = (
-            f"{category.get('icon', '📁')} {category.get('name', item_id)} "
+            f"{category.get('name', item_id)} "
             f"({len(get_category_product_ids(item_id))})"
         )
-        rows.append([InlineKeyboardButton(_short_button_text(label), callback_data=f"shop_category_{item_id}")])
+        rows.append([make_category_inline_button(category, label, f"shop_category_{item_id}")])
     rows.append([InlineKeyboardButton("⬅️ Close", callback_data="close_inline")])
     return InlineKeyboardMarkup(rows)
 
@@ -3911,7 +3983,7 @@ async def send_shop_cards_message(source, from_callback: bool = False, category_
     else:
         category = CATEGORIES.get(category_id, CATEGORIES[DEFAULT_CATEGORY_ID])
         text = (
-            f"{escape_html(category.get('icon', '📁'))} "
+            f"{category_icon_html(category)} "
             f"<b>{escape_html(category.get('name', category_id))}</b>\n\n"
             f"{render_shop_menu_text()}"
         )
@@ -5550,24 +5622,26 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         admin_temp[user_id]["category_name"] = category_name
         user_state[user_id] = {"step": "category_add_icon"}
         await update.message.reply_text(
-            "😀 <b>Add Category</b>\n\nSend one normal emoji for this category.\nExample: 📁",
+            "😀 <b>Add Category</b>\n\nSend one normal or Telegram custom emoji for this category.\nExample: 📁",
             reply_markup=admin_cancel_keyboard(),
             parse_mode="HTML",
         )
         return
 
     if step == "category_add_icon":
-        category_icon = text.strip()
-        if not _looks_like_unicode_emoji(category_icon):
-            await update.message.reply_text("❌ <b>Invalid icon.</b> Send one normal Unicode emoji.", parse_mode="HTML")
+        category_icon, category_custom_emoji_id, icon_error = _extract_supported_icon_from_message(update.message)
+        if icon_error:
+            await update.message.reply_text(icon_error, parse_mode="HTML")
             return
         category_id = generate_new_category_id()
         CATEGORIES[category_id] = {
             "id": category_id,
             "name": admin_temp[user_id]["category_name"],
             "icon": category_icon,
+            "icon_custom_emoji_id": category_custom_emoji_id,
             "order": len(category_order),
         }
+        _normalize_category_icon_fields(CATEGORIES[category_id])
         category_order.append(category_id)
         shop_order.append(f"category:{category_id}")
         reset_admin_temp(user_id)
@@ -5596,16 +5670,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if step == "category_icon_input":
-        category_icon = text.strip()
         category_id = admin_temp.get(user_id, {}).get("selected_category_id")
         if category_id not in CATEGORIES:
             reset_admin_temp(user_id)
             await update.message.reply_text("❌ <b>Category was not found.</b>", reply_markup=admin_categories_keyboard(), parse_mode="HTML")
             return
-        if not _looks_like_unicode_emoji(category_icon):
-            await update.message.reply_text("❌ <b>Invalid icon.</b> Send one normal Unicode emoji.", parse_mode="HTML")
+        category_icon, category_custom_emoji_id, icon_error = _extract_supported_icon_from_message(update.message)
+        if icon_error:
+            await update.message.reply_text(icon_error, parse_mode="HTML")
             return
         CATEGORIES[category_id]["icon"] = category_icon
+        CATEGORIES[category_id]["icon_custom_emoji_id"] = category_custom_emoji_id
+        _normalize_category_icon_fields(CATEGORIES[category_id])
         reset_admin_temp(user_id)
         user_state[user_id] = {"step": "admin_categories"}
         await update.message.reply_text("✅ <b>Category icon updated.</b>", reply_markup=admin_categories_keyboard(), parse_mode="HTML")
@@ -6441,7 +6517,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[user_id] = {"step": "category_icon_input"}
         await send_inline_from_callback(
             query,
-            f"😀 <b>Edit Category Icon</b>\n\nCategory: <b>{escape_html(CATEGORIES[category_id]['name'])}</b>\n\nSend one normal emoji.",
+            f"😀 <b>Edit Category Icon</b>\n\n"
+            f"Category: {category_icon_html(CATEGORIES[category_id])} <b>{escape_html(CATEGORIES[category_id]['name'])}</b>\n\n"
+            "Send one normal or Telegram custom emoji.",
             admin_cancel_keyboard(),
         )
         return
