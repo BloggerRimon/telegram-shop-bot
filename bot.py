@@ -4067,11 +4067,23 @@ async def deliver_accounts_to_user(bot, user_id: int, product_id: str, qty: int)
         lines.append(f"<code>{escape_html(account_line)}</code>")
 
     guide = get_delivery_guide(product_id)
-    if guide:
+    rich_guide = product.get("delivery_guide_rich")
+    if not isinstance(rich_guide, dict):
+        rich_guide = None
+    if guide and not rich_guide:
         lines.append("")
         lines.append(escape_html(guide))
 
     await send_html_lines(bot, user_id, lines)
+    if guide and rich_guide:
+        entities = deserialize_message_entities(rich_guide.get("entities"), bot)
+        if entities:
+            try:
+                await bot.send_message(chat_id=user_id, text=rich_guide.get("text", guide), entities=entities)
+                return True, delivered
+            except Exception as e:
+                print(f"Rich delivery guide send failed for product_id={product_id}; using plain text: {type(e).__name__}")
+        await bot.send_message(chat_id=user_id, text=guide)
     return True, delivered
 
 
@@ -5842,11 +5854,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if step == "admin_edit_delivery_guide_input":
-        new_guide = text.strip()
+        new_guide_text = update.message.text or ""
+        new_guide = new_guide_text.strip()
         if not new_guide:
             await update.message.reply_text("❌ <b>Delivery guide cannot be empty.</b>", parse_mode="HTML")
             return
         admin_temp[user_id]["new_delivery_guide"] = new_guide
+        guide_entities = serialize_message_entities(update.message.entities)
+        admin_temp[user_id]["new_delivery_guide_rich"] = (
+            {"text": new_guide_text, "entities": guide_entities} if guide_entities else None
+        )
         user_state[user_id] = {"step": "admin_edit_delivery_guide_confirm"}
         await update.message.reply_text(
             render_admin_edit_delivery_guide_preview(admin_temp[user_id]["selected_product_id"], new_guide),
@@ -7118,6 +7135,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "admin_confirm_delivery_guide_update":
         product_id = admin_temp[user_id]["selected_product_id"]
         PRODUCTS[product_id]["delivery_guide"] = admin_temp[user_id]["new_delivery_guide"]
+        rich_guide = admin_temp[user_id].get("new_delivery_guide_rich")
+        if rich_guide:
+            PRODUCTS[product_id]["delivery_guide_rich"] = rich_guide
+        else:
+            PRODUCTS[product_id].pop("delivery_guide_rich", None)
         save_bot_state()
         reset_admin_temp(user_id)
         await send_inline_from_callback(query, "✅ <b>Delivery guide updated.</b>", admin_products_keyboard())
