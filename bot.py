@@ -377,6 +377,19 @@ category_order = [DEFAULT_CATEGORY_ID]
 next_category_number = 1
 shop_order = []
 
+DASHBOARD_EMOJI_KEYS = (
+    "shop",
+    "orders",
+    "wallet",
+    "topup",
+    "promo",
+    "refer",
+    "profile",
+    "transactions",
+    "support",
+)
+dashboard_custom_emoji_ids = {key: "" for key in DASHBOARD_EMOJI_KEYS}
+
 DEFAULT_DELIVERY_GUIDE = """📌 Account Login Guide
 Please follow these simple steps to use your new account:
 
@@ -515,6 +528,7 @@ def build_state_snapshot():
         "CATEGORIES": CATEGORIES,
         "category_order": category_order,
         "shop_order": shop_order,
+        "dashboard_custom_emoji_ids": dashboard_custom_emoji_ids,
         "PROMO_CODES": PROMO_CODES,
         "notify_waitlist": {k: list(v) for k, v in notify_waitlist.items()},
         "gold_vip_users": list(gold_vip_users),
@@ -579,6 +593,11 @@ def apply_loaded_state(data: dict):
         shop_order.extend(loaded_shop_order)
     if "normalize_shop_order" in globals():
         normalize_shop_order()
+
+    loaded_dashboard_emojis = data.get("dashboard_custom_emoji_ids", {})
+    if isinstance(loaded_dashboard_emojis, dict):
+        for key in DASHBOARD_EMOJI_KEYS:
+            dashboard_custom_emoji_ids[key] = str(loaded_dashboard_emojis.get(key) or "").strip()
 
     # Migrate any old/bad saved custom emoji data.
     # Some previous code may have saved the whole Telegram entity dict inside product["icon"],
@@ -2454,39 +2473,72 @@ def make_user_dashboard_button(text: str, callback_data: str) -> InlineKeyboardB
     return InlineKeyboardButton(text, callback_data=callback_data)
 
 
-def make_styled_inline_button(text: str, callback_data=None, url=None, style=None) -> InlineKeyboardButton:
+DASHBOARD_BUTTONS = {
+    "shop": {"text": "Shop", "emoji": "🛍", "callback": "user_dashboard_shop", "style": "primary"},
+    "orders": {"text": "My Orders", "emoji": "📦", "callback": "user_dashboard_orders", "style": "primary"},
+    "wallet": {"text": "Wallet", "emoji": "💰", "callback": "user_dashboard_wallet", "style": "success"},
+    "topup": {"text": "Top Up", "emoji": "💳", "callback": "user_dashboard_topup", "style": "success"},
+    "promo": {"text": "Promo", "emoji": "🎁", "callback": "user_dashboard_promo", "style": "success"},
+    "refer": {"text": "Refer & Earn", "emoji": "👥", "callback": "user_dashboard_refer", "style": "success"},
+    "profile": {"text": "Profile", "emoji": "🆔", "callback": "user_dashboard_profile", "style": "primary"},
+    "transactions": {"text": "Transactions", "emoji": "🧾", "callback": "user_dashboard_transactions", "style": "primary"},
+    "support": {"text": "Support", "emoji": "🎧", "callback": "user_dashboard_support", "style": "danger"},
+}
+DASHBOARD_BUTTON_LAYOUT = (
+    ("shop", "orders"),
+    ("wallet", "topup"),
+    ("promo", "refer"),
+    ("profile", "transactions"),
+    ("support",),
+)
+
+
+def make_styled_inline_button(
+    text: str,
+    callback_data=None,
+    url=None,
+    style=None,
+    icon_custom_emoji_id=None,
+) -> InlineKeyboardButton:
     button_kwargs = {}
     if callback_data is not None:
         button_kwargs["callback_data"] = callback_data
     if url is not None:
         button_kwargs["url"] = url
+    api_fields = {}
+    custom_emoji_id = str(icon_custom_emoji_id or "").strip()
+    if custom_emoji_id:
+        api_fields["icon_custom_emoji_id"] = custom_emoji_id
     # Telegram predefined styles only: primary, success, danger, or the neutral default.
     if style in {"primary", "success", "danger"}:
+        api_fields["style"] = style
+    if api_fields:
         try:
-            return InlineKeyboardButton(text, style=style, **button_kwargs)
-        except TypeError:
+            return InlineKeyboardButton(text, **api_fields, **button_kwargs)
+        except (TypeError, ValueError):
             try:
-                return InlineKeyboardButton(text, api_kwargs={"style": style}, **button_kwargs)
+                return InlineKeyboardButton(text, api_kwargs=api_fields, **button_kwargs)
             except (TypeError, ValueError):
                 pass
     return InlineKeyboardButton(text, **button_kwargs)
 
 
-def user_dashboard_keyboard(styled: bool = True) -> InlineKeyboardMarkup:
-    def button(text: str, callback_data: str, style: str):
-        return make_styled_inline_button(
-            text,
-            callback_data=callback_data,
-            style=style if styled else None,
-        )
-
-    return InlineKeyboardMarkup([
-        [button("🛍 Shop", "user_dashboard_shop", "primary"), button("📦 My Orders", "user_dashboard_orders", "primary")],
-        [button("💰 Wallet", "user_dashboard_wallet", "success"), button("💳 Top Up", "user_dashboard_topup", "success")],
-        [button("🎁 Promo", "user_dashboard_promo", "success"), button("👥 Refer & Earn", "user_dashboard_refer", "success")],
-        [button("🆔 Profile", "user_dashboard_profile", "primary"), button("🧾 Transactions", "user_dashboard_transactions", "primary")],
-        [button("🎧 Support", "user_dashboard_support", "danger")],
-    ])
+def user_dashboard_keyboard(styled: bool = True, custom_icons: bool = True) -> InlineKeyboardMarkup:
+    rows = []
+    for row_keys in DASHBOARD_BUTTON_LAYOUT:
+        row = []
+        for key in row_keys:
+            config = DASHBOARD_BUTTONS[key]
+            custom_emoji_id = dashboard_custom_emoji_ids.get(key, "") if custom_icons else ""
+            button_text = config["text"] if custom_emoji_id else f"{config['emoji']} {config['text']}"
+            row.append(make_styled_inline_button(
+                button_text,
+                callback_data=config["callback"],
+                style=config["style"] if styled else None,
+                icon_custom_emoji_id=custom_emoji_id,
+            ))
+        rows.append(row)
+    return InlineKeyboardMarkup(rows)
 
 
 def user_dashboard_back_keyboard() -> InlineKeyboardMarkup:
@@ -2504,10 +2556,57 @@ def admin_menu() -> ReplyKeyboardMarkup:
         ["💰 User Balance", "🔔 Notify Requests"],
         ["👑 Gold VIP", "⚡ Flash Deal"],
         ["👥 User Details", "📊 Analytics"],
+        ["🎨 Dashboard Emojis"],
         ["📢 Broadcast"],
         ["🚪 Exit Admin"],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
+def render_dashboard_emoji_admin_text() -> str:
+    lines = ["🎨 <b>DASHBOARD EMOJIS</b>", "", "Select a dashboard button to set its custom emoji:", ""]
+    for key in DASHBOARD_EMOJI_KEYS:
+        config = DASHBOARD_BUTTONS[key]
+        status = "✅ Set" if dashboard_custom_emoji_ids.get(key) else "❌ Not set"
+        lines.append(f"{config['emoji']} <b>{escape_html(config['text'])}:</b> {status}")
+    return "\n".join(lines)
+
+
+def dashboard_emoji_admin_keyboard() -> InlineKeyboardMarkup:
+    rows = []
+    for key in DASHBOARD_EMOJI_KEYS:
+        config = DASHBOARD_BUTTONS[key]
+        status = "✅ Set" if dashboard_custom_emoji_ids.get(key) else "❌ Not set"
+        rows.append([
+            InlineKeyboardButton(
+                f"{config['emoji']} {config['text']} — {status}",
+                callback_data=f"dashboard_emoji_pick_{key}",
+            )
+        ])
+    rows.append([InlineKeyboardButton("🧹 Clear Emoji", callback_data="dashboard_emoji_clear")])
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="dashboard_emoji_back")])
+    return InlineKeyboardMarkup(rows)
+
+
+def dashboard_emoji_clear_keyboard() -> InlineKeyboardMarkup:
+    rows = []
+    for key in DASHBOARD_EMOJI_KEYS:
+        config = DASHBOARD_BUTTONS[key]
+        status = "✅ Set" if dashboard_custom_emoji_ids.get(key) else "❌ Not set"
+        rows.append([
+            InlineKeyboardButton(
+                f"🧹 {config['text']} — {status}",
+                callback_data=f"dashboard_emoji_clear_{key}",
+            )
+        ])
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="dashboard_emoji_panel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def dashboard_emoji_input_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Back", callback_data="dashboard_emoji_panel")],
+    ])
 
 
 def deposit_amount_keyboard(back_callback: str = "close_inline") -> InlineKeyboardMarkup:
@@ -2991,19 +3090,30 @@ async def send_user_dashboard(message, menu_notice: str = None):
             parse_mode="HTML",
         )
     except Exception as e:
-        print(f"Dashboard button styles were rejected; using normal buttons: {type(e).__name__}: {e}")
-        await message.reply_text(
-            render_home_text(user_id),
-            reply_markup=user_dashboard_keyboard(styled=False),
-            parse_mode="HTML",
-        )
+        print(f"Dashboard custom icons were rejected; retrying without icons: {type(e).__name__}: {e}")
+        try:
+            await message.reply_text(
+                render_home_text(user_id),
+                reply_markup=user_dashboard_keyboard(custom_icons=False),
+                parse_mode="HTML",
+            )
+        except Exception as fallback_error:
+            print(
+                "Dashboard styles were rejected; retrying normal buttons: "
+                f"{type(fallback_error).__name__}: {fallback_error}"
+            )
+            await message.reply_text(
+                render_home_text(user_id),
+                reply_markup=user_dashboard_keyboard(styled=False, custom_icons=False),
+                parse_mode="HTML",
+            )
 
 
 async def edit_user_dashboard_panel(
     query,
     text: str,
     keyboard: InlineKeyboardMarkup,
-    fallback_keyboard: InlineKeyboardMarkup = None,
+    fallback_keyboards=None,
 ):
     try:
         await query.edit_message_text(text=text, reply_markup=keyboard, parse_mode="HTML")
@@ -3011,11 +3121,22 @@ async def edit_user_dashboard_panel(
         if "message is not modified" in str(e).lower():
             return
         print(f"User dashboard edit failed; sending fallback: {type(e).__name__}: {e}")
-        await query.message.reply_text(
-            text,
-            reply_markup=fallback_keyboard or keyboard,
-            parse_mode="HTML",
-        )
+        if fallback_keyboards is None:
+            await query.message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
+            return
+        for fallback_keyboard in fallback_keyboards:
+            try:
+                await query.message.reply_text(
+                    text,
+                    reply_markup=fallback_keyboard,
+                    parse_mode="HTML",
+                )
+                return
+            except Exception as fallback_error:
+                print(
+                    "User dashboard fallback failed; trying next fallback: "
+                    f"{type(fallback_error).__name__}: {fallback_error}"
+                )
 
 
 async def send_admin_main_text(update: Update, text: str):
@@ -5923,6 +6044,44 @@ async def handle_category_icon_message(update: Update, user_id: int, step: str) 
     return True
 
 
+async def handle_dashboard_emoji_message(update: Update, user_id: int) -> bool:
+    if not is_admin(user_id):
+        return False
+
+    message = update.effective_message
+    dashboard_key = admin_temp.get(user_id, {}).get("selected_dashboard_emoji_key")
+    if dashboard_key not in DASHBOARD_BUTTONS:
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "dashboard_emoji_admin"}
+        await message.reply_text(
+            "❌ <b>Dashboard emoji setup expired.</b> Please select a button again.",
+            reply_markup=dashboard_emoji_admin_keyboard(),
+            parse_mode="HTML",
+        )
+        return True
+
+    _, custom_emoji_id, _ = _extract_supported_icon_from_message(message)
+    custom_emoji_id = str(custom_emoji_id or "").strip()
+    if not custom_emoji_id:
+        await message.reply_text(
+            "Please send a Telegram custom/animated emoji, not a normal emoji.",
+            reply_markup=dashboard_emoji_input_keyboard(),
+        )
+        return True
+
+    dashboard_custom_emoji_ids[dashboard_key] = custom_emoji_id
+    print(f"Dashboard emoji update: key={dashboard_key}, custom_emoji_captured=True")
+    reset_admin_temp(user_id)
+    user_state[user_id] = {"step": "dashboard_emoji_admin"}
+    await message.reply_text(
+        f"✅ <b>{escape_html(DASHBOARD_BUTTONS[dashboard_key]['text'])} custom emoji updated.</b>\n\n"
+        f"{render_dashboard_emoji_admin_text()}",
+        reply_markup=dashboard_emoji_admin_keyboard(),
+        parse_mode="HTML",
+    )
+    return True
+
+
 # =========================
 # TEXT HANDLER
 # =========================
@@ -6026,6 +6185,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(render_analytics(), reply_markup=admin_menu(), parse_mode="HTML")
             return
 
+        if text == "🎨 Dashboard Emojis":
+            reset_admin_temp(user_id)
+            user_state[user_id] = {"step": "dashboard_emoji_admin"}
+            await update.message.reply_text(
+                "🎨 <b>DASHBOARD EMOJI SETTINGS</b>",
+                reply_markup=admin_menu(),
+                parse_mode="HTML",
+            )
+            await update.message.reply_text(
+                render_dashboard_emoji_admin_text(),
+                reply_markup=dashboard_emoji_admin_keyboard(),
+                parse_mode="HTML",
+            )
+            return
+
         if text == "📢 Broadcast":
             user_state[user_id] = {"step": "admin_broadcast_input"}
             await update.message.reply_text(
@@ -6037,6 +6211,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML",
             )
             return
+
+    if step == "dashboard_emoji_input":
+        await handle_dashboard_emoji_message(update, user_id)
+        return
 
     if step == "admin_broadcast_input":
         broadcast_text = update.message.text or ""
@@ -6854,6 +7032,76 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ensure_user(user_id, query.from_user)
 
     if data == "noop":
+        return
+
+    # ========= DASHBOARD EMOJI ADMIN =========
+    if data.startswith("dashboard_emoji_") and not is_admin(user_id):
+        await send_inline_from_callback(query, "❌ <b>You are not allowed.</b>", close_keyboard())
+        return
+
+    if data == "dashboard_emoji_back":
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "admin_main"}
+        await send_inline_from_callback(query, "⬅️ Back to admin menu.", close_keyboard())
+        return
+
+    if data == "dashboard_emoji_panel":
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "dashboard_emoji_admin"}
+        await send_inline_from_callback(
+            query,
+            render_dashboard_emoji_admin_text(),
+            dashboard_emoji_admin_keyboard(),
+        )
+        return
+
+    if data == "dashboard_emoji_clear":
+        user_state[user_id] = {"step": "dashboard_emoji_admin"}
+        await send_inline_from_callback(
+            query,
+            "🧹 <b>Clear Dashboard Emoji</b>\n\nSelect the dashboard button whose custom emoji you want to clear.",
+            dashboard_emoji_clear_keyboard(),
+        )
+        return
+
+    if data.startswith("dashboard_emoji_clear_"):
+        dashboard_key = data.replace("dashboard_emoji_clear_", "", 1)
+        if dashboard_key not in DASHBOARD_BUTTONS:
+            await send_inline_from_callback(
+                query,
+                "❌ <b>Dashboard button was not found.</b>",
+                dashboard_emoji_admin_keyboard(),
+            )
+            return
+        dashboard_custom_emoji_ids[dashboard_key] = ""
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "dashboard_emoji_admin"}
+        print(f"Dashboard emoji update: key={dashboard_key}, custom_emoji_captured=False")
+        await send_inline_from_callback(
+            query,
+            f"✅ <b>{escape_html(DASHBOARD_BUTTONS[dashboard_key]['text'])} custom emoji cleared.</b>\n\n"
+            f"{render_dashboard_emoji_admin_text()}",
+            dashboard_emoji_admin_keyboard(),
+        )
+        return
+
+    if data.startswith("dashboard_emoji_pick_"):
+        dashboard_key = data.replace("dashboard_emoji_pick_", "", 1)
+        if dashboard_key not in DASHBOARD_BUTTONS:
+            await send_inline_from_callback(
+                query,
+                "❌ <b>Dashboard button was not found.</b>",
+                dashboard_emoji_admin_keyboard(),
+            )
+            return
+        reset_admin_temp(user_id)
+        admin_temp.setdefault(user_id, {})["selected_dashboard_emoji_key"] = dashboard_key
+        user_state[user_id] = {"step": "dashboard_emoji_input"}
+        await send_inline_from_callback(
+            query,
+            "Send the custom/animated emoji you want to use for this dashboard button.",
+            dashboard_emoji_input_keyboard(),
+        )
         return
 
     # ========= CATEGORY ADMIN =========
@@ -7938,7 +8186,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 query,
                 render_home_text(user_id),
                 user_dashboard_keyboard(),
-                fallback_keyboard=user_dashboard_keyboard(styled=False),
+                fallback_keyboards=[
+                    user_dashboard_keyboard(custom_icons=False),
+                    user_dashboard_keyboard(styled=False, custom_icons=False),
+                ],
             )
             return
 
@@ -8273,6 +8524,8 @@ async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_mode.get(user_id) != "admin":
         return False
     step = user_state.get(user_id, {}).get("step")
+    if step == "dashboard_emoji_input":
+        return await handle_dashboard_emoji_message(update, user_id)
     if step not in {"category_add_icon", "category_icon_input"}:
         return False
     return await handle_category_icon_message(update, user_id, step)
@@ -8290,6 +8543,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = user_state.get(user_id, {})
     step = state.get("step")
+    if step == "dashboard_emoji_input":
+        await handle_dashboard_emoji_message(update, user_id)
+        return
     if step not in ("stock_add_single_input", "stock_add_bulk_input"):
         await update.message.reply_text("❌ Please open Stock > Add Bulk Accounts first, then upload the .txt file.", parse_mode="HTML")
         return
@@ -8349,6 +8605,16 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await notify_waiters_for_product(context, product_id)
 
 
+async def handle_dashboard_emoji_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    ensure_user(user_id, update.effective_user)
+    if not is_admin(user_id):
+        return False
+    if user_state.get(user_id, {}).get("step") != "dashboard_emoji_input":
+        return False
+    return await handle_dashboard_emoji_message(update, user_id)
+
+
 # =========================
 # PERSISTENCE WRAPPERS
 # =========================
@@ -8399,6 +8665,11 @@ async def handle_document_persistent(update: Update, context: ContextTypes.DEFAU
         save_bot_state()
 
 
+async def handle_dashboard_emoji_media_persistent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await handle_dashboard_emoji_media(update, context):
+        save_bot_state()
+
+
 async def handle_callback_persistent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await handle_callback(update, context)
@@ -8425,6 +8696,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_callback_persistent))
     app.add_handler(MessageHandler(filters.Sticker.ALL, handle_sticker_persistent))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document_persistent))
+    app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.ANIMATION, handle_dashboard_emoji_media_persistent))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_persistent))
 
     # Old custom blockchain scanner disabled. NOWPayments webhook is the main verifier.
