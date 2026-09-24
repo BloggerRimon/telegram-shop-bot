@@ -2144,6 +2144,7 @@ async def _send_flash_deal_broadcast_job(bot, product_id: str, deal_price: float
         f"⏳ Duration: <b>{minutes} minutes</b>\n\n"
         "🛒 Open shop and grab it before it ends."
     )
+    fallback_text = text.replace(product_icon_html(product), escape_html(_normal_icon_text(product)), 1)
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🛒 Open Shop", callback_data="back_shop_cards")]])
     targets = sorted(int(uid) for uid in list(all_users))
     sent = 0
@@ -2153,7 +2154,16 @@ async def _send_flash_deal_broadcast_job(bot, product_id: str, deal_price: float
             await bot.send_message(chat_id=int(uid), text=text, reply_markup=keyboard, parse_mode="HTML")
             sent += 1
         except Exception:
-            failed += 1
+            fallback_sent = False
+            if fallback_text != text:
+                try:
+                    await bot.send_message(chat_id=int(uid), text=fallback_text, reply_markup=keyboard, parse_mode="HTML")
+                    sent += 1
+                    fallback_sent = True
+                except Exception:
+                    pass
+            if not fallback_sent:
+                failed += 1
         # Yield to the event loop so normal user buttons keep responding during broadcast.
         await asyncio.sleep(0.03)
 
@@ -3926,16 +3936,21 @@ async def notify_waiters_for_product(context: ContextTypes.DEFAULT_TYPE, product
 
     product = PRODUCTS[product_id]
     text = (
-        f"🔔 <b>{product['name']}</b> is back in stock!\n\n"
+        f"🔔 {product_icon_html(product)} <b>{escape_html(product['name'])}</b> is back in stock!\n\n"
         f"<b>Month:</b> {product['month']}\n"
         f"<b>Price:</b> {format_money(product['price'])}\n"
         f"<b>Available now:</b> {get_display_stock(product_id)} pcs"
     )
+    fallback_text = text.replace(product_icon_html(product), escape_html(_normal_icon_text(product)), 1)
     for waiter_id in waiters:
         try:
             await context.bot.send_message(waiter_id, text, parse_mode="HTML")
         except Exception:
-            pass
+            if fallback_text != text:
+                try:
+                    await context.bot.send_message(waiter_id, fallback_text, parse_mode="HTML")
+                except Exception:
+                    pass
     notify_waitlist[product_id].clear()
 
 
