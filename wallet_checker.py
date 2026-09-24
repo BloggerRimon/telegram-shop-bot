@@ -263,7 +263,9 @@ async def complete_order_record_async(
         set_pending_status(record, "delivery_failed", "Not enough real stock to deliver.")
         return checker_result(False, "failed", "Not enough real stock to deliver.")
 
-    add_order_record(user_id, product_id, qty, usd_amount, "Completed", "Crypto Auto")
+    add_order_record(
+        user_id, product_id, qty, usd_amount, "Completed", "Crypto Auto", delivered_items=delivered
+    )
 
     if add_transaction_record:
         add_transaction_record(

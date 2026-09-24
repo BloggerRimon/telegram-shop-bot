@@ -1364,7 +1364,19 @@ def get_next_tx_id():
     return tid
 
 
-def add_order_record(user_id: int, product_id: str, qty: int, total: float, status: str, payment_type: str):
+def snapshot_delivered_items(delivered_items) -> list:
+    return [format_stock_item_full(item) for item in (delivered_items or [])]
+
+
+def add_order_record(
+    user_id: int,
+    product_id: str,
+    qty: int,
+    total: float,
+    status: str,
+    payment_type: str,
+    delivered_items=None,
+):
     order = {
         "id": get_next_order_id(),
         "user_id": user_id,
@@ -1377,6 +1389,8 @@ def add_order_record(user_id: int, product_id: str, qty: int, total: float, stat
         "created_at": now_dt(),
         "updated_at": now_dt(),
     }
+    if delivered_items is not None:
+        order["delivered_items"] = snapshot_delivered_items(delivered_items)
     user_orders[user_id].append(order)
     all_orders.append(order)
     return order
@@ -3188,6 +3202,19 @@ def render_user_order_details(user_id: int, order_id) -> str:
         if product_details
         else "📋 <b>Product Details:</b> N/A"
     )
+    delivered_items = order.get("delivered_items")
+    delivered_lines = []
+    if isinstance(delivered_items, list):
+        delivered_lines = [
+            f"<code>{escape_html(item)}</code>"
+            for item in delivered_items
+            if item not in (None, "") and str(item).strip()
+        ]
+    delivered_section = (
+        "🔐 <b>Delivered Account Details:</b>\n" + "\n".join(delivered_lines)
+        if delivered_lines
+        else "🔐 <b>Delivered Account Details:</b> N/A"
+    )
     return (
         "📦 <b>ORDER DETAILS</b>\n\n"
         f"<b>Order ID:</b> #{value(order.get('id'))}\n"
@@ -3200,7 +3227,8 @@ def render_user_order_details(user_id: int, order_id) -> str:
         f"<b>Status:</b> {value(format_order_status(order.get('status')))}\n"
         f"<b>Date/Time:</b> {value(_order_date_text(order))}\n"
         f"<b>Payment Reference:</b> <code>{value(_order_payment_reference(order))}</code>\n\n"
-        f"{details_section}"
+        f"{details_section}\n\n"
+        f"{delivered_section}"
     )
 
 
@@ -4345,12 +4373,12 @@ async def process_wallet_purchase(update_or_query, context: ContextTypes.DEFAULT
     if user_wallet[user_id] < total:
         return False
 
-    ok, _ = await deliver_accounts_to_user(context.bot, user_id, product_id, qty)
+    ok, delivered = await deliver_accounts_to_user(context.bot, user_id, product_id, qty)
     if not ok:
         return False
 
     user_wallet[user_id] -= total
-    add_order_record(user_id, product_id, qty, total, "Completed", "Wallet")
+    add_order_record(user_id, product_id, qty, total, "Completed", "Wallet", delivered_items=delivered)
     add_transaction_record(user_id, "Wallet Purchase", total, "Completed", {"product_id": product_id, "qty": qty})
     await notify_admin_order(context.bot, user_id, product_id, qty, total, "Wallet")
 
@@ -4405,13 +4433,13 @@ async def finalize_verified_deposit(bot, user_id: int, amount: float, txid: str)
 
 
 async def finalize_verified_order(bot, user_id: int, product_id: str, qty: int, total: float, txid: str):
-    ok, _ = await deliver_accounts_to_user(bot, user_id, product_id, qty)
+    ok, delivered = await deliver_accounts_to_user(bot, user_id, product_id, qty)
     if not ok:
         pending_crypto_orders.pop(user_id, None)
         return False
 
     used_txids.add(txid)
-    add_order_record(user_id, product_id, qty, total, "Completed", "Crypto")
+    add_order_record(user_id, product_id, qty, total, "Completed", "Crypto", delivered_items=delivered)
     await notify_admin_order(bot, user_id, product_id, qty, total, "Crypto")
 
     for tx in reversed(user_transactions.get(user_id, [])):
@@ -4448,14 +4476,17 @@ async def confirm_manual_order(context: ContextTypes.DEFAULT_TYPE, order_id: int
     if order["status"] != "Waiting Manual Confirmation":
         return False, "Order is no longer pending."
 
-    ok, _ = await deliver_accounts_to_user(context.bot, order["user_id"], order["product_id"], order["qty"])
+    ok, delivered = await deliver_accounts_to_user(context.bot, order["user_id"], order["product_id"], order["qty"])
     if not ok:
         return False, "Not enough real stock to deliver."
 
+    delivered_snapshot = snapshot_delivered_items(delivered)
+    order["delivered_items"] = delivered_snapshot
     set_order_status(order, "Completed")
     await notify_admin_order(context.bot, order["user_id"], order["product_id"], order["qty"], order["total"], order.get("payment_type", "Manual"))
     for user_order in user_orders.get(order["user_id"], []):
         if user_order["id"] == order_id:
+            user_order["delivered_items"] = list(delivered_snapshot)
             set_order_status(user_order, "Completed")
             break
 
@@ -4844,9 +4875,11 @@ async def finalize_cryptomus_record(record: dict, payload: dict = None):
     elif kind == "order":
         product_id = record.get("product_id")
         qty = int(record.get("qty") or 1)
-        ok, _ = await deliver_accounts_to_user(app_instance.bot, user_id, product_id, qty)
+        ok, delivered = await deliver_accounts_to_user(app_instance.bot, user_id, product_id, qty)
         if ok:
-            add_order_record(user_id, product_id, qty, amount, "Completed", "Cryptomus")
+            add_order_record(
+                user_id, product_id, qty, amount, "Completed", "Cryptomus", delivered_items=delivered
+            )
             await notify_admin_order(app_instance.bot, user_id, product_id, qty, amount, "Cryptomus")
             add_transaction_record(
                 user_id,
@@ -5258,9 +5291,11 @@ async def finalize_nowpayments_record(record: dict, payload: dict = None):
     elif kind == "order":
         product_id = record.get("product_id")
         qty = int(record.get("qty") or 1)
-        ok, _ = await deliver_accounts_to_user(app_instance.bot, user_id, product_id, qty)
+        ok, delivered = await deliver_accounts_to_user(app_instance.bot, user_id, product_id, qty)
         if ok:
-            add_order_record(user_id, product_id, qty, amount, "Completed", "NOWPayments")
+            add_order_record(
+                user_id, product_id, qty, amount, "Completed", "NOWPayments", delivered_items=delivered
+            )
             await notify_admin_order(app_instance.bot, user_id, product_id, qty, amount, "NOWPayments")
             add_transaction_record(
                 user_id,
