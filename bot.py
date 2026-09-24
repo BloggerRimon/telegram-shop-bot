@@ -3701,8 +3701,7 @@ def shop_product_rows(product_ids: list, user_id: int = None) -> list:
 
 def shop_categories_keyboard(user_id: int = None) -> InlineKeyboardMarkup:
     normalize_categories()
-    rows = [[InlineKeyboardButton("──── ⚡ AUTO DELIVERY ────", callback_data="noop")]]
-    rows.extend(shop_product_rows(get_category_product_ids(DEFAULT_CATEGORY_ID), user_id))
+    rows = []
     for category_id in category_order:
         if category_id == DEFAULT_CATEGORY_ID:
             continue
@@ -3712,6 +3711,8 @@ def shop_categories_keyboard(user_id: int = None) -> InlineKeyboardMarkup:
             f"({len(get_category_product_ids(category_id))})"
         )
         rows.append([InlineKeyboardButton(_short_button_text(label), callback_data=f"shop_category_{category_id}")])
+    rows.append([InlineKeyboardButton("──── ⚡ AUTO DELIVERY ────", callback_data="noop")])
+    rows.extend(shop_product_rows(get_category_product_ids(DEFAULT_CATEGORY_ID), user_id))
     rows.append([InlineKeyboardButton("⬅️ Close", callback_data="close_inline")])
     return InlineKeyboardMarkup(rows)
 
