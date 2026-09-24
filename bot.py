@@ -922,12 +922,18 @@ async def check_required_channel_membership(context: ContextTypes.DEFAULT_TYPE, 
 
     try:
         member = await context.bot.get_chat_member(chat_id=channel_id, user_id=user_id)
-        status = str(member.status).lower()
+        raw_status = getattr(member, "status", "")
+        status = str(getattr(raw_status, "value", raw_status)).lower()
+        if "." in status:
+            status = status.rsplit(".", 1)[-1]
         if status in {"member", "administrator", "creator"}:
             return True
         return status == "restricted" and bool(getattr(member, "is_member", False))
     except Exception as e:
-        print(f"⚠️ Failed to check required channel membership for {user_id}:", e)
+        print(
+            f"⚠️ Channel membership check failed for user_id={user_id}. "
+            f"Make sure bot is admin in REQUIRED_CHANNEL_ID. Error: {type(e).__name__}: {e}"
+        )
         return False
 
 
