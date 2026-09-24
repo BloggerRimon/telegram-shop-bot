@@ -2457,11 +2457,11 @@ def make_user_dashboard_button(text: str, callback_data: str) -> InlineKeyboardB
 def user_dashboard_keyboard() -> InlineKeyboardMarkup:
     button = make_user_dashboard_button
     return InlineKeyboardMarkup([
-        [button("🛍 Shop", "user_dashboard_shop"), button("💰 Wallet", "user_dashboard_wallet")],
-        [button("💳 Top Up", "user_dashboard_topup"), button("🎟 Promo", "user_dashboard_promo")],
-        [button("📦 Orders", "user_dashboard_orders"), button("🆔 User ID", "user_dashboard_profile")],
-        [button("🧾 Transactions", "user_dashboard_transactions"), button("👥 Refer & Earn", "user_dashboard_refer")],
-        [button("🆘 Support", "user_dashboard_support")],
+        [button("🛍 Shop", "user_dashboard_shop"), button("📦 My Orders", "user_dashboard_orders")],
+        [button("💰 Wallet", "user_dashboard_wallet"), button("💳 Top Up", "user_dashboard_topup")],
+        [button("🎁 Promo", "user_dashboard_promo"), button("👥 Refer & Earn", "user_dashboard_refer")],
+        [button("🆔 Profile", "user_dashboard_profile"), button("🧾 Transactions", "user_dashboard_transactions")],
+        [button("🎧 Support", "user_dashboard_support")],
     ])
 
 
@@ -2959,8 +2959,9 @@ async def send_user_dashboard(message, menu_notice: str = None):
         parse_mode="HTML",
     )
     # Step B: send a separate message so the dashboard is a real InlineKeyboardMarkup.
+    user_id = getattr(getattr(message, "chat", None), "id", 0)
     await message.reply_text(
-        render_home_text(),
+        render_home_text(user_id),
         reply_markup=user_dashboard_keyboard(),
         parse_mode="HTML",
     )
@@ -3024,10 +3025,14 @@ def tron_hex_to_base58(hex_addr: str) -> str:
 # =========================
 # RENDER TEXTS
 # =========================
-def render_home_text() -> str:
+def render_home_text(user_id: int) -> str:
+    wallet_balance = float(user_wallet.get(user_id, 0.0))
     return (
-        "👑 <b>Supreme Leader Shop</b>\n\n"
-        "Choose an option below:"
+        "👋 <b>Welcome back, Supreme Leader</b>\n\n"
+        "💼 Premium digital subscriptions\n"
+        "⚡ Instant delivery • 🔐 Secure orders • 🎧 Support\n\n"
+        f"💰 <b>Wallet:</b> {wallet_balance:.2f} USDT\n\n"
+        "Choose an option below 👇"
     )
 
 
@@ -7888,7 +7893,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         enter_client_mode(user_id)
 
         if data == "user_dashboard":
-            await edit_user_dashboard_panel(query, render_home_text(), user_dashboard_keyboard())
+            await edit_user_dashboard_panel(query, render_home_text(user_id), user_dashboard_keyboard())
             return
 
         if data == "user_dashboard_shop":
