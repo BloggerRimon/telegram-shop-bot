@@ -927,6 +927,96 @@ def get_product_price(product_id: str, user_id: int = None) -> float:
     return get_product_base_price(product_id)
 
 
+def get_bulk_pricing_tiers(product) -> list:
+    if isinstance(product, str):
+        product = PRODUCTS.get(product, {})
+    if not isinstance(product, dict):
+        return []
+
+    tiers_by_quantity = {}
+    for tier in product.get("bulk_pricing") or []:
+        if not isinstance(tier, dict):
+            continue
+        min_qty = safe_decimal(tier.get("min_qty"))
+        unit_price = safe_decimal(tier.get("unit_price"))
+        if (
+            min_qty is None
+            or unit_price is None
+            or not min_qty.is_finite()
+            or not unit_price.is_finite()
+            or min_qty != min_qty.to_integral_value()
+            or min_qty < 2
+            or unit_price <= 0
+        ):
+            continue
+        quantity = int(min_qty)
+        tiers_by_quantity[quantity] = {
+            "min_qty": quantity,
+            "unit_price": float(unit_price),
+        }
+    return [tiers_by_quantity[quantity] for quantity in sorted(tiers_by_quantity)]
+
+
+def get_effective_unit_price(product, quantity, user_id: int = None) -> float:
+    product_id = product if isinstance(product, str) else None
+    product_data = PRODUCTS.get(product_id, {}) if product_id else product
+    if not isinstance(product_data, dict):
+        raise ValueError("Product was not found.")
+    if product_id is None:
+        product_id = next((pid for pid, item in PRODUCTS.items() if item is product_data), None)
+
+    quantity_value = safe_decimal(quantity)
+    if (
+        quantity_value is None
+        or not quantity_value.is_finite()
+        or quantity_value != quantity_value.to_integral_value()
+        or quantity_value < 1
+    ):
+        raise ValueError("Quantity must be a positive integer.")
+    quantity_int = int(quantity_value)
+
+    flash_price = get_flash_deal_price(product_id) if product_id and "get_flash_deal_price" in globals() else None
+    if flash_price is not None:
+        return float(flash_price)
+
+    if product_id:
+        current_price = get_product_price(product_id, user_id)
+    else:
+        current_price = float(product_data.get("price", 0))
+        vip_price = product_data.get("gold_vip_price")
+        if user_id is not None and is_gold_vip_user(user_id) and vip_price not in (None, ""):
+            try:
+                vip_value = float(vip_price)
+                if vip_value > 0:
+                    current_price = vip_value
+            except (TypeError, ValueError):
+                pass
+
+    applicable_tiers = [
+        tier for tier in get_bulk_pricing_tiers(product_data)
+        if quantity_int >= tier["min_qty"]
+    ]
+    bulk_price = float(applicable_tiers[-1]["unit_price"]) if applicable_tiers else None
+    return min(float(current_price), bulk_price) if bulk_price is not None else float(current_price)
+
+
+def calculate_order_total(product_id: str, quantity: int, user_id: int = None):
+    unit_price = float(get_effective_unit_price(product_id, quantity, user_id))
+    total = unit_price * int(quantity)
+    unit_decimal = safe_decimal(unit_price)
+    total_decimal = safe_decimal(total)
+    if (
+        unit_decimal is None
+        or total_decimal is None
+        or not unit_decimal.is_finite()
+        or not total_decimal.is_finite()
+        or unit_decimal <= 0
+        or total_decimal <= 0
+    ):
+        raise ValueError("Calculated order price must be greater than zero.")
+    return unit_price, total
+
+
 def format_product_price_for_user(product_id: str, user_id: int = None) -> str:
     flash_price = get_flash_deal_price(product_id) if "get_flash_deal_price" in globals() else None
     if flash_price is not None:
@@ -2891,18 +2981,38 @@ def buy_qty_keyboard(product_id: str, styled: bool = True) -> InlineKeyboardMark
     action_style = "primary" if styled else None
     back_style = "primary" if styled else None
     menu_style = "danger" if styled else None
-    rows = [
-        [
-            make_styled_inline_button("🛒 Buy 1x", callback_data=f"buy_qty_{product_id}_1", style=action_style),
-            make_styled_inline_button("🛒 Buy 5x", callback_data=f"buy_qty_{product_id}_5", style=action_style),
-        ],
-        [
-            make_styled_inline_button("🛒 Buy 10x", callback_data=f"buy_qty_{product_id}_10", style=action_style),
-            make_styled_inline_button("✏️ Custom Qty", callback_data=f"buy_custom_{product_id}", style=action_style),
-        ],
+    tiers = get_bulk_pricing_tiers(PRODUCTS.get(product_id, {}))
+    if tiers:
+        stock = min(get_display_stock(product_id), get_product_stock(product_id))
+        quick_quantities = [1] if stock >= 1 else []
+        for tier in tiers:
+            if tier["min_qty"] <= stock and tier["min_qty"] not in quick_quantities:
+                quick_quantities.append(tier["min_qty"])
+        quick_buttons = [
+            make_styled_inline_button(
+                f"🛒 Buy {quantity}x",
+                callback_data=f"buy_qty_{product_id}_{quantity}",
+                style=action_style,
+            )
+            for quantity in quick_quantities
+        ]
+        rows = [quick_buttons[index:index + 2] for index in range(0, len(quick_buttons), 2)]
+        rows.append([make_styled_inline_button("✏️ Custom Qty", callback_data=f"buy_custom_{product_id}", style=action_style)])
+    else:
+        rows = [
+            [
+                make_styled_inline_button("🛒 Buy 1x", callback_data=f"buy_qty_{product_id}_1", style=action_style),
+                make_styled_inline_button("🛒 Buy 5x", callback_data=f"buy_qty_{product_id}_5", style=action_style),
+            ],
+            [
+                make_styled_inline_button("🛒 Buy 10x", callback_data=f"buy_qty_{product_id}_10", style=action_style),
+                make_styled_inline_button("✏️ Custom Qty", callback_data=f"buy_custom_{product_id}", style=action_style),
+            ],
+        ]
+    rows.extend([
         [make_styled_inline_button("⬅️ Back to Shop", callback_data="back_shop_cards", style=back_style)],
         [make_styled_inline_button("🏠 Back to Menu", callback_data="user_back_to_dashboard", style=menu_style)],
-    ]
+    ])
     return InlineKeyboardMarkup(rows)
 
 
@@ -2969,11 +3079,42 @@ def admin_products_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📌 Edit Delivery Guide", callback_data="admin_edit_delivery_guide_menu")],
         [InlineKeyboardButton("😀 Edit Icon", callback_data="admin_edit_icon_menu")],
         [InlineKeyboardButton("📦 Edit Display Stock", callback_data="admin_edit_display_stock_menu")],
+        [InlineKeyboardButton("💸 Bulk Pricing", callback_data="admin_bulk_pricing_menu")],
         [InlineKeyboardButton("↕️ Reorder in Shop", callback_data="admin_reorder_menu")],
         [InlineKeyboardButton("🗑 Delete Product", callback_data="admin_delete_product_menu")],
         [InlineKeyboardButton("⬅️ Close", callback_data="admin_products_close")],
     ]
     return InlineKeyboardMarkup(rows)
+
+
+def bulk_pricing_admin_keyboard(product_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 View Tiers", callback_data="admin_bulk_view")],
+        [InlineKeyboardButton("➕ Add Tier", callback_data="admin_bulk_add")],
+        [InlineKeyboardButton("🗑 Remove Tier", callback_data="admin_bulk_remove_menu")],
+        [InlineKeyboardButton("🧹 Clear All Tiers", callback_data="admin_bulk_clear")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="admin_bulk_back")],
+    ])
+
+
+def bulk_pricing_remove_keyboard(product_id: str) -> InlineKeyboardMarkup:
+    rows = []
+    for tier in get_bulk_pricing_tiers(PRODUCTS.get(product_id, {})):
+        rows.append([InlineKeyboardButton(
+            f"{tier['min_qty']}+ = {format_money(tier['unit_price'])}",
+            callback_data=f"admin_bulk_remove_{tier['min_qty']}",
+        )])
+    if not rows:
+        rows.append([InlineKeyboardButton("No tiers configured", callback_data="noop")])
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="admin_bulk_view")])
+    return InlineKeyboardMarkup(rows)
+
+
+def bulk_pricing_clear_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Clear All Tiers", callback_data="admin_bulk_clear_confirm")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="admin_bulk_view")],
+    ])
 
 
 def admin_categories_keyboard() -> InlineKeyboardMarkup:
@@ -3823,6 +3964,18 @@ def render_product_card(product_id: str, user_id: int = None) -> str:
     )
 
 
+def render_bulk_pricing_offers(product) -> str:
+    tiers = get_bulk_pricing_tiers(product)
+    if not tiers:
+        return ""
+    lines = ["💸 <b>Bulk Discount Offers</b>"]
+    for tier in tiers:
+        lines.append(
+            f"✅ Buy {tier['min_qty']}+ → {float(tier['unit_price']):.2f} USDT each"
+        )
+    return "\n".join(lines)
+
+
 def render_product_details(product_id: str, user_id: int = None) -> str:
     product = PRODUCTS[product_id]
     detail_lines = "\n".join(product["details"])
@@ -3835,6 +3988,8 @@ def render_product_details(product_id: str, user_id: int = None) -> str:
     icon = product_icon_html(product)
     duration = format_duration_text(product.get("month", ""))
     duration_line = f"<b>Duration:</b> {duration}\n" if duration else ""
+    bulk_offers = render_bulk_pricing_offers(product)
+    bulk_section = f"{bulk_offers}\n\n" if bulk_offers else ""
     return (
         "📦 <b>PRODUCT DETAILS</b>\n\n"
         f"<b>Icon:</b> {icon}\n"
@@ -3843,13 +3998,13 @@ def render_product_details(product_id: str, user_id: int = None) -> str:
         f"<b>Price:</b> {format_product_price_for_user(product_id, user_id)}\n"
         f"<b>Stock:</b> {stock} pcs\n\n"
         f"{detail_lines}\n\n"
+        f"{bulk_section}"
         "<b>Select quantity below:</b>"
     )
 
 def render_buy_summary(product_id: str, qty: int, wallet_balance: float, user_id: int = None) -> str:
     product = PRODUCTS[product_id]
-    unit_price = get_product_price(product_id, user_id)
-    total = unit_price * qty
+    unit_price, total = calculate_order_total(product_id, qty, user_id)
     remaining = wallet_balance - total
     if wallet_balance >= total:
         return (
@@ -3953,6 +4108,27 @@ def render_admin_products_list() -> str:
             f"Display Stock: {get_display_stock(product_id)} pcs\n"
             f"Real Stock: {get_product_stock(product_id)} pcs"
         )
+    return "\n".join(lines)
+
+
+def render_bulk_pricing_admin(product_id: str) -> str:
+    product = PRODUCTS.get(product_id, {})
+    tiers = get_bulk_pricing_tiers(product)
+    lines = [
+        "💸 <b>BULK PRICING</b>",
+        "",
+        f"<b>Product:</b> {escape_html(product.get('name', product_id))}",
+        f"<b>Normal Price:</b> {format_money(product.get('price', 0))}",
+        "",
+        "<b>Configured Tiers:</b>",
+    ]
+    if tiers:
+        for tier in tiers:
+            lines.append(
+                f"✅ {tier['min_qty']}+ pcs = {format_money(tier['unit_price'])} each"
+            )
+    else:
+        lines.append("No bulk pricing tiers configured.")
     return "\n".join(lines)
 
 
@@ -6818,6 +6994,65 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if step == "admin_bulk_min_qty_input":
+        min_qty = safe_decimal(text.strip())
+        if (
+            min_qty is None
+            or not min_qty.is_finite()
+            or min_qty != min_qty.to_integral_value()
+            or min_qty < 2
+        ):
+            await update.message.reply_text(
+                "❌ <b>Invalid minimum quantity.</b> Send an integer of 2 or more.",
+                parse_mode="HTML",
+            )
+            return
+        admin_temp[user_id]["bulk_min_qty"] = int(min_qty)
+        user_state[user_id] = {"step": "admin_bulk_unit_price_input"}
+        await update.message.reply_text(
+            f"💸 Minimum quantity: <b>{int(min_qty)}+</b>\n\nNow send the unit price.",
+            parse_mode="HTML",
+        )
+        return
+
+    if step == "admin_bulk_unit_price_input":
+        unit_price = safe_decimal(text.strip())
+        if unit_price is None or not unit_price.is_finite() or unit_price <= 0:
+            await update.message.reply_text(
+                "❌ <b>Invalid unit price.</b> Send a number greater than 0.",
+                parse_mode="HTML",
+            )
+            return
+        product_id = admin_temp[user_id].get("selected_product_id")
+        min_qty = admin_temp[user_id].get("bulk_min_qty")
+        if product_id not in PRODUCTS or not isinstance(min_qty, int) or min_qty < 2:
+            reset_admin_temp(user_id)
+            user_state[user_id] = {"step": "admin_products"}
+            await update.message.reply_text(
+                "❌ <b>Bulk pricing setup expired.</b> Please start again.",
+                reply_markup=admin_menu(),
+                parse_mode="HTML",
+            )
+            return
+        tiers_by_quantity = {
+            tier["min_qty"]: tier for tier in get_bulk_pricing_tiers(PRODUCTS[product_id])
+        }
+        tiers_by_quantity[min_qty] = {
+            "min_qty": min_qty,
+            "unit_price": float(unit_price),
+        }
+        PRODUCTS[product_id]["bulk_pricing"] = [
+            tiers_by_quantity[quantity] for quantity in sorted(tiers_by_quantity)
+        ]
+        admin_temp[user_id].pop("bulk_min_qty", None)
+        user_state[user_id] = {"step": "admin_bulk_pricing"}
+        await update.message.reply_text(
+            "✅ <b>Bulk pricing tier saved.</b>\n\n" + render_bulk_pricing_admin(product_id),
+            reply_markup=bulk_pricing_admin_keyboard(product_id),
+            parse_mode="HTML",
+        )
+        return
+
     # ========= STOCK INPUTS =========
     if step == "stock_add_single_input":
         product_id = admin_temp[user_id].get("selected_product_id")
@@ -7195,7 +7430,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ <b>Only {stock} pcs available.</b>", parse_mode="HTML")
             return
 
-        total = get_product_price(product_id, user_id) * qty
+        try:
+            _, total = calculate_order_total(product_id, qty, user_id)
+        except ValueError:
+            await update.message.reply_text(
+                "❌ <b>This product has an invalid price.</b> Please contact support.",
+                parse_mode="HTML",
+            )
+            return
         if user_wallet[user_id] >= total:
             await process_wallet_purchase(update, context, user_id, product_id, qty, total)
             user_state[user_id] = {"step": "main"}
@@ -7720,6 +7962,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # ========= PRODUCT ADMIN =========
+    if data.startswith("admin_bulk_") and not is_admin(user_id):
+        await send_inline_from_callback(query, "❌ <b>You are not allowed.</b>", close_keyboard())
+        return
+
     if data == "admin_products_close":
         await send_inline_from_callback(query, "Closed products panel.", close_keyboard())
         return
@@ -7785,6 +8031,127 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reset_admin_temp(user_id)
         user_state[user_id] = {"step": "admin_edit_display_stock_pick"}
         await send_inline_from_callback(query, "📦 <b>Edit Display Stock</b>\n\nSelect a product below.", admin_product_select_keyboard("admin_pick_display_stock"))
+        return
+
+    if data == "admin_bulk_pricing_menu":
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "admin_bulk_product_pick"}
+        await send_inline_from_callback(
+            query,
+            "💸 <b>Bulk Pricing</b>\n\nSelect a product below.",
+            admin_product_select_keyboard("admin_bulk_pick"),
+        )
+        return
+
+    if data.startswith("admin_bulk_pick_"):
+        product_id = data.replace("admin_bulk_pick_", "", 1)
+        if product_id not in PRODUCTS:
+            await send_inline_from_callback(query, "❌ <b>Product not found.</b>", admin_products_keyboard())
+            return
+        admin_temp[user_id]["selected_product_id"] = product_id
+        user_state[user_id] = {"step": "admin_bulk_pricing"}
+        await send_inline_from_callback(
+            query,
+            render_bulk_pricing_admin(product_id),
+            bulk_pricing_admin_keyboard(product_id),
+        )
+        return
+
+    if data == "admin_bulk_view":
+        product_id = admin_temp[user_id].get("selected_product_id")
+        if product_id not in PRODUCTS:
+            await send_inline_from_callback(query, "❌ <b>Product not found.</b>", admin_products_keyboard())
+            return
+        user_state[user_id] = {"step": "admin_bulk_pricing"}
+        await send_inline_from_callback(
+            query,
+            render_bulk_pricing_admin(product_id),
+            bulk_pricing_admin_keyboard(product_id),
+        )
+        return
+
+    if data == "admin_bulk_add":
+        product_id = admin_temp[user_id].get("selected_product_id")
+        if product_id not in PRODUCTS:
+            await send_inline_from_callback(query, "❌ <b>Product not found.</b>", admin_products_keyboard())
+            return
+        user_state[user_id] = {"step": "admin_bulk_min_qty_input"}
+        await send_inline_from_callback(
+            query,
+            "➕ <b>Add Bulk Pricing Tier</b>\n\nSend the minimum quantity.\nExample: <code>5</code>",
+            admin_cancel_keyboard(),
+        )
+        return
+
+    if data == "admin_bulk_remove_menu":
+        product_id = admin_temp[user_id].get("selected_product_id")
+        if product_id not in PRODUCTS:
+            await send_inline_from_callback(query, "❌ <b>Product not found.</b>", admin_products_keyboard())
+            return
+        await send_inline_from_callback(
+            query,
+            "🗑 <b>Remove Bulk Pricing Tier</b>\n\nSelect a tier below.",
+            bulk_pricing_remove_keyboard(product_id),
+        )
+        return
+
+    if data.startswith("admin_bulk_remove_"):
+        product_id = admin_temp[user_id].get("selected_product_id")
+        try:
+            min_qty = int(data.replace("admin_bulk_remove_", "", 1))
+        except ValueError:
+            min_qty = 0
+        if product_id not in PRODUCTS or min_qty < 2:
+            await send_inline_from_callback(query, "❌ <b>Bulk pricing tier not found.</b>", admin_products_keyboard())
+            return
+        remaining_tiers = [
+            tier for tier in get_bulk_pricing_tiers(PRODUCTS[product_id])
+            if tier["min_qty"] != min_qty
+        ]
+        if remaining_tiers:
+            PRODUCTS[product_id]["bulk_pricing"] = remaining_tiers
+        else:
+            PRODUCTS[product_id].pop("bulk_pricing", None)
+        user_state[user_id] = {"step": "admin_bulk_pricing"}
+        await send_inline_from_callback(
+            query,
+            "✅ <b>Bulk pricing tier removed.</b>\n\n" + render_bulk_pricing_admin(product_id),
+            bulk_pricing_admin_keyboard(product_id),
+        )
+        return
+
+    if data == "admin_bulk_clear":
+        product_id = admin_temp[user_id].get("selected_product_id")
+        if product_id not in PRODUCTS:
+            await send_inline_from_callback(query, "❌ <b>Product not found.</b>", admin_products_keyboard())
+            return
+        await send_inline_from_callback(
+            query,
+            "🧹 <b>Clear all bulk pricing tiers?</b>\n\n"
+            f"Product: <b>{escape_html(PRODUCTS[product_id]['name'])}</b>\n\n"
+            "This does not change the normal product price.",
+            bulk_pricing_clear_confirm_keyboard(),
+        )
+        return
+
+    if data == "admin_bulk_clear_confirm":
+        product_id = admin_temp[user_id].get("selected_product_id")
+        if product_id not in PRODUCTS:
+            await send_inline_from_callback(query, "❌ <b>Product not found.</b>", admin_products_keyboard())
+            return
+        PRODUCTS[product_id].pop("bulk_pricing", None)
+        user_state[user_id] = {"step": "admin_bulk_pricing"}
+        await send_inline_from_callback(
+            query,
+            "✅ <b>All bulk pricing tiers cleared.</b>\n\n" + render_bulk_pricing_admin(product_id),
+            bulk_pricing_admin_keyboard(product_id),
+        )
+        return
+
+    if data == "admin_bulk_back":
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "admin_products"}
+        await send_inline_from_callback(query, render_admin_products_text(), admin_products_keyboard())
         return
 
     if data == "admin_delete_product_menu":
@@ -8813,7 +9180,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 buy_qty_keyboard(product_id, styled=False),
             )
             return
-        total = get_product_price(product_id, user_id) * qty
+        try:
+            _, total = calculate_order_total(product_id, qty, user_id)
+        except ValueError:
+            await send_shop_inline_with_style_fallback(
+                query,
+                "❌ <b>This product has an invalid price.</b> Please contact support.",
+                buy_qty_keyboard(product_id),
+                buy_qty_keyboard(product_id, styled=False),
+            )
+            return
         if user_wallet[user_id] >= total:
             await process_wallet_purchase(query, context, user_id, product_id, qty, total)
             user_state[user_id] = {"step": "main"}
