@@ -67,7 +67,7 @@ REQUIRED_CHANNEL_URL = os.getenv("REQUIRED_CHANNEL_URL", "").strip()
 REQUIRED_CHANNEL_ENABLED = os.getenv("REQUIRED_CHANNEL_ENABLED", "false").strip()
 
 BUYER_API_ENABLED = os.getenv("BUYER_API_ENABLED", "false").strip()
-BUYER_API_URL = os.getenv("BUYER_API_URL", "").strip().rstrip("/")
+BUYER_API_URL = os.getenv("BUYER_API_URL", "").strip()
 BUYER_API_KEY = os.getenv("BUYER_API_KEY", "").strip()
 
 BINANCE_ID = "828543482"
@@ -1100,10 +1100,36 @@ def mask_buyer_api_key() -> str:
     return f"{BUYER_API_KEY[:4]}{'*' * (len(BUYER_API_KEY) - 8)}{BUYER_API_KEY[-4:]}"
 
 
+def normalize_buyer_api_url() -> str:
+    base_url = BUYER_API_URL.strip().rstrip("/")
+    api_suffix = "/api/telegram-buyer"
+    if base_url.lower().endswith(api_suffix):
+        base_url = base_url[:-len(api_suffix)].rstrip("/")
+    return base_url
+
+
+def buyer_api_url_warning() -> str:
+    configured_url = BUYER_API_URL.strip().rstrip("/")
+    if configured_url.lower().endswith("/api/telegram-buyer"):
+        return "BUYER_API_URL should be base URL only: http://54.255.147.200:3002"
+    return ""
+
+
+def buyer_api_endpoint(path: str) -> str:
+    return f"{normalize_buyer_api_url()}{path}"
+
+
+def buyer_api_endpoint_preview(path: str, params: dict = None) -> str:
+    query_parts = [f"key={mask_buyer_api_key()}"]
+    for key, value in (params or {}).items():
+        query_parts.append(f"{key}={value}")
+    return f"GET {buyer_api_endpoint(path)}?{'&'.join(query_parts)}"
+
+
 def _validate_buyer_api_config():
     if not is_buyer_api_enabled():
         raise BuyerAPIError("Seller API is disabled. Set BUYER_API_ENABLED=true to enable tests.")
-    if not BUYER_API_URL:
+    if not normalize_buyer_api_url():
         raise BuyerAPIError("BUYER_API_URL is not configured.")
     if not BUYER_API_KEY:
         raise BuyerAPIError("BUYER_API_KEY is not configured.")
@@ -1115,7 +1141,7 @@ def _buyer_api_get(path: str, params: dict = None):
     request_params["key"] = BUYER_API_KEY
     try:
         response = requests.get(
-            f"{BUYER_API_URL}{path}",
+            buyer_api_endpoint(path),
             params=request_params,
             timeout=20,
         )
@@ -1126,6 +1152,19 @@ def _buyer_api_get(path: str, params: dict = None):
     except requests.RequestException as exc:
         raise BuyerAPIError("Seller API request failed.") from exc
 
+    if response.status_code == 401:
+        response_note = _safe_buyer_api_error_body(response)
+        message = (
+            "HTTP 401 Unauthorized\n\n"
+            "Possible reasons:\n"
+            "- API key is invalid/expired\n"
+            "- API key was regenerated but Railway still has the old key\n"
+            "- Seller API access is not enabled for this account\n"
+            "- Seller server rejected this key"
+        )
+        if response_note:
+            message += f"\n\nSeller response: {response_note}"
+        raise BuyerAPIError(message)
     if not response.ok:
         raise BuyerAPIError(f"Seller API returned HTTP {response.status_code}.")
     try:
@@ -1137,6 +1176,40 @@ def _buyer_api_get(path: str, params: dict = None):
     if isinstance(payload, dict) and payload.get("success") is False:
         raise BuyerAPIError("Seller API reported that the request failed.")
     return payload
+
+
+def _safe_buyer_api_error_body(response) -> str:
+    try:
+        payload = response.json()
+    except (ValueError, TypeError):
+        payload = None
+
+    candidate = ""
+    if isinstance(payload, dict):
+        for key in ("message", "error", "detail"):
+            value = payload.get(key)
+            if isinstance(value, (str, int, float, bool)):
+                candidate = str(value)
+                break
+    if not candidate:
+        try:
+            candidate = str(response.text or "")
+        except Exception:
+            candidate = ""
+
+    candidate = " ".join(candidate.split()).strip()
+    if not candidate:
+        return ""
+    if BUYER_API_KEY and BUYER_API_KEY.lower() in candidate.lower():
+        return ""
+    lowered = candidate.lower()
+    sensitive_markers = (
+        '"password"', 'password=', '"secret"', 'secret=',
+        '"token"', 'token=', '"key"', 'key=',
+    )
+    if any(marker in lowered for marker in sensitive_markers):
+        return ""
+    return candidate[:160]
 
 
 def _buyer_api_data(payload):
@@ -2917,6 +2990,7 @@ def seller_api_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🧪 Test Connection", callback_data="seller_api_test")],
         [InlineKeyboardButton("💰 Check API Balance", callback_data="seller_api_balance")],
         [InlineKeyboardButton("📦 Fetch API Products", callback_data="seller_api_products")],
+        [InlineKeyboardButton("🔎 Debug Config", callback_data="seller_api_debug")],
         [InlineKeyboardButton("⬅️ Back", callback_data="seller_api_back")],
     ])
 
@@ -2924,13 +2998,45 @@ def seller_api_keyboard() -> InlineKeyboardMarkup:
 def render_seller_api_panel() -> str:
     enabled = "✅ Enabled" if is_buyer_api_enabled() else "❌ Disabled"
     api_url = BUYER_API_URL or "Not configured"
+    prefix_status = "✅ Yes" if BUYER_API_KEY.startswith("api_") else "❌ No"
+    warning = buyer_api_url_warning()
+    warning_text = f"\n\n⚠️ {escape_html(warning)}" if warning else ""
     return (
         "🔌 <b>SELLER API</b>\n\n"
         f"<b>Status:</b> {enabled}\n"
         f"<b>API URL:</b> <code>{escape_html(api_url)}</code>\n"
-        f"<b>API key:</b> <code>{escape_html(mask_buyer_api_key())}</code>\n\n"
+        f"<b>API key:</b> <code>{escape_html(mask_buyer_api_key())}</code>\n"
+        f"<b>Key length:</b> {len(BUYER_API_KEY)}\n"
+        f"<b>Starts with api_:</b> {prefix_status}\n"
+        f"<b>Balance request:</b> <code>{escape_html(buyer_api_endpoint_preview('/api/telegram-buyer/balance'))}</code>"
+        f"{warning_text}\n\n"
         "Read-only connection tests only. No products or orders are saved."
     )
+
+
+def render_seller_api_debug_config() -> str:
+    enabled = "true" if is_buyer_api_enabled() else "false"
+    api_url = BUYER_API_URL or "Not configured"
+    prefix_status = "Yes" if BUYER_API_KEY.startswith("api_") else "No"
+    warning = buyer_api_url_warning()
+    lines = [
+        "🔎 <b>SELLER API DEBUG CONFIG</b>",
+        "",
+        f"<b>Enabled:</b> {enabled}",
+        f"<b>Base URL:</b> <code>{escape_html(api_url)}</code>",
+        f"<b>Masked key:</b> <code>{escape_html(mask_buyer_api_key())}</code>",
+        f"<b>Key length:</b> {len(BUYER_API_KEY)}",
+        f"<b>Starts with api_:</b> {prefix_status}",
+        "",
+        "<b>Balance endpoint:</b>",
+        f"<code>{escape_html(buyer_api_endpoint_preview('/api/telegram-buyer/balance'))}</code>",
+        "",
+        "<b>Products endpoint:</b>",
+        f"<code>{escape_html(buyer_api_endpoint_preview('/api/telegram-buyer/products', {'lang': 'en'}))}</code>",
+    ]
+    if warning:
+        lines.extend(["", f"⚠️ <b>Warning:</b> {escape_html(warning)}"])
+    return "\n".join(lines)
 
 
 def _format_buyer_api_value(value, limit: int = 32) -> str:
@@ -7841,6 +7947,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "seller_api_back":
         user_state[user_id] = {"step": "admin_main"}
         await send_inline_from_callback(query, "⬅️ Back to admin menu.", close_keyboard())
+        return
+
+    if data == "seller_api_debug":
+        await send_inline_from_callback(query, render_seller_api_debug_config(), seller_api_keyboard())
         return
 
     if data == "seller_api_test":
