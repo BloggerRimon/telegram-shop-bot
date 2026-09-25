@@ -4534,9 +4534,10 @@ def shop_product_rows(product_ids: list, user_id: int = None, styled: bool = Tru
         price_text = format_product_price_for_user(product_id, user_id)
         if stock <= 0:
             rows.append([
-                make_styled_inline_button(
-                    _short_button_text(f"🔔 {product['name']}{month_part} - {price_text} | Notify"),
-                    callback_data=f"shop_notify_{product_id}",
+                make_product_inline_button(
+                    product,
+                    f"{product['name']}{month_part} - {price_text} | 🔔 Notify",
+                    f"shop_notify_{product_id}",
                     style="danger" if styled else None,
                 )
             ])
@@ -4566,10 +4567,7 @@ def shop_categories_keyboard(user_id: int = None, styled: bool = True) -> Inline
         category = CATEGORIES.get(item_id, {})
         if not category or item_id == DEFAULT_CATEGORY_ID:
             continue
-        label = (
-            f"{category.get('name', item_id)} "
-            f"({len(get_category_product_ids(item_id))})"
-        )
+        label = f"{category.get('name', item_id)}  ›"
         rows.append([
             make_category_inline_button(
                 category,
