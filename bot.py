@@ -2756,6 +2756,16 @@ def shop_return_keyboard(styled: bool = True) -> InlineKeyboardMarkup:
     ])
 
 
+def out_of_stock_product_keyboard(product_id: str, styled: bool = True) -> InlineKeyboardMarkup:
+    rows = [[make_styled_inline_button(
+        "🔔 Notify Me",
+        callback_data=f"shop_notify_{product_id}",
+        style="danger" if styled else None,
+    )]]
+    rows.extend(shop_return_keyboard(styled=styled).inline_keyboard)
+    return InlineKeyboardMarkup(rows)
+
+
 def final_manual_keyboard(prefix: str) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton("✅ Submitted", callback_data=f"{prefix}_submitted")],
@@ -4521,25 +4531,25 @@ def shop_product_rows(product_ids: list, user_id: int = None, styled: bool = Tru
         stock = get_display_stock(product_id)
         month = format_duration_text(product.get("month", ""))
         month_part = f" {month}" if month else ""
-        stock_text = f"📦 {stock} Pcs" if stock > 0 else "📦 0"
-        core_label = f"{product['name']}{month_part} - {format_product_price_for_user(product_id, user_id)} | {stock_text}"
-        callback = f"shop_buy_{product_id}" if stock > 0 else f"shop_notify_{product_id}"
+        price_text = format_product_price_for_user(product_id, user_id)
+        if stock <= 0:
+            rows.append([
+                make_styled_inline_button(
+                    _short_button_text(f"🔔 {product['name']}{month_part} - {price_text} | Notify"),
+                    callback_data=f"shop_buy_{product_id}",
+                    style="danger" if styled else None,
+                )
+            ])
+            continue
+        core_label = f"{product['name']}{month_part} - {price_text} | 📦 {stock} Pcs"
         rows.append([
             make_product_inline_button(
                 product,
                 core_label,
-                callback,
+                f"shop_buy_{product_id}",
                 style="primary" if styled else None,
             )
         ])
-        if stock <= 0:
-            rows.append([
-                make_styled_inline_button(
-                    "🔔 Notify Me",
-                    callback_data=f"shop_notify_{product_id}",
-                    style="danger" if styled else None,
-                )
-            ])
     return rows
 
 
@@ -8496,9 +8506,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if get_display_stock(product_id) <= 0:
             await send_shop_inline_with_style_fallback(
                 query,
-                "❌ <b>This product is currently out of stock.</b>",
-                shop_return_keyboard(),
-                shop_return_keyboard(styled=False),
+                render_product_details(product_id, user_id),
+                out_of_stock_product_keyboard(product_id),
+                out_of_stock_product_keyboard(product_id, styled=False),
             )
             return
         user_state[user_id] = {"step": "buy_qty_select", "product_id": product_id}
