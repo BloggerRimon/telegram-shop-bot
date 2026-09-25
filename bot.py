@@ -2292,41 +2292,84 @@ def render_serialized_entities_html(text: str, entity_data: list) -> str:
         return ""
 
 
-async def send_rich_broadcast_message(bot, chat_id: int, message: str, entity_data: list = None, reply_markup=None):
+def normalize_broadcast_chat_id(chat_id):
+    value = str(chat_id or "").strip()
+    if value.lstrip("-").isdigit():
+        return int(value)
+    return value
+
+
+async def send_rich_broadcast_message(bot, chat_id, message: str, entity_data: list = None, reply_markup=None):
+    target_chat_id = normalize_broadcast_chat_id(chat_id)
     entities = deserialize_message_entities(entity_data, bot)
     if entities:
         try:
             return await bot.send_message(
-                chat_id=int(chat_id),
+                chat_id=target_chat_id,
                 text=message,
                 entities=entities,
                 reply_markup=reply_markup,
             )
         except Exception as e:
-            print(f"Rich broadcast send failed for user_id={int(chat_id)}; using plain text: {type(e).__name__}")
-    return await bot.send_message(chat_id=int(chat_id), text=message, reply_markup=reply_markup)
+            print(f"Rich broadcast send failed; using plain text: {type(e).__name__}")
+    return await bot.send_message(chat_id=target_chat_id, text=message, reply_markup=reply_markup)
 
 
-async def _send_admin_broadcast_job(bot, admin_id: int, message: str, entity_data: list, targets: list):
+def format_channel_broadcast_error(error) -> str:
+    if isinstance(error, str):
+        return error
+    message = str(error or "").strip()
+    lowered = message.lower()
+    if "chat not found" in lowered:
+        return "Chat not found."
+    if "forbidden" in lowered:
+        return "Forbidden. Make sure the bot is an admin in the configured channel."
+    if "administrator" in lowered or "not enough rights" in lowered or "not an admin" in lowered:
+        return "Bot is not admin in the configured channel."
+    return f"Telegram error ({type(error).__name__})."
+
+
+async def _send_admin_broadcast_job(
+    bot,
+    admin_id: int,
+    message: str,
+    entity_data: list,
+    targets: list,
+    destination: str = "users",
+    channel_id=None,
+):
     sent = 0
     failed = 0
-    for target_id in targets:
-        try:
-            await send_rich_broadcast_message(bot, int(target_id), message, entity_data)
-            sent += 1
-        except Exception:
-            failed += 1
-        # Yield to the event loop so normal user buttons keep responding during broadcast.
-        await asyncio.sleep(0.03)
+    channel_result = "Not selected"
+
+    if destination in {"channel", "both"}:
+        if not str(channel_id or "").strip():
+            channel_result = "Failed — Channel ID is not configured."
+        else:
+            try:
+                await send_rich_broadcast_message(bot, channel_id, message, entity_data)
+                channel_result = "Sent"
+            except Exception as e:
+                channel_result = f"Failed — {format_channel_broadcast_error(e)}"
+
+    if destination in {"users", "both"}:
+        for target_id in targets:
+            try:
+                await send_rich_broadcast_message(bot, int(target_id), message, entity_data)
+                sent += 1
+            except Exception:
+                failed += 1
+            # Yield to the event loop so normal user buttons keep responding during broadcast.
+            await asyncio.sleep(0.03)
 
     try:
         await bot.send_message(
             chat_id=int(admin_id),
             text=(
                 "✅ <b>Broadcast completed</b>\n\n"
-                f"<b>Sent:</b> {sent}\n"
-                f"<b>Failed/Blocked:</b> {failed}\n"
-                f"<b>Total targets:</b> {len(targets)}"
+                f"<b>Users sent:</b> {sent}\n"
+                f"<b>Users failed:</b> {failed}\n"
+                f"<b>Channel:</b> {escape_html(channel_result)}"
             ),
             parse_mode="HTML",
         )
@@ -2334,8 +2377,26 @@ async def _send_admin_broadcast_job(bot, admin_id: int, message: str, entity_dat
         pass
 
 
-def start_admin_broadcast_background(bot, admin_id: int, message: str, entity_data: list, targets: list):
-    asyncio.create_task(_send_admin_broadcast_job(bot, admin_id, message, entity_data, targets))
+def start_admin_broadcast_background(
+    bot,
+    admin_id: int,
+    message: str,
+    entity_data: list,
+    targets: list,
+    destination: str = "users",
+    channel_id=None,
+):
+    asyncio.create_task(
+        _send_admin_broadcast_job(
+            bot,
+            admin_id,
+            message,
+            entity_data,
+            targets,
+            destination=destination,
+            channel_id=channel_id,
+        )
+    )
 
 
 # =========================
@@ -3082,7 +3143,9 @@ def admin_confirm_keyboard(confirm_callback: str, confirm_text: str = "✅ Confi
 
 def broadcast_confirm_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Send Broadcast", callback_data="admin_broadcast_send")],
+        [InlineKeyboardButton("✅ Send to Users + Channel", callback_data="admin_broadcast_send_both")],
+        [InlineKeyboardButton("👥 Users Only", callback_data="admin_broadcast_send_users")],
+        [InlineKeyboardButton("📣 Channel Only", callback_data="admin_broadcast_send_channel")],
         [InlineKeyboardButton("❌ Cancel", callback_data="admin_cancel_flow")],
     ])
 
@@ -6459,6 +6522,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "📢 <b>Broadcast Preview</b>\n\n"
             f"<b>Users:</b> {max(0, len(all_users) - 1)}\n\n"
+            "<b>Destination:</b> Users + Channel\n\n"
             "The message below will be sent with its Telegram formatting and emoji entities.",
             parse_mode="HTML",
         )
@@ -7680,7 +7744,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_inline_from_callback(query, "↕️ <b>Reorder in Shop</b>\n\nSelect a product below.", admin_product_select_keyboard("admin_pick_reorder"))
         return
 
-    if data == "admin_broadcast_send":
+    if data in {
+        "admin_broadcast_send",
+        "admin_broadcast_send_both",
+        "admin_broadcast_send_users",
+        "admin_broadcast_send_channel",
+    }:
         if not is_admin(user_id):
             await send_inline_from_callback(query, "❌ <b>You are not allowed.</b>", close_keyboard())
             return
@@ -7690,11 +7759,38 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         entity_data = list(admin_temp.get(user_id, {}).get("broadcast_entities") or [])
 
+        destination = {
+            "admin_broadcast_send_users": "users",
+            "admin_broadcast_send_channel": "channel",
+        }.get(data, "both")
         targets = sorted(int(uid) for uid in all_users if int(uid) != int(user_id))
-        await send_inline_from_callback(query, f"📢 <b>Broadcast started in background...</b>\n\nTargets: {len(targets)}")
+        destination_label = {
+            "users": "Users Only",
+            "channel": "Official Channel Only",
+            "both": "Users + Official Channel",
+        }[destination]
+        if destination in {"channel", "both"} and not REQUIRED_CHANNEL_ID:
+            channel_note = "\n\n⚠️ Channel ID is not configured."
+        else:
+            channel_note = ""
+        await send_inline_from_callback(
+            query,
+            "📢 <b>Broadcast started in background...</b>\n\n"
+            f"<b>Destination:</b> {destination_label}\n"
+            f"<b>User targets:</b> {len(targets) if destination in {'users', 'both'} else 0}"
+            f"{channel_note}",
+        )
         reset_admin_temp(user_id)
         user_state[user_id] = {"step": "admin_main"}
-        start_admin_broadcast_background(context.bot, user_id, message, entity_data, targets)
+        start_admin_broadcast_background(
+            context.bot,
+            user_id,
+            message,
+            entity_data,
+            targets,
+            destination=destination,
+            channel_id=REQUIRED_CHANNEL_ID,
+        )
         return
 
     if data == "admin_cancel_flow":
