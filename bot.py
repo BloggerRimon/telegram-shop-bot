@@ -2990,6 +2990,7 @@ def seller_api_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🧪 Test Connection", callback_data="seller_api_test")],
         [InlineKeyboardButton("💰 Check API Balance", callback_data="seller_api_balance")],
         [InlineKeyboardButton("📦 Fetch API Products", callback_data="seller_api_products")],
+        [InlineKeyboardButton("🔎 Inspect Product Fields", callback_data="seller_api_inspect")],
         [InlineKeyboardButton("🔎 Debug Config", callback_data="seller_api_debug")],
         [InlineKeyboardButton("⬅️ Back", callback_data="seller_api_back")],
     ])
@@ -3053,6 +3054,85 @@ def _format_buyer_api_value(value, limit: int = 32) -> str:
     return escape_html(text)
 
 
+def _first_buyer_api_product_value(product: dict, aliases: tuple):
+    for alias in aliases:
+        value = product.get(alias)
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def extract_buyer_api_product_fields(product: dict) -> dict:
+    product_id = _first_buyer_api_product_value(
+        product,
+        ("_id", "id", "product_id", "productId"),
+    )
+    product_name = _first_buyer_api_product_value(
+        product,
+        ("product_name", "name", "title", "productName", "product_title", "display_name"),
+    )
+    price = _first_buyer_api_product_value(
+        product,
+        ("walletPricing", "usdPricing", "price", "pricing", "amount", "cost", "sellerPrice", "seller_price"),
+    )
+
+    stats = product.get("stats") if isinstance(product.get("stats"), dict) else {}
+    stock = stats.get("available")
+    if stock is None or stock == "":
+        stock = _first_buyer_api_product_value(
+            product,
+            ("stock", "available", "quantity", "qty", "inventory", "total_stock", "availableStock", "available_stock"),
+        )
+
+    requires_email = _first_buyer_api_product_value(
+        product,
+        ("requiresCustomerEmail", "requires_customer_email", "need_email", "requireEmail"),
+    )
+    slot_product = _first_buyer_api_product_value(
+        product,
+        ("isSlotProduct", "is_slot_product", "slot"),
+    )
+    if slot_product is None and product.get("product_type") not in (None, ""):
+        slot_product = str(product.get("product_type")).strip().lower() == "slot"
+
+    return {
+        "id": product_id,
+        "name": product_name,
+        "price": price,
+        "stock": stock,
+        "requires_email": requires_email,
+        "slot_product": slot_product,
+    }
+
+
+def _buyer_api_key_list(value, limit: int) -> str:
+    if not isinstance(value, dict) or not value:
+        return "None"
+    keys = []
+    for key in list(value.keys())[:limit]:
+        key_text = str(key)[:40]
+        if BUYER_API_KEY and BUYER_API_KEY.lower() in key_text.lower():
+            key_text = "[redacted-field]"
+        keys.append(key_text)
+    suffix = ", …" if len(value) > limit else ""
+    return escape_html(", ".join(keys) + suffix)
+
+
+def render_buyer_api_product_field_inspection(products: list) -> str:
+    if not products:
+        return "🔎 <b>API PRODUCT FIELD INSPECTION</b>\n\nNo API products were returned."
+    product = products[0]
+    if not isinstance(product, dict):
+        return "🔎 <b>API PRODUCT FIELD INSPECTION</b>\n\nThe first product is not an object."
+    stats = product.get("stats") if isinstance(product.get("stats"), dict) else {}
+    return (
+        "🔎 <b>API PRODUCT FIELD INSPECTION</b>\n\n"
+        "Only field names are shown; no raw values are exposed.\n\n"
+        f"<b>Top-level keys:</b> {_buyer_api_key_list(product, 30)}\n"
+        f"<b>stats keys:</b> {_buyer_api_key_list(stats, 20)}"
+    )
+
+
 def render_buyer_api_balance(balance_data: dict, heading: str = "API BALANCE") -> str:
     return (
         f"💰 <b>{escape_html(heading)}</b>\n\n"
@@ -3073,24 +3153,18 @@ def render_buyer_api_products(products: list, total: int) -> str:
         if not isinstance(product, dict):
             lines.extend(["", f"<b>{index}.</b> Invalid product data"])
             continue
-        product_id = product.get("id", product.get("productId", product.get("_id")))
-        product_name = product.get("name", product.get("productName", product.get("title")))
-        seller_price = product.get("sellerPrice", product.get("seller_price", product.get("price")))
-        available_stock = product.get(
-            "availableStock",
-            product.get("available_stock", product.get("stock", product.get("quantity"))),
-        )
+        fields = extract_buyer_api_product_fields(product)
         lines.extend([
             "",
-            f"<b>{index}. {_format_buyer_api_value(product_name)}</b>",
-            f"ID: <code>{_format_buyer_api_value(product_id)}</code>",
-            f"Seller price: {_format_buyer_api_value(seller_price)}",
-            f"Wallet pricing: {_format_buyer_api_value(product.get('walletPricing'))}",
-            f"USD pricing: {_format_buyer_api_value(product.get('usdPricing'))}",
-            f"Available stock: {_format_buyer_api_value(available_stock)}",
-            f"Requires customer email: {_format_buyer_api_value(product.get('requiresCustomerEmail'))}",
-            f"Slot product: {_format_buyer_api_value(product.get('isSlotProduct'))}",
+            f"<b>{index}. {_format_buyer_api_value(fields['name'])}</b>",
+            f"ID: <code>{_format_buyer_api_value(fields['id'])}</code>",
+            f"Price: {_format_buyer_api_value(fields['price'])}",
+            f"Available stock: {_format_buyer_api_value(fields['stock'])}",
+            f"Requires customer email: {_format_buyer_api_value(fields['requires_email'])}",
+            f"Slot product: {_format_buyer_api_value(fields['slot_product'])}",
         ])
+        if fields["name"] is None:
+            lines.append(f"Available fields: {_buyer_api_key_list(product, 10)}")
     return "\n".join(lines)
 
 
@@ -7990,6 +8064,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as error:
             print(f"Seller API product fetch failed: {type(error).__name__}")
             text = "❌ <b>API PRODUCT FETCH FAILED</b>\n\nUnexpected Seller API error."
+        await send_inline_from_callback(query, text, seller_api_keyboard())
+        return
+
+    if data == "seller_api_inspect":
+        try:
+            products, _ = await asyncio.to_thread(fetch_buyer_api_products)
+            text = render_buyer_api_product_field_inspection(products)
+        except BuyerAPIError as error:
+            text = f"❌ <b>API PRODUCT FIELD INSPECTION FAILED</b>\n\n{escape_html(str(error))}"
+        except Exception as error:
+            print(f"Seller API product field inspection failed: {type(error).__name__}")
+            text = "❌ <b>API PRODUCT FIELD INSPECTION FAILED</b>\n\nUnexpected Seller API error."
         await send_inline_from_callback(query, text, seller_api_keyboard())
         return
 
