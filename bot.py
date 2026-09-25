@@ -2577,6 +2577,15 @@ def user_dashboard_back_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def user_back_to_menu_keyboard(styled: bool = True) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        make_styled_inline_button(
+            "🏠 Back to Menu",
+            callback_data="user_back_to_dashboard",
+            style="danger" if styled else None,
+        )
+    ]])
+
 def admin_menu() -> ReplyKeyboardMarkup:
     keyboard = [
         ["📦 Products", "📥 Stock"],
@@ -2667,59 +2676,99 @@ def dashboard_emoji_input_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
-def deposit_amount_keyboard(back_callback: str = "close_inline") -> InlineKeyboardMarkup:
+def deposit_amount_keyboard(back_callback: str = "user_back_to_dashboard", styled: bool = True) -> InlineKeyboardMarkup:
+    amount_style = "primary" if styled else None
     rows = [
         [
-            InlineKeyboardButton("$5", callback_data="dep_amt_5"),
-            InlineKeyboardButton("$10", callback_data="dep_amt_10"),
+            make_styled_inline_button("$5", callback_data="dep_amt_5", style=amount_style),
+            make_styled_inline_button("$10", callback_data="dep_amt_10", style=amount_style),
         ],
         [
-            InlineKeyboardButton("$15", callback_data="dep_amt_15"),
-            InlineKeyboardButton("$20", callback_data="dep_amt_20"),
+            make_styled_inline_button("$15", callback_data="dep_amt_15", style=amount_style),
+            make_styled_inline_button("$20", callback_data="dep_amt_20", style=amount_style),
         ],
-        [InlineKeyboardButton("✏️ Custom Amount", callback_data="dep_custom")],
-        [InlineKeyboardButton(
-            "⬅️ Back to Menu" if back_callback == "user_dashboard" else "⬅️ Close",
+        [make_styled_inline_button("✏️ Custom Amount", callback_data="dep_custom", style="success" if styled else None)],
+        [make_styled_inline_button(
+            "🏠 Back to Menu" if back_callback in {"user_dashboard", "user_back_to_dashboard"} else "⬅️ Back",
             callback_data=back_callback,
+            style=("danger" if back_callback in {"user_dashboard", "user_back_to_dashboard"} else "primary") if styled else None,
         )],
     ]
     return InlineKeyboardMarkup(rows)
 
 
-def payment_method_keyboard(prefix: str) -> InlineKeyboardMarkup:
+def payment_method_keyboard(prefix: str, styled: bool = False) -> InlineKeyboardMarkup:
     rows = [
         [
-            InlineKeyboardButton("🏦 Binance ID", callback_data=f"{prefix}_method_binance"),
-            InlineKeyboardButton("🏦 Bybit ID", callback_data=f"{prefix}_method_bybit"),
+            make_styled_inline_button("🏦 Binance ID", callback_data=f"{prefix}_method_binance", style="success" if styled else None),
+            make_styled_inline_button("🏦 Bybit ID", callback_data=f"{prefix}_method_bybit", style="success" if styled else None),
         ],
-        [InlineKeyboardButton("💸 Crypto Address", callback_data=f"{prefix}_method_crypto")],
-        [InlineKeyboardButton("⬅️ Back", callback_data=f"{prefix}_back")],
+        [make_styled_inline_button("💸 Crypto Address", callback_data=f"{prefix}_method_crypto", style="primary" if styled else None)],
+        [make_styled_inline_button("⬅️ Back", callback_data=f"{prefix}_back", style="primary" if styled else None)],
     ]
+    if prefix == "dep":
+        rows.append([make_styled_inline_button(
+            "🏠 Back to Menu",
+            callback_data="user_back_to_dashboard",
+            style="danger" if styled else None,
+        )])
     return InlineKeyboardMarkup(rows)
 
 
-def network_keyboard(prefix: str) -> InlineKeyboardMarkup:
+def network_keyboard(prefix: str, styled: bool = False) -> InlineKeyboardMarkup:
+    network_style = "primary" if styled else None
     rows = [
         [
-            InlineKeyboardButton("USDT (TRC20)", callback_data=f"{prefix}_net_USDT_TRC20"),
-            InlineKeyboardButton("USDT (ERC20)", callback_data=f"{prefix}_net_USDT_ERC20"),
+            make_styled_inline_button("USDT (TRC20)", callback_data=f"{prefix}_net_USDT_TRC20", style=network_style),
+            make_styled_inline_button("USDT (ERC20)", callback_data=f"{prefix}_net_USDT_ERC20", style=network_style),
         ],
         [
-            InlineKeyboardButton("USDT (BEP20)", callback_data=f"{prefix}_net_USDT_BEP20"),
-            InlineKeyboardButton("TRX (TRC20)", callback_data=f"{prefix}_net_TRX_TRC20"),
+            make_styled_inline_button("USDT (BEP20)", callback_data=f"{prefix}_net_USDT_BEP20", style=network_style),
+            make_styled_inline_button("TRX (TRC20)", callback_data=f"{prefix}_net_TRX_TRC20", style=network_style),
         ],
         [
-            InlineKeyboardButton("BTC", callback_data=f"{prefix}_net_BTC"),
-            InlineKeyboardButton("LTC", callback_data=f"{prefix}_net_LTC"),
+            make_styled_inline_button("BTC", callback_data=f"{prefix}_net_BTC", style=network_style),
+            make_styled_inline_button("LTC", callback_data=f"{prefix}_net_LTC", style=network_style),
         ],
         [
-            InlineKeyboardButton("ETH (ERC20)", callback_data=f"{prefix}_net_ETH_ERC20"),
-            InlineKeyboardButton("BNB (BEP20)", callback_data=f"{prefix}_net_BNB_BEP20"),
+            make_styled_inline_button("ETH (ERC20)", callback_data=f"{prefix}_net_ETH_ERC20", style=network_style),
+            make_styled_inline_button("BNB (BEP20)", callback_data=f"{prefix}_net_BNB_BEP20", style=network_style),
         ],
-        [InlineKeyboardButton("SOL", callback_data=f"{prefix}_net_SOL")],
-        [InlineKeyboardButton("⬅️ Back", callback_data=f"{prefix}_back_method")],
+        [make_styled_inline_button("SOL", callback_data=f"{prefix}_net_SOL", style=network_style)],
+        [make_styled_inline_button("⬅️ Back", callback_data=f"{prefix}_back_method", style=network_style)],
     ]
+    if prefix == "dep":
+        rows.append([make_styled_inline_button(
+            "🏠 Back to Menu",
+            callback_data="user_back_to_dashboard",
+            style="danger" if styled else None,
+        )])
     return InlineKeyboardMarkup(rows)
+
+
+def deposit_custom_amount_keyboard(styled: bool = True) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [make_styled_inline_button("⬅️ Back", callback_data="dep_back", style="primary" if styled else None)],
+        [make_styled_inline_button("🏠 Back to Menu", callback_data="user_back_to_dashboard", style="danger" if styled else None)],
+    ])
+
+
+def deposit_manual_keyboard(styled: bool = True) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [make_styled_inline_button("✅ Submitted", callback_data="depmanual_submitted", style="success" if styled else None)],
+        [make_styled_inline_button("❌ Cancel", callback_data="depmanual_cancel", style="danger" if styled else None)],
+        [make_styled_inline_button("⬅️ Back", callback_data="dep_back_method", style="primary" if styled else None)],
+        [make_styled_inline_button("🏠 Back to Menu", callback_data="user_back_to_dashboard", style="danger" if styled else None)],
+    ])
+
+
+def deposit_payment_request_keyboard(styled: bool = True) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [make_styled_inline_button("✅ I Have Paid (Verify)", callback_data="deppay_verify", style="success" if styled else None)],
+        [make_styled_inline_button("🔁 Change Network", callback_data="deppay_change_network", style="primary" if styled else None)],
+        [make_styled_inline_button("⬅️ Back", callback_data="deppay_back_network", style="primary" if styled else None)],
+        [make_styled_inline_button("🏠 Back to Menu", callback_data="user_back_to_dashboard", style="danger" if styled else None)],
+    ])
 
 
 def buy_qty_keyboard(product_id: str, styled: bool = True) -> InlineKeyboardMarkup:
@@ -3247,6 +3296,22 @@ async def send_shop_inline_with_style_fallback(query, text: str, keyboard, fallb
         await send_inline_from_callback(query, text, fallback_keyboard)
 
 
+async def send_user_inline_with_style_fallback(query, text: str, keyboard, fallback_keyboard):
+    try:
+        await send_inline_from_callback(query, text, keyboard)
+    except Exception as e:
+        print(f"Styled user buttons were rejected; retrying normal buttons: {type(e).__name__}: {e}")
+        await send_inline_from_callback(query, text, fallback_keyboard)
+
+
+async def send_user_inline_from_text_with_style_fallback(update: Update, text: str, keyboard, fallback_keyboard):
+    try:
+        await send_inline_from_text(update, text, keyboard)
+    except Exception as e:
+        print(f"Styled user buttons were rejected; retrying normal buttons: {type(e).__name__}: {e}")
+        await send_inline_from_text(update, text, fallback_keyboard)
+
+
 # =========================
 # BASE58 / TRON HELPERS
 # =========================
@@ -3480,7 +3545,7 @@ def user_orders_keyboard(user_id: int, page: int = 0) -> InlineKeyboardMarkup:
         nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"user_orders_page_{page + 1}"))
     if nav:
         rows.append(nav)
-    rows.append([InlineKeyboardButton("✖️ Close", callback_data="user_orders_close")])
+    rows.append([InlineKeyboardButton("🏠 Back to Menu", callback_data="user_back_to_dashboard")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -3547,7 +3612,7 @@ def user_order_details_keyboard(page: int = 0) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💬 Contact Support", url=SUPPORT_URL)],
         [InlineKeyboardButton("⬅️ Back to Orders", callback_data=f"user_orders_page_{page}")],
-        [InlineKeyboardButton("✖️ Close", callback_data="user_orders_close")],
+        [InlineKeyboardButton("🏠 Back to Menu", callback_data="user_back_to_dashboard")],
     ])
 
 
@@ -4567,7 +4632,7 @@ def shop_categories_keyboard(user_id: int = None, styled: bool = True) -> Inline
         category = CATEGORIES.get(item_id, {})
         if not category or item_id == DEFAULT_CATEGORY_ID:
             continue
-        label = f"{category.get('name', item_id)}  ›"
+        label = f"{category.get('name', item_id)}  ▶"
         rows.append([
             make_category_inline_button(
                 category,
@@ -5995,7 +6060,12 @@ async def client_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await send_client_main_text(update, render_wallet_text(user_id))
     elif command == "/topup":
         user_state[user_id] = {"step": "deposit_amount"}
-        await send_inline_from_text(update, render_deposit_text(), deposit_amount_keyboard())
+        await send_user_inline_from_text_with_style_fallback(
+            update,
+            render_deposit_text(),
+            deposit_amount_keyboard(),
+            deposit_amount_keyboard(styled=False),
+        )
     elif command == "/orders":
         text, page, _ = render_user_orders_page(user_id)
         await send_inline_from_text(update, text, user_orders_keyboard(user_id, page))
@@ -7022,10 +7092,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if amount <= 0:
                 raise ValueError
         except ValueError:
-            await update.message.reply_text("❌ <b>Invalid amount.</b> Please send a valid number.", parse_mode="HTML")
+            await send_user_inline_from_text_with_style_fallback(
+                update,
+                "❌ <b>Invalid amount.</b> Please send a valid number.",
+                deposit_custom_amount_keyboard(),
+                deposit_custom_amount_keyboard(styled=False),
+            )
             return
         user_state[user_id] = {"step": "deposit_payment_method", "amount": amount}
-        await update.message.reply_text(render_deposit_method_text(amount), reply_markup=payment_method_keyboard("dep"), parse_mode="HTML")
+        await send_user_inline_from_text_with_style_fallback(
+            update,
+            render_deposit_method_text(amount),
+            payment_method_keyboard("dep", styled=True),
+            payment_method_keyboard("dep", styled=False),
+        )
         return
 
     if step == "awaiting_crypto_txid_deposit":
@@ -7062,7 +7142,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await ensure_channel_access(update, context):
             return
         user_state[user_id] = {"step": "deposit_amount"}
-        await send_inline_from_text(update, render_deposit_text(), deposit_amount_keyboard())
+        await send_user_inline_from_text_with_style_fallback(
+            update,
+            render_deposit_text(),
+            deposit_amount_keyboard(),
+            deposit_amount_keyboard(styled=False),
+        )
         return
 
     if text == "📦 Orders":
@@ -8220,7 +8305,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ========= USER ORDERS =========
     if data == "user_orders_close":
-        await edit_user_orders_message(query, "📦 <b>MY ORDERS</b>\n\nClosed.")
+        enter_client_mode(user_id)
+        await edit_user_dashboard_panel(
+            query,
+            render_home_text(user_id),
+            user_dashboard_keyboard(),
+            fallback_keyboards=[
+                user_dashboard_keyboard(),
+                user_dashboard_keyboard(custom_icons=False),
+                user_dashboard_keyboard(styled=False, custom_icons=False),
+            ],
+            fallback_text=render_home_text(user_id, custom_icons=False),
+        )
         return
 
     if data == "user_order_unavailable":
@@ -8439,7 +8535,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             user_state[user_id] = {"step": "deposit_amount"}
             await edit_user_dashboard_panel(
-                query, render_deposit_text(), deposit_amount_keyboard("user_dashboard")
+                query,
+                render_deposit_text(),
+                deposit_amount_keyboard(),
+                fallback_keyboards=[deposit_amount_keyboard(styled=False)],
             )
             return
 
@@ -8482,6 +8581,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     if data == "close_inline":
+        if user_mode.get(user_id) != "admin":
+            enter_client_mode(user_id)
+            await edit_user_dashboard_panel(
+                query,
+                render_home_text(user_id),
+                user_dashboard_keyboard(),
+                fallback_keyboards=[
+                    user_dashboard_keyboard(),
+                    user_dashboard_keyboard(custom_icons=False),
+                    user_dashboard_keyboard(styled=False, custom_icons=False),
+                ],
+                fallback_text=render_home_text(user_id, custom_icons=False),
+            )
+            return
         await send_inline_from_callback(query, "Closed.", close_keyboard())
         return
 
@@ -8641,27 +8754,53 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             add_order_record(user_id, product_id, qty, total, "Waiting Manual Confirmation", "Manual")
             add_transaction_record(user_id, "Order Payment", total, "Waiting Manual Confirmation", {"product_id": product_id, "qty": qty})
         user_state[user_id] = {"step": "main"}
-        await send_inline_from_callback(query, "✅ <b>Submitted.</b>\n\nSend payment screenshot to Live Support for confirmation.", close_keyboard())
+        await send_user_inline_with_style_fallback(
+            query,
+            "✅ <b>Submitted.</b>\n\nSend payment screenshot to Live Support for confirmation.",
+            user_back_to_menu_keyboard(),
+            user_back_to_menu_keyboard(styled=False),
+        )
         return
 
     if data == "buymanual_cancel":
         user_state[user_id] = {"step": "main"}
-        await send_inline_from_callback(query, "❌ <b>Order cancelled.</b>", close_keyboard())
+        await send_user_inline_with_style_fallback(
+            query,
+            "❌ <b>Order cancelled.</b>",
+            user_back_to_menu_keyboard(),
+            user_back_to_menu_keyboard(styled=False),
+        )
         return
 
     if data.startswith("dep_amt_"):
         amount = float(data.replace("dep_amt_", ""))
         user_state[user_id] = {"step": "deposit_payment_method", "amount": amount}
-        await send_inline_from_callback(query, render_deposit_method_text(amount), payment_method_keyboard("dep"))
+        await send_user_inline_with_style_fallback(
+            query,
+            render_deposit_method_text(amount),
+            payment_method_keyboard("dep", styled=True),
+            payment_method_keyboard("dep", styled=False),
+        )
         return
 
     if data == "dep_custom":
         user_state[user_id] = {"step": "deposit_custom_amount"}
-        await query.message.reply_text("✏️ Send custom deposit amount.\nExample: 25")
+        await send_user_inline_with_style_fallback(
+            query,
+            "✏️ Send custom deposit amount.\nExample: 25",
+            deposit_custom_amount_keyboard(),
+            deposit_custom_amount_keyboard(styled=False),
+        )
         return
 
     if data == "dep_back":
-        await send_inline_from_callback(query, render_deposit_text(), deposit_amount_keyboard())
+        user_state[user_id] = {"step": "deposit_amount"}
+        await send_user_inline_with_style_fallback(
+            query,
+            render_deposit_text(),
+            deposit_amount_keyboard(),
+            deposit_amount_keyboard(styled=False),
+        )
         return
 
     if data == "dep_method_binance":
@@ -8669,7 +8808,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if amount is None:
             await query.answer("Please start a new deposit request.", show_alert=True)
             return
-        await send_inline_from_callback(query, render_manual_payment_text(amount, "Binance ID", BINANCE_ID), final_manual_keyboard("depmanual"))
+        await send_user_inline_with_style_fallback(
+            query,
+            render_manual_payment_text(amount, "Binance ID", BINANCE_ID),
+            deposit_manual_keyboard(),
+            deposit_manual_keyboard(styled=False),
+        )
         return
 
     if data == "dep_method_bybit":
@@ -8677,12 +8821,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if amount is None:
             await query.answer("Please start a new deposit request.", show_alert=True)
             return
-        await send_inline_from_callback(query, render_manual_payment_text(amount, "Bybit ID", BYBIT_ID), final_manual_keyboard("depmanual"))
+        await send_user_inline_with_style_fallback(
+            query,
+            render_manual_payment_text(amount, "Bybit ID", BYBIT_ID),
+            deposit_manual_keyboard(),
+            deposit_manual_keyboard(styled=False),
+        )
         return
 
     if data == "dep_method_crypto":
         user_state[user_id]["step"] = "deposit_network"
-        await send_inline_from_callback(query, "🌐 <b>SELECT NETWORK</b>\n\nChoose a cryptocurrency below:", network_keyboard("dep"))
+        await send_user_inline_with_style_fallback(
+            query,
+            "🌐 <b>SELECT NETWORK</b>\n\nChoose a cryptocurrency below:",
+            network_keyboard("dep", styled=True),
+            network_keyboard("dep", styled=False),
+        )
         return
 
     if data == "dep_back_method":
@@ -8690,7 +8844,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if amount is None:
             await query.answer("Please start a new deposit request.", show_alert=True)
             return
-        await send_inline_from_callback(query, render_deposit_method_text(amount), payment_method_keyboard("dep"))
+        user_state[user_id]["step"] = "deposit_payment_method"
+        await send_user_inline_with_style_fallback(
+            query,
+            render_deposit_method_text(amount),
+            payment_method_keyboard("dep", styled=True),
+            payment_method_keyboard("dep", styled=False),
+        )
         return
 
     if data.startswith("dep_net_"):
@@ -8710,10 +8870,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             print("Crypto deposit create error:", e)
-            await send_inline_from_callback(
+            await send_user_inline_with_style_fallback(
                 query,
                 f"❌ <b>Could not create crypto payment.</b>\n\nPlease try again or contact live support: {SUPPORT_USERNAME}",
-                paymod.network_keyboard("dep"),
+                network_keyboard("dep", styled=True),
+                network_keyboard("dep", styled=False),
             )
             return
 
@@ -8724,10 +8885,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "crypto_payment_id": np_record.get("payment_id") or np_record.get("uuid"),
             "payment_provider": np_record.get("provider"),
         }
-        await send_inline_from_callback(
+        await send_user_inline_with_style_fallback(
             query,
             render_gateway_payment_text(np_record),
-            paymod.payment_request_keyboard("deppay"),
+            deposit_payment_request_keyboard(),
+            deposit_payment_request_keyboard(styled=False),
         )
         return
 
@@ -8741,7 +8903,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "deppay_change_network":
         user_state[user_id]["step"] = "deposit_network"
-        await send_inline_from_callback(query, "🌐 <b>SELECT NETWORK</b>\n\nChoose a cryptocurrency below:", paymod.network_keyboard("dep"))
+        await send_user_inline_with_style_fallback(
+            query,
+            "🌐 <b>SELECT NETWORK</b>\n\nChoose a cryptocurrency below:",
+            network_keyboard("dep", styled=True),
+            network_keyboard("dep", styled=False),
+        )
+        return
+
+    if data == "deppay_back_network":
+        user_state[user_id]["step"] = "deposit_network"
+        await send_user_inline_with_style_fallback(
+            query,
+            "🌐 <b>SELECT NETWORK</b>\n\nChoose a cryptocurrency below:",
+            network_keyboard("dep", styled=True),
+            network_keyboard("dep", styled=False),
+        )
         return
 
     if data == "deppay_verify":
@@ -8752,12 +8929,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         amount = user_state[user_id].get("amount", 0)
         add_transaction_record(user_id, "Deposit", amount, "Waiting Manual Confirmation")
         user_state[user_id] = {"step": "main"}
-        await send_inline_from_callback(query, "✅ <b>Submitted.</b>\n\nSend payment screenshot to Live Support for confirmation.", close_keyboard())
+        await send_user_inline_with_style_fallback(
+            query,
+            "✅ <b>Submitted.</b>\n\nSend payment screenshot to Live Support for confirmation.",
+            user_back_to_menu_keyboard(),
+            user_back_to_menu_keyboard(styled=False),
+        )
         return
 
     if data == "depmanual_cancel":
         user_state[user_id] = {"step": "main"}
-        await send_inline_from_callback(query, "❌ <b>Deposit cancelled.</b>", close_keyboard())
+        await send_user_inline_with_style_fallback(
+            query,
+            "❌ <b>Deposit cancelled.</b>",
+            user_back_to_menu_keyboard(),
+            user_back_to_menu_keyboard(styled=False),
+        )
         return
 
 
