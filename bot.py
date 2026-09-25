@@ -4536,7 +4536,7 @@ def shop_product_rows(product_ids: list, user_id: int = None, styled: bool = Tru
             rows.append([
                 make_styled_inline_button(
                     _short_button_text(f"🔔 {product['name']}{month_part} - {price_text} | Notify"),
-                    callback_data=f"shop_buy_{product_id}",
+                    callback_data=f"shop_notify_{product_id}",
                     style="danger" if styled else None,
                 )
             ])
