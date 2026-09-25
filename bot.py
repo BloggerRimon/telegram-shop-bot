@@ -66,6 +66,10 @@ REQUIRED_CHANNEL_ID = os.getenv("REQUIRED_CHANNEL_ID", "").strip()
 REQUIRED_CHANNEL_URL = os.getenv("REQUIRED_CHANNEL_URL", "").strip()
 REQUIRED_CHANNEL_ENABLED = os.getenv("REQUIRED_CHANNEL_ENABLED", "false").strip()
 
+BUYER_API_ENABLED = os.getenv("BUYER_API_ENABLED", "false").strip()
+BUYER_API_URL = os.getenv("BUYER_API_URL", "").strip().rstrip("/")
+BUYER_API_KEY = os.getenv("BUYER_API_KEY", "").strip()
+
 BINANCE_ID = "828543482"
 BYBIT_ID = "199582741"
 
@@ -1078,6 +1082,105 @@ def to_evm_topic_address(addr: str) -> str:
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
+
+
+class BuyerAPIError(Exception):
+    pass
+
+
+def is_buyer_api_enabled() -> bool:
+    return BUYER_API_ENABLED.lower() == "true"
+
+
+def mask_buyer_api_key() -> str:
+    if not BUYER_API_KEY:
+        return "Not configured"
+    if len(BUYER_API_KEY) <= 8:
+        return "*" * len(BUYER_API_KEY)
+    return f"{BUYER_API_KEY[:4]}{'*' * (len(BUYER_API_KEY) - 8)}{BUYER_API_KEY[-4:]}"
+
+
+def _validate_buyer_api_config():
+    if not is_buyer_api_enabled():
+        raise BuyerAPIError("Seller API is disabled. Set BUYER_API_ENABLED=true to enable tests.")
+    if not BUYER_API_URL:
+        raise BuyerAPIError("BUYER_API_URL is not configured.")
+    if not BUYER_API_KEY:
+        raise BuyerAPIError("BUYER_API_KEY is not configured.")
+
+
+def _buyer_api_get(path: str, params: dict = None):
+    _validate_buyer_api_config()
+    request_params = dict(params or {})
+    request_params["key"] = BUYER_API_KEY
+    try:
+        response = requests.get(
+            f"{BUYER_API_URL}{path}",
+            params=request_params,
+            timeout=20,
+        )
+    except requests.Timeout as exc:
+        raise BuyerAPIError("Seller API request timed out.") from exc
+    except requests.ConnectionError as exc:
+        raise BuyerAPIError("Could not connect to the Seller API.") from exc
+    except requests.RequestException as exc:
+        raise BuyerAPIError("Seller API request failed.") from exc
+
+    if not response.ok:
+        raise BuyerAPIError(f"Seller API returned HTTP {response.status_code}.")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise BuyerAPIError("Seller API returned invalid JSON.") from exc
+    if not isinstance(payload, (dict, list)):
+        raise BuyerAPIError("Seller API returned an unexpected response format.")
+    if isinstance(payload, dict) and payload.get("success") is False:
+        raise BuyerAPIError("Seller API reported that the request failed.")
+    return payload
+
+
+def _buyer_api_data(payload):
+    if isinstance(payload, dict):
+        for key in ("data", "result"):
+            if isinstance(payload.get(key), (dict, list)):
+                return payload[key]
+    return payload
+
+
+def fetch_buyer_api_balance() -> dict:
+    payload = _buyer_api_data(_buyer_api_get("/api/telegram-buyer/balance"))
+    if not isinstance(payload, dict):
+        raise BuyerAPIError("Seller API balance response is missing balance data.")
+    return payload
+
+
+def fetch_buyer_api_products():
+    payload = _buyer_api_get("/api/telegram-buyer/products", {"lang": "en"})
+    data = _buyer_api_data(payload)
+    if isinstance(data, list):
+        total = payload.get("total", payload.get("count", len(data))) if isinstance(payload, dict) else len(data)
+        try:
+            total = int(total)
+        except (TypeError, ValueError):
+            total = len(data)
+        return data, total
+    if not isinstance(data, dict):
+        raise BuyerAPIError("Seller API product response is missing the product list.")
+    products = data.get("products")
+    if not isinstance(products, list):
+        products = data.get("items")
+    if not isinstance(products, list):
+        raise BuyerAPIError("Seller API product response is missing the product list.")
+    pagination = data.get("pagination") if isinstance(data.get("pagination"), dict) else {}
+    total = data.get("total", data.get("count", pagination.get("total", len(products))))
+    if total == len(products) and isinstance(payload, dict) and payload is not data:
+        payload_pagination = payload.get("pagination") if isinstance(payload.get("pagination"), dict) else {}
+        total = payload.get("total", payload.get("count", payload_pagination.get("total", total)))
+    try:
+        total = int(total)
+    except (TypeError, ValueError):
+        total = len(products)
+    return products, total
 
 
 def is_channel_gate_enabled() -> bool:
@@ -2802,10 +2905,87 @@ def admin_menu() -> ReplyKeyboardMarkup:
         ["👑 Gold VIP", "⚡ Flash Deal"],
         ["👥 User Details", "📊 Analytics"],
         ["🎨 Dashboard Emojis"],
+        ["🔌 Seller API"],
         ["📢 Broadcast"],
         ["🚪 Exit Admin"],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
+def seller_api_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🧪 Test Connection", callback_data="seller_api_test")],
+        [InlineKeyboardButton("💰 Check API Balance", callback_data="seller_api_balance")],
+        [InlineKeyboardButton("📦 Fetch API Products", callback_data="seller_api_products")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="seller_api_back")],
+    ])
+
+
+def render_seller_api_panel() -> str:
+    enabled = "✅ Enabled" if is_buyer_api_enabled() else "❌ Disabled"
+    api_url = BUYER_API_URL or "Not configured"
+    return (
+        "🔌 <b>SELLER API</b>\n\n"
+        f"<b>Status:</b> {enabled}\n"
+        f"<b>API URL:</b> <code>{escape_html(api_url)}</code>\n"
+        f"<b>API key:</b> <code>{escape_html(mask_buyer_api_key())}</code>\n\n"
+        "Read-only connection tests only. No products or orders are saved."
+    )
+
+
+def _format_buyer_api_value(value, limit: int = 32) -> str:
+    if value is None or value == "":
+        return "N/A"
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if isinstance(value, (dict, list)):
+        text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    else:
+        text = str(value)
+    if len(text) > limit:
+        text = text[:limit - 1] + "…"
+    return escape_html(text)
+
+
+def render_buyer_api_balance(balance_data: dict, heading: str = "API BALANCE") -> str:
+    return (
+        f"💰 <b>{escape_html(heading)}</b>\n\n"
+        f"<b>Balance:</b> {_format_buyer_api_value(balance_data.get('balance'))}\n"
+        f"<b>Balance text:</b> {_format_buyer_api_value(balance_data.get('balanceText'))}\n"
+        f"<b>Wallet currency:</b> {_format_buyer_api_value(balance_data.get('walletCurrency'))}"
+    )
+
+
+def render_buyer_api_products(products: list, total: int) -> str:
+    lines = [
+        "📦 <b>API PRODUCTS</b>",
+        "",
+        f"<b>Total products:</b> {total}",
+        f"<b>Showing:</b> {min(10, len(products))}",
+    ]
+    for index, product in enumerate(products[:10], start=1):
+        if not isinstance(product, dict):
+            lines.extend(["", f"<b>{index}.</b> Invalid product data"])
+            continue
+        product_id = product.get("id", product.get("productId", product.get("_id")))
+        product_name = product.get("name", product.get("productName", product.get("title")))
+        seller_price = product.get("sellerPrice", product.get("seller_price", product.get("price")))
+        available_stock = product.get(
+            "availableStock",
+            product.get("available_stock", product.get("stock", product.get("quantity"))),
+        )
+        lines.extend([
+            "",
+            f"<b>{index}. {_format_buyer_api_value(product_name)}</b>",
+            f"ID: <code>{_format_buyer_api_value(product_id)}</code>",
+            f"Seller price: {_format_buyer_api_value(seller_price)}",
+            f"Wallet pricing: {_format_buyer_api_value(product.get('walletPricing'))}",
+            f"USD pricing: {_format_buyer_api_value(product.get('usdPricing'))}",
+            f"Available stock: {_format_buyer_api_value(available_stock)}",
+            f"Requires customer email: {_format_buyer_api_value(product.get('requiresCustomerEmail'))}",
+            f"Slot product: {_format_buyer_api_value(product.get('isSlotProduct'))}",
+        ])
+    return "\n".join(lines)
 
 
 def render_dashboard_emoji_admin_text() -> str:
@@ -6722,6 +6902,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+        if text == "🔌 Seller API":
+            user_state[user_id] = {"step": "seller_api_admin"}
+            await update.message.reply_text(
+                "🔌 <b>SELLER API TEST PANEL</b>",
+                reply_markup=admin_menu(),
+                parse_mode="HTML",
+            )
+            await update.message.reply_text(
+                render_seller_api_panel(),
+                reply_markup=seller_api_keyboard(),
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+            return
+
         if text == "📢 Broadcast":
             user_state[user_id] = {"step": "admin_broadcast_input"}
             await update.message.reply_text(
@@ -7636,6 +7831,56 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ensure_user(user_id, query.from_user)
 
     if data == "noop":
+        return
+
+    # ========= SELLER API ADMIN (READ-ONLY) =========
+    if data.startswith("seller_api_") and not is_admin(user_id):
+        await send_inline_from_callback(query, "❌ <b>You are not allowed.</b>", close_keyboard())
+        return
+
+    if data == "seller_api_back":
+        user_state[user_id] = {"step": "admin_main"}
+        await send_inline_from_callback(query, "⬅️ Back to admin menu.", close_keyboard())
+        return
+
+    if data == "seller_api_test":
+        try:
+            balance_data = await asyncio.to_thread(fetch_buyer_api_balance)
+            text = (
+                "✅ <b>SELLER API CONNECTION SUCCESSFUL</b>\n\n"
+                f"<b>API key:</b> <code>{escape_html(mask_buyer_api_key())}</code>\n\n"
+                + render_buyer_api_balance(balance_data, "BALANCE ENDPOINT RESPONSE")
+            )
+        except BuyerAPIError as error:
+            text = f"❌ <b>SELLER API CONNECTION FAILED</b>\n\n{escape_html(str(error))}"
+        except Exception as error:
+            print(f"Seller API connection test failed: {type(error).__name__}")
+            text = "❌ <b>SELLER API CONNECTION FAILED</b>\n\nUnexpected Seller API error."
+        await send_inline_from_callback(query, text, seller_api_keyboard())
+        return
+
+    if data == "seller_api_balance":
+        try:
+            balance_data = await asyncio.to_thread(fetch_buyer_api_balance)
+            text = render_buyer_api_balance(balance_data)
+        except BuyerAPIError as error:
+            text = f"❌ <b>API BALANCE CHECK FAILED</b>\n\n{escape_html(str(error))}"
+        except Exception as error:
+            print(f"Seller API balance check failed: {type(error).__name__}")
+            text = "❌ <b>API BALANCE CHECK FAILED</b>\n\nUnexpected Seller API error."
+        await send_inline_from_callback(query, text, seller_api_keyboard())
+        return
+
+    if data == "seller_api_products":
+        try:
+            products, total = await asyncio.to_thread(fetch_buyer_api_products)
+            text = render_buyer_api_products(products, total)
+        except BuyerAPIError as error:
+            text = f"❌ <b>API PRODUCT FETCH FAILED</b>\n\n{escape_html(str(error))}"
+        except Exception as error:
+            print(f"Seller API product fetch failed: {type(error).__name__}")
+            text = "❌ <b>API PRODUCT FETCH FAILED</b>\n\nUnexpected Seller API error."
+        await send_inline_from_callback(query, text, seller_api_keyboard())
         return
 
     # ========= DASHBOARD EMOJI ADMIN =========
