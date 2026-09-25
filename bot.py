@@ -2299,20 +2299,63 @@ def normalize_broadcast_chat_id(chat_id):
     return value
 
 
-async def send_rich_broadcast_message(bot, chat_id, message: str, entity_data: list = None, reply_markup=None):
+def get_broadcast_entity_types(entity_data: list, entities: list = None) -> list:
+    entity_types = []
+    for item in entity_data or []:
+        value = item.get("type") if isinstance(item, dict) else getattr(item, "type", "")
+        value = getattr(value, "value", value)
+        if value:
+            entity_types.append(str(value))
+    if not entity_types:
+        for entity in entities or []:
+            value = getattr(entity, "type", "")
+            value = getattr(value, "value", value)
+            if value:
+                entity_types.append(str(value))
+    return entity_types
+
+
+async def send_rich_broadcast_message(
+    bot,
+    chat_id,
+    message: str,
+    entity_data: list = None,
+    reply_markup=None,
+    report_delivery_mode: bool = False,
+    preserve_custom_emoji: bool = False,
+):
     target_chat_id = normalize_broadcast_chat_id(chat_id)
     entities = deserialize_message_entities(entity_data, bot)
+    entity_types = get_broadcast_entity_types(entity_data, entities)
+    has_custom_emoji = "custom_emoji" in entity_types
+    if preserve_custom_emoji and has_custom_emoji and not entities:
+        raise ValueError("Custom emoji entities could not be deserialized.")
     if entities:
         try:
-            return await bot.send_message(
+            result = await bot.send_message(
                 chat_id=target_chat_id,
                 text=message,
                 entities=entities,
                 reply_markup=reply_markup,
             )
+            return (result, "rich") if report_delivery_mode else result
         except Exception as e:
-            print(f"Rich broadcast send failed; using plain text: {type(e).__name__}")
-    return await bot.send_message(chat_id=target_chat_id, text=message, reply_markup=reply_markup)
+            type_summary = ",".join(sorted(set(entity_types))) or "unknown"
+            if preserve_custom_emoji and has_custom_emoji:
+                print(
+                    "Rich channel broadcast failed; plain fallback skipped "
+                    f"to preserve custom emoji (entity_count={len(entities)}, types={type_summary}): "
+                    f"{type(e).__name__}"
+                )
+                raise
+            print(
+                "Rich broadcast send failed; using plain text "
+                f"(entity_count={len(entities)}, types={type_summary}): {type(e).__name__}"
+            )
+            result = await bot.send_message(chat_id=target_chat_id, text=message, reply_markup=reply_markup)
+            return (result, "plain_fallback") if report_delivery_mode else result
+    result = await bot.send_message(chat_id=target_chat_id, text=message, reply_markup=reply_markup)
+    return (result, "plain") if report_delivery_mode else result
 
 
 def format_channel_broadcast_error(error) -> str:
@@ -2326,6 +2369,8 @@ def format_channel_broadcast_error(error) -> str:
         return "Forbidden. Make sure the bot is an admin in the configured channel."
     if "administrator" in lowered or "not enough rights" in lowered or "not an admin" in lowered:
         return "Bot is not admin in the configured channel."
+    if "custom emoji" in lowered:
+        return "Telegram rejected the custom emoji entity."
     return f"Telegram error ({type(error).__name__})."
 
 
@@ -2347,8 +2392,18 @@ async def _send_admin_broadcast_job(
             channel_result = "Failed — Channel ID is not configured."
         else:
             try:
-                await send_rich_broadcast_message(bot, channel_id, message, entity_data)
-                channel_result = "Sent"
+                _, delivery_mode = await send_rich_broadcast_message(
+                    bot,
+                    channel_id,
+                    message,
+                    entity_data,
+                    report_delivery_mode=True,
+                    preserve_custom_emoji=True,
+                )
+                if delivery_mode == "rich":
+                    channel_result = "Sent with rich text"
+                else:
+                    channel_result = "Sent without rich text fallback"
             except Exception as e:
                 channel_result = f"Failed — {format_channel_broadcast_error(e)}"
 
