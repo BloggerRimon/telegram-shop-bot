@@ -613,8 +613,6 @@ def apply_loaded_state(data: dict):
     shop_order.clear()
     if isinstance(loaded_shop_order, list):
         shop_order.extend(loaded_shop_order)
-    if "normalize_shop_order" in globals():
-        normalize_shop_order()
 
     loaded_api_product_mappings = data.get("api_product_mappings", {})
     api_product_mappings.clear()
@@ -622,6 +620,8 @@ def apply_loaded_state(data: dict):
         for api_product_id, mapping in loaded_api_product_mappings.items():
             if isinstance(mapping, dict) and str(api_product_id).strip():
                 api_product_mappings[str(api_product_id)] = dict(mapping)
+    if "normalize_shop_order" in globals():
+        normalize_shop_order()
 
     loaded_dashboard_emojis = data.get("dashboard_custom_emoji_ids", {})
     if isinstance(loaded_dashboard_emojis, dict):
@@ -1569,6 +1569,18 @@ def get_category_product_ids(category_id: str) -> list:
     ]
 
 
+def api_product_shop_order_item(api_product_id: str) -> str:
+    return f"api_product:{str(api_product_id or '').strip()}"
+
+
+def api_product_mapping_by_id(api_product_id: str):
+    wanted_id = str(api_product_id or "").strip()
+    for mapping in api_product_mappings.values():
+        if str((mapping or {}).get("api_product_id") or "").strip() == wanted_id:
+            return mapping
+    return None
+
+
 def normalize_shop_order() -> bool:
     """Keep a safe combined shop order without deleting products or categories."""
     normalize_categories()
@@ -1587,9 +1599,18 @@ def normalize_shop_order() -> bool:
         if category_id != DEFAULT_CATEGORY_ID and category_id not in valid_category_ids:
             valid_category_ids.append(category_id)
 
+    valid_api_product_ids = []
+    for mapping in api_product_mappings.values():
+        if not is_api_shop_mapping_visible(mapping):
+            continue
+        api_product_id = str(mapping.get("api_product_id") or "").strip()
+        if api_product_id and api_product_id not in valid_api_product_ids:
+            valid_api_product_ids.append(api_product_id)
+
     valid_items = {
         *[f"product:{product_id}" for product_id in valid_product_ids],
         *[f"category:{category_id}" for category_id in valid_category_ids],
+        *[api_product_shop_order_item(api_product_id) for api_product_id in valid_api_product_ids],
     }
     cleaned_order = []
     for item in shop_order:
@@ -1610,6 +1631,10 @@ def normalize_shop_order() -> bool:
             item = f"category:{category_id}"
             if item not in cleaned_order:
                 cleaned_order.append(item)
+    for api_product_id in valid_api_product_ids:
+        item = api_product_shop_order_item(api_product_id)
+        if item not in cleaned_order:
+            cleaned_order.append(item)
 
     if cleaned_order != shop_order:
         shop_order.clear()
@@ -1642,15 +1667,33 @@ def is_main_shop_order_item(item: str) -> bool:
     if item.startswith("product:"):
         product = PRODUCTS.get(item.split(":", 1)[1])
         return bool(product and product.get("category_id") == DEFAULT_CATEGORY_ID)
+    if item.startswith("api_product:"):
+        mapping = api_product_mapping_by_id(item.split(":", 1)[1])
+        return bool(mapping and mapping.get("category_id") == DEFAULT_CATEGORY_ID)
     return False
+
+
+def shop_order_item_category_id(item: str):
+    if item.startswith("product:"):
+        product = PRODUCTS.get(item.split(":", 1)[1])
+        return product.get("category_id") if product else None
+    if item.startswith("api_product:"):
+        mapping = api_product_mapping_by_id(item.split(":", 1)[1])
+        return mapping.get("category_id") if mapping else None
+    return None
 
 
 def shop_order_move_peers(item: str) -> list:
     normalize_shop_order()
     if is_main_shop_order_item(item):
         return [candidate for candidate in shop_order if is_main_shop_order_item(candidate)]
-    if item.startswith("product:"):
-        return [candidate for candidate in shop_order if candidate.startswith("product:")]
+    if item.startswith(("product:", "api_product:")):
+        category_id = shop_order_item_category_id(item)
+        return [
+            candidate for candidate in shop_order
+            if candidate.startswith(("product:", "api_product:"))
+            and shop_order_item_category_id(candidate) == category_id
+        ]
     return list(shop_order)
 
 
@@ -1677,6 +1720,38 @@ def move_shop_order_item(item: str, direction: int) -> bool:
     shop_order[index], shop_order[target_index] = shop_order[target_index], shop_order[index]
     normalize_shop_order()
     return True
+
+
+def remove_api_product_shop_order_item(api_product_id: str) -> bool:
+    item = api_product_shop_order_item(api_product_id)
+    original_length = len(shop_order)
+    shop_order[:] = [candidate for candidate in shop_order if candidate != item]
+    return len(shop_order) != original_length
+
+
+def sync_api_product_shop_order(mapping: dict) -> bool:
+    api_product_id = str((mapping or {}).get("api_product_id") or "").strip()
+    if not api_product_id:
+        return False
+    item = api_product_shop_order_item(api_product_id)
+    changed = False
+    if is_api_shop_mapping_visible(mapping) and item not in shop_order:
+        shop_order.append(item)
+        changed = True
+    elif not is_api_shop_mapping_visible(mapping):
+        changed = remove_api_product_shop_order_item(api_product_id)
+    elif shop_order.count(item) > 1:
+        found = False
+        deduplicated = []
+        for candidate in shop_order:
+            if candidate == item:
+                if found:
+                    continue
+                found = True
+            deduplicated.append(candidate)
+        shop_order[:] = deduplicated
+        changed = True
+    return changed
 
 
 def enter_client_mode(user_id: int):
@@ -3368,6 +3443,7 @@ def update_api_product_mapping(product: dict, **changes) -> dict:
     mapping.update(_api_product_mapping_snapshot(product))
     mapping.update(changes)
     api_product_mappings[api_product_id] = mapping
+    sync_api_product_shop_order(mapping)
     return mapping
 
 
@@ -4591,6 +4667,33 @@ def admin_product_select_keyboard(action_prefix: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+def admin_shop_reorder_select_keyboard() -> InlineKeyboardMarkup:
+    normalize_shop_order()
+    rows = []
+    for item in shop_order:
+        if item.startswith("product:"):
+            product_id = item.split(":", 1)[1]
+            product = PRODUCTS.get(product_id)
+            if product:
+                rows.append([make_product_inline_button(
+                    product,
+                    f"{product['name']} ({product_id})",
+                    f"admin_pick_reorder_{product_id}",
+                )])
+        elif item.startswith("api_product:"):
+            mapping = api_product_mapping_by_id(item.split(":", 1)[1])
+            if mapping and is_api_shop_mapping_visible(mapping):
+                token = api_shop_callback_token(mapping.get("api_product_id"))
+                rows.append([InlineKeyboardButton(
+                    _short_button_text(
+                        f"🌐 API: {api_mapping_display_name(mapping)} - {format_money(mapping.get('selling_price'))}"
+                    ),
+                    callback_data=f"admin_pick_api_reorder_{token}",
+                )])
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="admin_products_back")])
+    return InlineKeyboardMarkup(rows)
+
+
 def stock_product_select_keyboard(prefix: str) -> InlineKeyboardMarkup:
     rows = []
     for product_id in product_order:
@@ -4635,6 +4738,24 @@ def admin_reorder_selected_keyboard(product_id: str) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton("⬇️ Move Down", callback_data=f"admin_move_down_{product_id}")])
     rows.append([InlineKeyboardButton("⬅️ Back", callback_data="admin_reorder_menu")])
     return InlineKeyboardMarkup(rows)
+
+
+def admin_api_reorder_selected_keyboard(mapping: dict) -> InlineKeyboardMarkup:
+    normalize_shop_order()
+    api_product_id = str((mapping or {}).get("api_product_id") or "").strip()
+    item = api_product_shop_order_item(api_product_id)
+    token = api_shop_callback_token(api_product_id)
+    if item not in shop_order:
+        return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="admin_reorder_menu")]])
+    rows = []
+    if can_move_shop_order_item(item, -1):
+        rows.append([InlineKeyboardButton("⬆️ Move Up", callback_data=f"admin_api_move_up_{token}")])
+    if can_move_shop_order_item(item, 1):
+        rows.append([InlineKeyboardButton("⬇️ Move Down", callback_data=f"admin_api_move_down_{token}")])
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="admin_reorder_menu")])
+    return InlineKeyboardMarkup(rows)
+
+
 def promo_select_keyboard(prefix: str) -> InlineKeyboardMarkup:
     rows = []
     if not PROMO_CODES:
@@ -6218,31 +6339,53 @@ def api_shop_mapping_details_html(mapping: dict) -> str:
     return "Please check product information before purchase."
 
 
+def api_shop_product_row(mapping: dict, styled: bool = True) -> list:
+    if not is_api_shop_mapping_visible(mapping):
+        return []
+    api_product_id = str(mapping.get("api_product_id") or "").strip()
+    name = api_mapping_display_name(mapping)
+    selling_price = _buyer_api_numeric_value(mapping.get("selling_price"))
+    stock = _buyer_api_numeric_value(mapping.get("last_stock"))
+    out_of_stock = stock is not None and stock <= 0
+    if out_of_stock:
+        stock_label = "🔔 Notify Soon"
+    elif stock is None:
+        stock_label = "📦 Stock"
+    else:
+        stock_text = str(int(stock)) if float(stock).is_integer() else str(stock)
+        stock_label = f"📦 {stock_text} Pcs"
+    suffix = f" - {format_money(selling_price)} | {stock_label}"
+    label_prefix = product_label_prefix(mapping)
+    prefix_length = len(label_prefix) + 1 if label_prefix else 0
+    name_limit = max(8, 60 - prefix_length - len(suffix))
+    return [[make_product_inline_button(
+        mapping,
+        f"{name[:name_limit]}{suffix}",
+        callback_data=f"api_shop_view_{api_shop_callback_token(api_product_id)}",
+        style=("danger" if out_of_stock else "primary") if styled else None,
+    )]]
+
+
 def api_shop_product_rows(category_id: str, styled: bool = True) -> list:
     rows = []
     for mapping in enabled_api_shop_mappings(category_id):
-        api_product_id = str(mapping.get("api_product_id") or "").strip()
-        name = api_mapping_display_name(mapping)
-        selling_price = _buyer_api_numeric_value(mapping.get("selling_price"))
-        stock = _buyer_api_numeric_value(mapping.get("last_stock"))
-        out_of_stock = stock is not None and stock <= 0
-        if out_of_stock:
-            stock_label = "🔔 Notify Soon"
-        elif stock is None:
-            stock_label = "📦 Stock"
-        else:
-            stock_text = str(int(stock)) if float(stock).is_integer() else str(stock)
-            stock_label = f"📦 {stock_text} Pcs"
-        suffix = f" - {format_money(selling_price)} | {stock_label}"
-        label_prefix = product_label_prefix(mapping)
-        prefix_length = len(label_prefix) + 1 if label_prefix else 0
-        name_limit = max(8, 60 - prefix_length - len(suffix))
-        rows.append([make_product_inline_button(
-            mapping,
-            f"{name[:name_limit]}{suffix}",
-            callback_data=f"api_shop_view_{api_shop_callback_token(api_product_id)}",
-            style=("danger" if out_of_stock else "primary") if styled else None,
-        )])
+        rows.extend(api_shop_product_row(mapping, styled=styled))
+    return rows
+
+
+def ordered_category_product_rows(category_id: str, user_id: int = None, styled: bool = True) -> list:
+    normalize_shop_order()
+    rows = []
+    for item in shop_order:
+        if item.startswith("product:"):
+            product_id = item.split(":", 1)[1]
+            product = PRODUCTS.get(product_id)
+            if product and product.get("category_id") == category_id:
+                rows.extend(shop_product_rows([product_id], user_id, styled=styled))
+        elif item.startswith("api_product:"):
+            mapping = api_product_mapping_by_id(item.split(":", 1)[1])
+            if mapping and mapping.get("category_id") == category_id:
+                rows.extend(api_shop_product_row(mapping, styled=styled))
     return rows
 
 
@@ -6402,6 +6545,11 @@ def shop_categories_keyboard(user_id: int = None, styled: bool = True) -> Inline
             if product and product.get("category_id") == DEFAULT_CATEGORY_ID:
                 rows.extend(shop_product_rows([item_id], user_id, styled=styled))
             continue
+        if item_type == "api_product":
+            mapping = api_product_mapping_by_id(item_id)
+            if mapping and mapping.get("category_id") == DEFAULT_CATEGORY_ID:
+                rows.extend(api_shop_product_row(mapping, styled=styled))
+            continue
         category = CATEGORIES.get(item_id, {})
         if not category or item_id == DEFAULT_CATEGORY_ID:
             continue
@@ -6414,7 +6562,6 @@ def shop_categories_keyboard(user_id: int = None, styled: bool = True) -> Inline
                 style="primary" if styled else None,
             )
         ])
-    rows.extend(api_shop_product_rows(DEFAULT_CATEGORY_ID, styled=styled))
     rows.append([
         make_styled_inline_button(
             "🏠 Back to Menu",
@@ -6428,8 +6575,7 @@ def shop_categories_keyboard(user_id: int = None, styled: bool = True) -> Inline
 def shop_menu_keyboard(user_id: int = None, category_id: str = None, styled: bool = True) -> InlineKeyboardMarkup:
     normalize_categories()
     rows = [[InlineKeyboardButton("──── ⚡ AUTO DELIVERY ────", callback_data="noop")]]
-    rows.extend(shop_product_rows(get_category_product_ids(category_id), user_id, styled=styled))
-    rows.extend(api_shop_product_rows(category_id, styled=styled))
+    rows.extend(ordered_category_product_rows(category_id, user_id, styled=styled))
     if category_id and category_id != DEFAULT_CATEGORY_ID:
         rows.append([
             make_styled_inline_button(
@@ -9746,6 +9892,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             mapping["enabled"] = True
             message = "✅ <b>Mapped product enabled.</b>"
+        sync_api_product_shop_order(mapping)
         await edit_seller_api_callback_message(
             query,
             user_id,
@@ -9919,6 +10066,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "seller_api_shop_remove_confirm":
         mapping_key, mapping = selected_saved_api_shop_mapping(user_id)
         if mapping_key and mapping:
+            remove_api_product_shop_order_item(mapping.get("api_product_id"))
             api_product_mappings.pop(mapping_key, None)
         admin_temp.get(user_id, {}).pop("selected_api_mapping_key", None)
         page = int(admin_temp.get(user_id, {}).get("seller_api_shop_page", 0) or 0)
@@ -10183,6 +10331,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         product = selected_buyer_api_product(user_id)
         api_product_id = _buyer_api_product_id(product) if product else ""
         if api_product_id:
+            remove_api_product_shop_order_item(api_product_id)
             api_product_mappings.pop(api_product_id, None)
         admin_temp.get(user_id, {}).pop("pending_api_selling_price", None)
         await edit_seller_api_callback_message(
@@ -10772,7 +10921,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "admin_reorder_menu":
         reset_admin_temp(user_id)
         user_state[user_id] = {"step": "admin_reorder_pick"}
-        await send_inline_from_callback(query, "↕️ <b>Reorder in Shop</b>\n\nSelect a product below.", admin_product_select_keyboard("admin_pick_reorder"))
+        await send_inline_from_callback(query, "↕️ <b>Reorder in Shop</b>\n\nSelect a product below.", admin_shop_reorder_select_keyboard())
         return
 
     if data in {
@@ -11127,6 +11276,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_inline_from_callback(query, f"↕️ <b>Reorder Product</b>\n\nSelected: {PRODUCTS[product_id]['name']}", admin_reorder_selected_keyboard(product_id))
         return
 
+    if data.startswith("admin_pick_api_reorder_"):
+        mapping = find_api_shop_mapping(data.replace("admin_pick_api_reorder_", "", 1))
+        if not mapping:
+            await send_inline_from_callback(query, "❌ <b>Mapped product not found.</b>", admin_shop_reorder_select_keyboard())
+            return
+        user_state[user_id] = {"step": "admin_reorder_selected"}
+        await send_inline_from_callback(
+            query,
+            f"↕️ <b>Reorder API Product</b>\n\nSelected: {escape_html(api_mapping_display_name(mapping))}",
+            admin_api_reorder_selected_keyboard(mapping),
+        )
+        return
+
     if data.startswith("admin_move_up_"):
         product_id = data.replace("admin_move_up_", "")
         move_shop_order_item(f"product:{product_id}", -1)
@@ -11137,6 +11299,24 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         product_id = data.replace("admin_move_down_", "")
         move_shop_order_item(f"product:{product_id}", 1)
         await send_inline_from_callback(query, "✅ <b>Moved down.</b>", admin_reorder_selected_keyboard(product_id))
+        return
+
+    if data.startswith("admin_api_move_up_"):
+        mapping = find_api_shop_mapping(data.replace("admin_api_move_up_", "", 1))
+        if not mapping:
+            await send_inline_from_callback(query, "❌ <b>Mapped product not found.</b>", admin_shop_reorder_select_keyboard())
+            return
+        move_shop_order_item(api_product_shop_order_item(mapping.get("api_product_id")), -1)
+        await send_inline_from_callback(query, "✅ <b>Moved up.</b>", admin_api_reorder_selected_keyboard(mapping))
+        return
+
+    if data.startswith("admin_api_move_down_"):
+        mapping = find_api_shop_mapping(data.replace("admin_api_move_down_", "", 1))
+        if not mapping:
+            await send_inline_from_callback(query, "❌ <b>Mapped product not found.</b>", admin_shop_reorder_select_keyboard())
+            return
+        move_shop_order_item(api_product_shop_order_item(mapping.get("api_product_id")), 1)
+        await send_inline_from_callback(query, "✅ <b>Moved down.</b>", admin_api_reorder_selected_keyboard(mapping))
         return
 
     if data == "admin_confirm_add_product":
