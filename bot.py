@@ -381,6 +381,8 @@ category_order = [DEFAULT_CATEGORY_ID]
 next_category_number = 1
 shop_order = []
 api_product_mappings = {}
+seller_api_browser_cache = {}
+SELLER_API_BROWSER_CACHE_TTL_SECONDS = 300
 
 DASHBOARD_EMOJI_KEYS = (
     "shop",
@@ -3217,8 +3219,70 @@ def _seller_api_browser_temp(user_id: int) -> dict:
     return temp
 
 
-async def fetch_buyer_api_browser_page(user_id: int, page: int = 0):
-    products, total = await asyncio.to_thread(fetch_buyer_api_products)
+def _seller_api_browser_cache_entry(user_id: int, allow_expired: bool = False):
+    entry = seller_api_browser_cache.get(user_id)
+    if not isinstance(entry, dict) or not isinstance(entry.get("products"), list):
+        return None
+    fetched_at = entry.get("fetched_at")
+    ttl_seconds = entry.get("ttl_seconds", SELLER_API_BROWSER_CACHE_TTL_SECONDS)
+    try:
+        age_seconds = max(0.0, datetime.now().timestamp() - float(fetched_at))
+        is_valid = age_seconds < max(1, int(ttl_seconds))
+    except (TypeError, ValueError, OverflowError):
+        is_valid = False
+    if is_valid or allow_expired:
+        return entry
+    return None
+
+
+async def fetch_cached_buyer_api_products(user_id: int, force_refresh: bool = False):
+    temp = _seller_api_browser_temp(user_id)
+    cached = _seller_api_browser_cache_entry(user_id)
+    if cached is not None and not force_refresh:
+        temp["seller_api_cache_source"] = "Cached"
+        temp["seller_api_cache_fetched_at"] = cached.get("fetched_at")
+        temp.pop("seller_api_cache_warning", None)
+        return cached["products"], int(cached.get("total", len(cached["products"])))
+
+    stale_cache = _seller_api_browser_cache_entry(user_id, allow_expired=True)
+    try:
+        products, total = await asyncio.to_thread(fetch_buyer_api_products)
+    except Exception:
+        if stale_cache is None:
+            raise
+        temp["seller_api_cache_source"] = "Cached"
+        temp["seller_api_cache_fetched_at"] = stale_cache.get("fetched_at")
+        temp["seller_api_cache_warning"] = "API refresh failed. Showing cached data."
+        return stale_cache["products"], int(stale_cache.get("total", len(stale_cache["products"])))
+
+    fetched_at = datetime.now().timestamp()
+    seller_api_browser_cache[user_id] = {
+        "products": products,
+        "total": total,
+        "fetched_at": fetched_at,
+        "ttl_seconds": SELLER_API_BROWSER_CACHE_TTL_SECONDS,
+    }
+    temp["seller_api_cache_source"] = "Live"
+    temp["seller_api_cache_fetched_at"] = fetched_at
+    temp.pop("seller_api_cache_warning", None)
+    return products, total
+
+
+def _seller_api_cache_age_text(fetched_at) -> str:
+    try:
+        age_seconds = max(0, int(datetime.now().timestamp() - float(fetched_at)))
+    except (TypeError, ValueError, OverflowError):
+        return "Unknown"
+    if age_seconds < 60:
+        return "Just now"
+    age_minutes = age_seconds // 60
+    if age_minutes < 60:
+        return f"{age_minutes} min ago"
+    return f"{age_minutes // 60} hr ago"
+
+
+async def fetch_buyer_api_browser_page(user_id: int, page: int = 0, force_refresh: bool = False):
+    products, total = await fetch_cached_buyer_api_products(user_id, force_refresh=force_refresh)
     temp = _seller_api_browser_temp(user_id)
     filtered = filter_buyer_api_products(
         products,
@@ -3242,13 +3306,20 @@ def render_buyer_api_browser(products: list, api_total: int, page: int, total_pa
     }
     search_text = str(temp.get("seller_api_search") or "")
     filter_name = str(temp.get("seller_api_filter") or "all")
+    cache_source = str(temp.get("seller_api_cache_source") or "Cached")
+    cache_age = _seller_api_cache_age_text(temp.get("seller_api_cache_fetched_at"))
+    cache_warning = str(temp.get("seller_api_cache_warning") or "")
     return (
         "📦 <b>SELLER API PRODUCT BROWSER</b>\n\n"
         f"<b>API products:</b> {api_total}\n"
         f"<b>Matching products:</b> {len(products)}\n"
         f"<b>Page:</b> {page + 1}/{total_pages}\n"
         f"<b>Search:</b> {escape_html(search_text) if search_text else 'None'}\n"
-        f"<b>Filter:</b> {escape_html(filter_labels.get(filter_name, 'All'))}\n\n"
+        f"<b>Filter:</b> {escape_html(filter_labels.get(filter_name, 'All'))}\n"
+        f"<b>Data:</b> {escape_html(cache_source)}\n"
+        f"<b>Last fetched:</b> {escape_html(cache_age)}\n"
+        + (f"\n⚠️ {escape_html(cache_warning)}\n" if cache_warning else "")
+        + "\n"
         "Select a product below. These products are not visible in the user shop."
     )
 
@@ -3284,6 +3355,7 @@ def buyer_api_browser_keyboard(products: list, page: int, total_pages: int) -> I
         InlineKeyboardButton("🔎 Search", callback_data="seller_api_search"),
         InlineKeyboardButton("🧩 Filters", callback_data="seller_api_filters"),
     ])
+    rows.append([InlineKeyboardButton("🔄 Refresh API Products", callback_data="seller_api_refresh")])
     rows.append([InlineKeyboardButton("⬅️ Back", callback_data="seller_api_browser_back")])
     return InlineKeyboardMarkup(rows)
 
@@ -3450,9 +3522,13 @@ async def edit_seller_api_message_from_text(update: Update, context: ContextType
     remember_seller_api_browser_message(user_id, sent_message)
 
 
-async def send_buyer_api_browser(query, user_id: int, page: int = 0):
+async def send_buyer_api_browser(query, user_id: int, page: int = 0, force_refresh: bool = False):
     try:
-        products, total, safe_page, total_pages = await fetch_buyer_api_browser_page(user_id, page)
+        products, total, safe_page, total_pages = await fetch_buyer_api_browser_page(
+            user_id,
+            page,
+            force_refresh=force_refresh,
+        )
         user_state[user_id] = {"step": "seller_api_browser"}
         await edit_seller_api_callback_message(
             query,
@@ -8468,7 +8544,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "seller_api_browse":
         reset_admin_temp(user_id)
         _seller_api_browser_temp(user_id)
-        await send_buyer_api_browser(query, user_id, 0)
+        await send_buyer_api_browser(query, user_id, 0, force_refresh=True)
+        return
+
+    if data == "seller_api_refresh":
+        await send_buyer_api_browser(query, user_id, 0, force_refresh=True)
         return
 
     if data == "seller_api_browser_back":
