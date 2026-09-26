@@ -1860,6 +1860,41 @@ def add_api_order_record(
     return order
 
 
+def add_api_pending_support_order_record(
+    user_id: int,
+    mapping: dict,
+    qty: int,
+    unit_price: float,
+    total: float,
+    failure_category: str,
+    order_code: str = "",
+):
+    api_product_id = str(mapping.get("api_product_id") or "").strip()
+    order = {
+        "id": get_next_order_id(),
+        "user_id": user_id,
+        "product_id": api_product_id,
+        "product_type": "api",
+        "api_product_id": api_product_id,
+        "product": api_mapping_display_name(mapping),
+        "qty": qty,
+        "unit_price": unit_price,
+        "total": total,
+        "price_type": "Shop price",
+        "status": "pending_support",
+        "payment_type": "Wallet",
+        "failure_category": failure_category,
+        "created_at": now_dt(),
+        "updated_at": now_dt(),
+    }
+    if order_code:
+        order["payment_reference"] = order_code
+        order["seller_order_code"] = order_code
+    user_orders[user_id].append(order)
+    all_orders.append(order)
+    return order
+
+
 def add_transaction_record(user_id: int, tx_type: str, amount: float, status: str, meta=None):
     tx = {
         "id": get_next_tx_id(),
@@ -4923,6 +4958,8 @@ def format_order_status(status) -> str:
         "completed": "Completed",
         "pending": "Pending",
         "pending_manual": "Pending Manual",
+        "pending_support": "Pending Support",
+        "pending_manual_delivery": "Pending Manual Delivery",
         "pending_auto": "Pending Auto",
         "processing": "Processing",
         "rejected": "Rejected",
@@ -6493,6 +6530,7 @@ def api_purchase_failure_keyboard() -> InlineKeyboardMarkup:
 async def notify_admin_api_purchase_failure(
     bot,
     user_id: int,
+    order: dict,
     mapping: dict,
     quantity: int,
     unit_price: float,
@@ -6511,6 +6549,17 @@ async def notify_admin_api_purchase_failure(
         "config": "configuration error",
         "unknown": "unknown",
     }
+    reason_summaries = {
+        "insufficient_seller_balance": "Automatic fulfillment reported a balance-related issue.",
+        "out_of_stock": "Automatic fulfillment reported that stock was unavailable.",
+        "product_unavailable": "Automatic fulfillment reported that the product was unavailable.",
+        "timeout": "Automatic fulfillment timed out before a confirmed delivery response.",
+        "http_error": "Automatic fulfillment returned a network or HTTP error.",
+        "invalid_response": "Automatic fulfillment returned an invalid response.",
+        "empty_delivery": "Automatic fulfillment returned no deliverable items.",
+        "config": "Automatic fulfillment configuration is unavailable.",
+        "unknown": "Automatic fulfillment failed for an unknown reason.",
+    }
     profile = get_user_profile(user_id)
     username = str(profile.get("username") or "").strip().lstrip("@")
     username_text = f"@{username}" if username else "N/A"
@@ -6521,16 +6570,19 @@ async def notify_admin_api_purchase_failure(
     if category == "timeout":
         notes.append("Timeout may be ambiguous because the purchase endpoint has no documented idempotency key.")
     text = (
-        "⚠️ <b>MAPPED PRODUCT PURCHASE FAILED</b>\n\n"
+        "🚨 <b>API ORDER NEEDS SUPPORT</b>\n\n"
         f"<b>User ID:</b> <code>{user_id}</code>\n"
         f"<b>Username:</b> {escape_html(username_text)}\n"
+        f"<b>Order ID:</b> <code>{escape_html(order.get('id') or 'N/A')}</code>\n"
         f"<b>Product:</b> {escape_html(api_mapping_display_name(mapping))}\n"
         f"<b>API product ID:</b> <code>{escape_html(mapping.get('api_product_id') or 'N/A')}</code>\n"
         f"<b>Quantity:</b> {quantity}\n"
         f"<b>User unit price:</b> {format_money(unit_price)}\n"
-        f"<b>User total:</b> {format_money(total)}\n"
+        f"<b>Total paid:</b> {format_money(total)}\n"
         f"<b>Failure category:</b> {escape_html(category_labels[category])}\n"
-        f"<b>Order code:</b> <code>{escape_html(order_code or 'N/A')}</code>"
+        f"<b>Seller order code:</b> <code>{escape_html(order_code or 'N/A')}</code>\n"
+        f"<b>Reason summary:</b> {escape_html(reason_summaries[category])}\n"
+        "<b>Action needed:</b> deliver manually or refund."
     )
     if notes:
         text += "\n\n" + "\n".join(escape_html(note) for note in notes)
@@ -6555,10 +6607,37 @@ async def handle_api_purchase_failure(
     total: float,
     error,
 ):
+    category = api_purchase_failure_category(error)
+    order_code = str(getattr(error, "order_code", "") or "").strip()
+    user_wallet[user_id] -= total
+    update_user_profile(user_id)
+    order = add_api_pending_support_order_record(
+        user_id,
+        mapping,
+        quantity,
+        unit_price,
+        total,
+        category,
+        order_code,
+    )
+    add_transaction_record(
+        user_id,
+        "Wallet Purchase",
+        total,
+        "Completed",
+        {
+            "order_id": order["id"],
+            "product_type": "api",
+            "api_product_id": mapping.get("api_product_id"),
+            "qty": quantity,
+            "fulfillment_status": "pending_support",
+        },
+    )
     user_state[user_id] = {"step": "main"}
     await notify_admin_api_purchase_failure(
         context.bot,
         user_id,
+        order,
         mapping,
         quantity,
         unit_price,
@@ -6567,9 +6646,17 @@ async def handle_api_purchase_failure(
     )
     await context.bot.send_message(
         user_id,
-        "⚠️ This product is temporarily unavailable. Please contact support or try again later.",
+        "✅ <b>Payment received</b>\n\n"
+        "⚠️ Your order is now pending manual support review.\n\n"
+        f"<b>Order ID:</b> <code>{order['id']}</code>\n"
+        f"<b>Product:</b> {escape_html(api_mapping_display_name(mapping))}\n"
+        f"<b>Quantity:</b> {quantity}\n"
+        f"<b>Total Paid:</b> {format_money(total)}\n\n"
+        "Please contact support to receive your product or further assistance.",
         reply_markup=api_purchase_failure_keyboard(),
+        parse_mode="HTML",
     )
+    return order
 
 
 async def continue_api_shop_purchase(context, user_id: int, callback_token: str, quantity: int):
