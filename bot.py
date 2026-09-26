@@ -380,6 +380,7 @@ CATEGORIES = {
 category_order = [DEFAULT_CATEGORY_ID]
 next_category_number = 1
 shop_order = []
+api_product_mappings = {}
 
 DASHBOARD_EMOJI_KEYS = (
     "shop",
@@ -543,6 +544,7 @@ def build_state_snapshot():
         "CATEGORIES": CATEGORIES,
         "category_order": category_order,
         "shop_order": shop_order,
+        "api_product_mappings": api_product_mappings,
         "dashboard_custom_emoji_ids": dashboard_custom_emoji_ids,
         "dashboard_header_custom_emoji_ids": dashboard_header_custom_emoji_ids,
         "PROMO_CODES": PROMO_CODES,
@@ -609,6 +611,13 @@ def apply_loaded_state(data: dict):
         shop_order.extend(loaded_shop_order)
     if "normalize_shop_order" in globals():
         normalize_shop_order()
+
+    loaded_api_product_mappings = data.get("api_product_mappings", {})
+    api_product_mappings.clear()
+    if isinstance(loaded_api_product_mappings, dict):
+        for api_product_id, mapping in loaded_api_product_mappings.items():
+            if isinstance(mapping, dict) and str(api_product_id).strip():
+                api_product_mappings[str(api_product_id)] = dict(mapping)
 
     loaded_dashboard_emojis = data.get("dashboard_custom_emoji_ids", {})
     if isinstance(loaded_dashboard_emojis, dict):
@@ -2987,6 +2996,7 @@ def admin_menu() -> ReplyKeyboardMarkup:
 
 def seller_api_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📦 Browse API Products", callback_data="seller_api_browse")],
         [InlineKeyboardButton("🧪 Test Connection", callback_data="seller_api_test")],
         [InlineKeyboardButton("💰 Check API Balance", callback_data="seller_api_balance")],
         [InlineKeyboardButton("📦 Fetch API Products", callback_data="seller_api_products")],
@@ -3103,6 +3113,304 @@ def extract_buyer_api_product_fields(product: dict) -> dict:
         "requires_email": requires_email,
         "slot_product": slot_product,
     }
+
+
+def _buyer_api_numeric_value(value):
+    if isinstance(value, bool) or value is None or value == "":
+        return None
+    if isinstance(value, dict):
+        for key in ("amount", "price", "usd", "value", "cost", "sellingPrice"):
+            if key in value:
+                parsed = _buyer_api_numeric_value(value.get(key))
+                if parsed is not None:
+                    return parsed
+        return None
+    cleaned = str(value).strip().replace(",", "").replace("$", "")
+    for suffix in ("USDT", "USD"):
+        if cleaned.upper().endswith(suffix):
+            cleaned = cleaned[:-len(suffix)].strip()
+    parsed = safe_decimal(cleaned)
+    if parsed is None or not parsed.is_finite():
+        return None
+    return float(parsed)
+
+
+def _buyer_api_bool_value(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value or "").strip().lower()
+    if text in {"true", "yes", "1", "on", "slot"}:
+        return True
+    if text in {"false", "no", "0", "off", "none", ""}:
+        return False
+    return bool(text)
+
+
+def _buyer_api_product_id(product: dict) -> str:
+    value = extract_buyer_api_product_fields(product).get("id") if isinstance(product, dict) else None
+    return str(value).strip() if value not in (None, "") else ""
+
+
+def _api_product_mapping_snapshot(product: dict) -> dict:
+    fields = extract_buyer_api_product_fields(product)
+    stock = _buyer_api_numeric_value(fields.get("stock"))
+    if stock is not None and float(stock).is_integer():
+        stock = int(stock)
+    return {
+        "api_product_id": _buyer_api_product_id(product),
+        "name": str(fields.get("name") or "N/A"),
+        "api_cost": _buyer_api_numeric_value(fields.get("price")),
+        "requires_customer_email": _buyer_api_bool_value(fields.get("requires_email")),
+        "is_slot_product": _buyer_api_bool_value(fields.get("slot_product")),
+        "last_stock": stock,
+        "last_seen_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def update_api_product_mapping(product: dict, **changes) -> dict:
+    api_product_id = _buyer_api_product_id(product)
+    if not api_product_id:
+        raise ValueError("API product ID is missing.")
+    mapping = dict(api_product_mappings.get(api_product_id) or {})
+    mapping.setdefault("enabled", False)
+    mapping.setdefault("selling_price", None)
+    mapping.setdefault("category_id", None)
+    mapping.update(_api_product_mapping_snapshot(product))
+    mapping.update(changes)
+    api_product_mappings[api_product_id] = mapping
+    return mapping
+
+
+def filter_buyer_api_products(products: list, search: str = "", filter_name: str = "all") -> list:
+    search_text = str(search or "").strip().casefold()
+    filtered = []
+    for product in products:
+        if not isinstance(product, dict):
+            continue
+        fields = extract_buyer_api_product_fields(product)
+        api_product_id = _buyer_api_product_id(product)
+        product_name = str(fields.get("name") or "")
+        if search_text and search_text not in product_name.casefold() and search_text not in api_product_id.casefold():
+            continue
+
+        stock = _buyer_api_numeric_value(fields.get("stock"))
+        mapping = api_product_mappings.get(api_product_id, {})
+        if filter_name == "in_stock" and not (stock is not None and stock > 0):
+            continue
+        if filter_name == "email" and not _buyer_api_bool_value(fields.get("requires_email")):
+            continue
+        if filter_name == "slot" and not _buyer_api_bool_value(fields.get("slot_product")):
+            continue
+        if filter_name == "enabled" and not bool(mapping.get("enabled")):
+            continue
+        filtered.append(product)
+    return filtered
+
+
+def _seller_api_browser_temp(user_id: int) -> dict:
+    temp = admin_temp.setdefault(user_id, {})
+    temp.setdefault("seller_api_search", "")
+    temp.setdefault("seller_api_filter", "all")
+    temp.setdefault("seller_api_page", 0)
+    return temp
+
+
+async def fetch_buyer_api_browser_page(user_id: int, page: int = 0):
+    products, total = await asyncio.to_thread(fetch_buyer_api_products)
+    temp = _seller_api_browser_temp(user_id)
+    filtered = filter_buyer_api_products(
+        products,
+        temp.get("seller_api_search", ""),
+        temp.get("seller_api_filter", "all"),
+    )
+    total_pages = max(1, (len(filtered) + 9) // 10)
+    safe_page = max(0, min(int(page), total_pages - 1))
+    temp["seller_api_page"] = safe_page
+    return filtered, total, safe_page, total_pages
+
+
+def render_buyer_api_browser(products: list, api_total: int, page: int, total_pages: int, user_id: int) -> str:
+    temp = _seller_api_browser_temp(user_id)
+    filter_labels = {
+        "all": "All",
+        "in_stock": "In stock only",
+        "email": "Requires email",
+        "slot": "Slot products",
+        "enabled": "Enabled mapped products",
+    }
+    search_text = str(temp.get("seller_api_search") or "")
+    filter_name = str(temp.get("seller_api_filter") or "all")
+    return (
+        "📦 <b>SELLER API PRODUCT BROWSER</b>\n\n"
+        f"<b>API products:</b> {api_total}\n"
+        f"<b>Matching products:</b> {len(products)}\n"
+        f"<b>Page:</b> {page + 1}/{total_pages}\n"
+        f"<b>Search:</b> {escape_html(search_text) if search_text else 'None'}\n"
+        f"<b>Filter:</b> {escape_html(filter_labels.get(filter_name, 'All'))}\n\n"
+        "Select a product below. These products are not visible in the user shop."
+    )
+
+
+def buyer_api_browser_keyboard(products: list, page: int, total_pages: int) -> InlineKeyboardMarkup:
+    rows = []
+    start = page * 10
+    for absolute_index, product in enumerate(products[start:start + 10], start=start):
+        fields = extract_buyer_api_product_fields(product)
+        name = str(fields.get("name") or fields.get("id") or "Unnamed product")
+        cost = _buyer_api_numeric_value(fields.get("price"))
+        stock = _buyer_api_numeric_value(fields.get("stock"))
+        markers = ""
+        if _buyer_api_bool_value(fields.get("requires_email")):
+            markers += "📧"
+        if _buyer_api_bool_value(fields.get("slot_product")):
+            markers += "🧩"
+        prefix = f"{markers} " if markers else ""
+        cost_text = f"${cost:.2f}" if cost is not None else "N/A"
+        stock_text = str(int(stock)) if stock is not None and float(stock).is_integer() else str(stock if stock is not None else "N/A")
+        suffix = f" | Cost: {cost_text} | Stock: {stock_text}"
+        name_limit = max(8, 64 - len(prefix) - len(suffix))
+        label = f"{prefix}{name[:name_limit]}{suffix}"[:64]
+        rows.append([InlineKeyboardButton(label, callback_data=f"seller_api_view_{absolute_index}")])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"seller_api_page_{page - 1}"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton("➡️ Next", callback_data=f"seller_api_page_{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([
+        InlineKeyboardButton("🔎 Search", callback_data="seller_api_search"),
+        InlineKeyboardButton("🧩 Filters", callback_data="seller_api_filters"),
+    ])
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="seller_api_browser_back")])
+    return InlineKeyboardMarkup(rows)
+
+
+def buyer_api_filters_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📦 All", callback_data="seller_api_filter_all")],
+        [InlineKeyboardButton("✅ In Stock Only", callback_data="seller_api_filter_in_stock")],
+        [InlineKeyboardButton("📧 Requires Email", callback_data="seller_api_filter_email")],
+        [InlineKeyboardButton("🧩 Slot Products", callback_data="seller_api_filter_slot")],
+        [InlineKeyboardButton("🔗 Enabled Mapped Products", callback_data="seller_api_filter_enabled")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="seller_api_browser_return")],
+    ])
+
+
+def render_buyer_api_product_detail(product: dict) -> str:
+    fields = extract_buyer_api_product_fields(product)
+    api_product_id = _buyer_api_product_id(product)
+    mapping = api_product_mappings.get(api_product_id)
+    category_id = mapping.get("category_id") if isinstance(mapping, dict) else None
+    category = CATEGORIES.get(category_id, {}) if category_id else {}
+    category_name = category.get("name") if category else None
+    selling_price = mapping.get("selling_price") if isinstance(mapping, dict) else None
+    selling_price_value = _buyer_api_numeric_value(selling_price)
+    mapping_status = "Enabled" if mapping and mapping.get("enabled") else "Disabled" if mapping else "Not mapped"
+    description = _first_buyer_api_product_value(
+        product,
+        ("description", "product_description", "details", "summary"),
+    )
+    cost = _buyer_api_numeric_value(fields.get("price"))
+    stock = _buyer_api_numeric_value(fields.get("stock"))
+    cost_text = f"${cost:.2f}" if cost is not None else "N/A"
+    stock_text = int(stock) if stock is not None and float(stock).is_integer() else stock
+    return (
+        "📦 <b>API PRODUCT DETAILS</b>\n\n"
+        f"<b>API Product ID:</b> <code>{escape_html(api_product_id or 'N/A')}</code>\n"
+        f"<b>Product name:</b> {escape_html(str(fields.get('name') or 'N/A'))}\n"
+        f"<b>Seller/API cost:</b> {cost_text}\n"
+        f"<b>Stock:</b> {_format_buyer_api_value(stock_text)}\n"
+        f"<b>Requires customer email:</b> {'Yes' if _buyer_api_bool_value(fields.get('requires_email')) else 'No'}\n"
+        f"<b>Slot product:</b> {'Yes' if _buyer_api_bool_value(fields.get('slot_product')) else 'No'}\n"
+        f"<b>Description:</b> {_format_buyer_api_value(description, 600)}\n\n"
+        f"<b>Mapping status:</b> {mapping_status}\n"
+        f"<b>Category:</b> {escape_html(str(category_name or 'Not selected'))}\n"
+        f"<b>Selling price:</b> {format_money(selling_price_value) if selling_price_value is not None else 'Not set'}"
+    )
+
+
+def buyer_api_product_detail_keyboard(product: dict) -> InlineKeyboardMarkup:
+    api_product_id = _buyer_api_product_id(product)
+    mapping = api_product_mappings.get(api_product_id, {})
+    toggle_text = "❌ Disable" if mapping.get("enabled") else "✅ Enable"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(toggle_text, callback_data="seller_api_mapping_toggle")],
+        [InlineKeyboardButton("📁 Map Category", callback_data="seller_api_mapping_category")],
+        [InlineKeyboardButton("💲 Set Selling Price", callback_data="seller_api_mapping_price")],
+        [InlineKeyboardButton("🧹 Clear Mapping", callback_data="seller_api_mapping_clear")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="seller_api_browser_return")],
+    ])
+
+
+def buyer_api_mapping_category_keyboard() -> InlineKeyboardMarkup:
+    rows = []
+    seen = set()
+    for category_id in [*category_order, *CATEGORIES.keys()]:
+        if category_id in seen or category_id not in CATEGORIES:
+            continue
+        seen.add(category_id)
+        category = CATEGORIES[category_id]
+        rows.append([
+            InlineKeyboardButton(
+                f"📁 {category.get('name', category_id)}",
+                callback_data=f"seller_api_mapping_cat_{category_id}",
+            )
+        ])
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="seller_api_mapping_detail")])
+    return InlineKeyboardMarkup(rows)
+
+
+def buyer_api_price_warning_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚠️ Confirm Lower Price", callback_data="seller_api_price_confirm_lower")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="seller_api_mapping_detail")],
+    ])
+
+
+def selected_buyer_api_product(user_id: int):
+    product = admin_temp.get(user_id, {}).get("selected_api_product")
+    return product if isinstance(product, dict) else None
+
+
+def buyer_api_mapping_enable_errors(product: dict) -> list:
+    api_product_id = _buyer_api_product_id(product)
+    if not api_product_id:
+        return ["API product ID"]
+    mapping = api_product_mappings.get(api_product_id)
+    missing = []
+    if not mapping or mapping.get("category_id") not in CATEGORIES:
+        missing.append("category")
+    selling_price = _buyer_api_numeric_value(mapping.get("selling_price") if mapping else None)
+    if selling_price is None or selling_price <= 0:
+        missing.append("selling price")
+    return missing
+
+
+async def send_buyer_api_browser(query, user_id: int, page: int = 0):
+    try:
+        products, total, safe_page, total_pages = await fetch_buyer_api_browser_page(user_id, page)
+        user_state[user_id] = {"step": "seller_api_browser"}
+        await send_inline_from_callback(
+            query,
+            render_buyer_api_browser(products, total, safe_page, total_pages, user_id),
+            buyer_api_browser_keyboard(products, safe_page, total_pages),
+        )
+    except BuyerAPIError as error:
+        await send_inline_from_callback(
+            query,
+            f"❌ <b>API PRODUCT BROWSER FAILED</b>\n\n{escape_html(str(error))}",
+            seller_api_keyboard(),
+        )
+    except Exception as error:
+        print(f"Seller API product browser failed: {type(error).__name__}")
+        await send_inline_from_callback(
+            query,
+            "❌ <b>API PRODUCT BROWSER FAILED</b>\n\nUnexpected Seller API error.",
+            seller_api_keyboard(),
+        )
 
 
 def _buyer_api_key_list(value, limit: int) -> str:
@@ -7109,6 +7417,69 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+    if step == "seller_api_search_input" and is_admin(user_id):
+        temp = _seller_api_browser_temp(user_id)
+        temp["seller_api_search"] = "" if text.casefold() in {"clear", "none", "0"} else text[:100]
+        user_state[user_id] = {"step": "seller_api_browser"}
+        try:
+            products, total, page, total_pages = await fetch_buyer_api_browser_page(user_id, 0)
+            await update.message.reply_text(
+                render_buyer_api_browser(products, total, page, total_pages, user_id),
+                reply_markup=buyer_api_browser_keyboard(products, page, total_pages),
+                parse_mode="HTML",
+            )
+        except BuyerAPIError as error:
+            await update.message.reply_text(
+                f"❌ <b>API PRODUCT SEARCH FAILED</b>\n\n{escape_html(str(error))}",
+                reply_markup=seller_api_keyboard(),
+                parse_mode="HTML",
+            )
+        except Exception as error:
+            print(f"Seller API product search failed: {type(error).__name__}")
+            await update.message.reply_text(
+                "❌ <b>API PRODUCT SEARCH FAILED</b>\n\nUnexpected Seller API error.",
+                reply_markup=seller_api_keyboard(),
+                parse_mode="HTML",
+            )
+        return
+
+    if step == "seller_api_price_input" and is_admin(user_id):
+        product = admin_temp.get(user_id, {}).get("selected_api_product")
+        if not isinstance(product, dict):
+            await update.message.reply_text(
+                "❌ API product selection expired. Open the API product browser again.",
+                reply_markup=seller_api_keyboard(),
+            )
+            return
+        selling_price = safe_decimal(text)
+        if selling_price is None or not selling_price.is_finite() or selling_price <= 0:
+            await update.message.reply_text(
+                "❌ Selling price must be a number greater than 0.",
+                reply_markup=buyer_api_product_detail_keyboard(product),
+            )
+            return
+        api_cost = _buyer_api_numeric_value(extract_buyer_api_product_fields(product).get("price"))
+        if api_cost is not None and selling_price < safe_decimal(api_cost):
+            admin_temp[user_id]["pending_api_selling_price"] = float(selling_price)
+            user_state[user_id] = {"step": "seller_api_price_confirm"}
+            await update.message.reply_text(
+                "⚠️ <b>Selling price is lower than API cost. This may cause loss. Confirm?</b>\n\n"
+                f"<b>API cost:</b> {format_money(api_cost)}\n"
+                f"<b>Selling price:</b> {format_money(float(selling_price))}",
+                reply_markup=buyer_api_price_warning_keyboard(),
+                parse_mode="HTML",
+            )
+            return
+        update_api_product_mapping(product, selling_price=float(selling_price))
+        admin_temp[user_id].pop("pending_api_selling_price", None)
+        user_state[user_id] = {"step": "seller_api_product_detail"}
+        await update.message.reply_text(
+            "✅ <b>Selling price saved.</b>\n\n" + render_buyer_api_product_detail(product),
+            reply_markup=buyer_api_product_detail_keyboard(product),
+            parse_mode="HTML",
+        )
+        return
+
     if step in {"dashboard_emoji_input", "dashboard_header_emoji_input"}:
         await handle_dashboard_emoji_message(update, user_id)
         return
@@ -8025,6 +8396,223 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "seller_api_debug":
         await send_inline_from_callback(query, render_seller_api_debug_config(), seller_api_keyboard())
+        return
+
+    if data == "seller_api_browse":
+        reset_admin_temp(user_id)
+        _seller_api_browser_temp(user_id)
+        await send_buyer_api_browser(query, user_id, 0)
+        return
+
+    if data == "seller_api_browser_back":
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "seller_api_admin"}
+        await send_inline_from_callback(query, render_seller_api_panel(), seller_api_keyboard())
+        return
+
+    if data == "seller_api_browser_return":
+        page = int(_seller_api_browser_temp(user_id).get("seller_api_page", 0) or 0)
+        await send_buyer_api_browser(query, user_id, page)
+        return
+
+    if data.startswith("seller_api_page_"):
+        try:
+            page = int(data.replace("seller_api_page_", "", 1))
+        except ValueError:
+            page = 0
+        await send_buyer_api_browser(query, user_id, page)
+        return
+
+    if data == "seller_api_search":
+        user_state[user_id] = {"step": "seller_api_search_input"}
+        await send_inline_from_callback(
+            query,
+            "🔎 <b>SEARCH API PRODUCTS</b>\n\n"
+            "Send a product name or API product ID.\n"
+            "Send <code>clear</code> to remove the current search.",
+            InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="seller_api_browser_return")]]),
+        )
+        return
+
+    if data == "seller_api_filters":
+        await send_inline_from_callback(
+            query,
+            "🧩 <b>FILTER API PRODUCTS</b>\n\nChoose a filter below.",
+            buyer_api_filters_keyboard(),
+        )
+        return
+
+    if data.startswith("seller_api_filter_"):
+        filter_name = data.replace("seller_api_filter_", "", 1)
+        if filter_name not in {"all", "in_stock", "email", "slot", "enabled"}:
+            filter_name = "all"
+        temp = _seller_api_browser_temp(user_id)
+        temp["seller_api_filter"] = filter_name
+        temp["seller_api_page"] = 0
+        await send_buyer_api_browser(query, user_id, 0)
+        return
+
+    if data.startswith("seller_api_view_"):
+        try:
+            product_index = int(data.replace("seller_api_view_", "", 1))
+            products, _, _, _ = await fetch_buyer_api_browser_page(
+                user_id,
+                int(_seller_api_browser_temp(user_id).get("seller_api_page", 0) or 0),
+            )
+            if product_index < 0 or product_index >= len(products):
+                raise IndexError
+            product = products[product_index]
+        except (ValueError, IndexError):
+            await send_inline_from_callback(
+                query,
+                "❌ <b>API product was not found.</b>",
+                seller_api_keyboard(),
+            )
+            return
+        except BuyerAPIError as error:
+            await send_inline_from_callback(
+                query,
+                f"❌ <b>API PRODUCT FETCH FAILED</b>\n\n{escape_html(str(error))}",
+                seller_api_keyboard(),
+            )
+            return
+        except Exception as error:
+            print(f"Seller API product detail fetch failed: {type(error).__name__}")
+            await send_inline_from_callback(
+                query,
+                "❌ <b>API PRODUCT FETCH FAILED</b>\n\nUnexpected Seller API error.",
+                seller_api_keyboard(),
+            )
+            return
+        temp = _seller_api_browser_temp(user_id)
+        temp["selected_api_product"] = product
+        temp["seller_api_page"] = max(0, product_index // 10)
+        user_state[user_id] = {"step": "seller_api_product_detail"}
+        await send_inline_from_callback(
+            query,
+            render_buyer_api_product_detail(product),
+            buyer_api_product_detail_keyboard(product),
+        )
+        return
+
+    if data == "seller_api_mapping_detail":
+        product = selected_buyer_api_product(user_id)
+        if not product:
+            await send_inline_from_callback(
+                query,
+                "❌ <b>API product selection expired.</b>",
+                seller_api_keyboard(),
+            )
+            return
+        admin_temp.get(user_id, {}).pop("pending_api_selling_price", None)
+        user_state[user_id] = {"step": "seller_api_product_detail"}
+        await send_inline_from_callback(
+            query,
+            render_buyer_api_product_detail(product),
+            buyer_api_product_detail_keyboard(product),
+        )
+        return
+
+    if data == "seller_api_mapping_category":
+        product = selected_buyer_api_product(user_id)
+        if not product:
+            await send_inline_from_callback(query, "❌ <b>API product selection expired.</b>", seller_api_keyboard())
+            return
+        await send_inline_from_callback(
+            query,
+            "📁 <b>MAP API PRODUCT CATEGORY</b>\n\nSelect an existing local category.",
+            buyer_api_mapping_category_keyboard(),
+        )
+        return
+
+    if data.startswith("seller_api_mapping_cat_"):
+        category_id = data.replace("seller_api_mapping_cat_", "", 1)
+        product = selected_buyer_api_product(user_id)
+        if not product or category_id not in CATEGORIES:
+            await send_inline_from_callback(
+                query,
+                "❌ <b>API product or category was not found.</b>",
+                seller_api_keyboard(),
+            )
+            return
+        update_api_product_mapping(product, category_id=category_id)
+        await send_inline_from_callback(
+            query,
+            "✅ <b>Category mapping saved.</b>\n\n" + render_buyer_api_product_detail(product),
+            buyer_api_product_detail_keyboard(product),
+        )
+        return
+
+    if data == "seller_api_mapping_price":
+        product = selected_buyer_api_product(user_id)
+        if not product:
+            await send_inline_from_callback(query, "❌ <b>API product selection expired.</b>", seller_api_keyboard())
+            return
+        admin_temp.get(user_id, {}).pop("pending_api_selling_price", None)
+        user_state[user_id] = {"step": "seller_api_price_input"}
+        await send_inline_from_callback(
+            query,
+            "💲 <b>SET API PRODUCT SELLING PRICE</b>\n\nSend a selling price greater than 0.",
+            InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="seller_api_mapping_detail")]]),
+        )
+        return
+
+    if data == "seller_api_price_confirm_lower":
+        product = selected_buyer_api_product(user_id)
+        pending_price = admin_temp.get(user_id, {}).pop("pending_api_selling_price", None)
+        if not product or _buyer_api_numeric_value(pending_price) is None or float(pending_price) <= 0:
+            await send_inline_from_callback(query, "❌ <b>Pending selling price expired.</b>", seller_api_keyboard())
+            return
+        update_api_product_mapping(product, selling_price=float(pending_price))
+        user_state[user_id] = {"step": "seller_api_product_detail"}
+        await send_inline_from_callback(
+            query,
+            "✅ <b>Lower selling price confirmed and saved.</b>\n\n" + render_buyer_api_product_detail(product),
+            buyer_api_product_detail_keyboard(product),
+        )
+        return
+
+    if data == "seller_api_mapping_toggle":
+        product = selected_buyer_api_product(user_id)
+        api_product_id = _buyer_api_product_id(product) if product else ""
+        mapping = api_product_mappings.get(api_product_id)
+        if not product or not api_product_id:
+            await send_inline_from_callback(query, "❌ <b>API product ID is missing.</b>", seller_api_keyboard())
+            return
+        if mapping and mapping.get("enabled"):
+            update_api_product_mapping(product, enabled=False)
+            message = "✅ <b>API product disabled.</b>"
+        else:
+            missing = buyer_api_mapping_enable_errors(product)
+            if missing:
+                await send_inline_from_callback(
+                    query,
+                    "❌ <b>Cannot enable API product.</b>\n\nMissing: " + escape_html(", ".join(missing)),
+                    buyer_api_product_detail_keyboard(product),
+                )
+                return
+            update_api_product_mapping(product, enabled=True)
+            message = "✅ <b>API product enabled for future shop integration.</b>"
+        await send_inline_from_callback(
+            query,
+            message + "\n\n" + render_buyer_api_product_detail(product),
+            buyer_api_product_detail_keyboard(product),
+        )
+        return
+
+    if data == "seller_api_mapping_clear":
+        product = selected_buyer_api_product(user_id)
+        api_product_id = _buyer_api_product_id(product) if product else ""
+        if api_product_id:
+            api_product_mappings.pop(api_product_id, None)
+        admin_temp.get(user_id, {}).pop("pending_api_selling_price", None)
+        await send_inline_from_callback(
+            query,
+            "🧹 <b>API product mapping cleared.</b>\n\n" + (
+                render_buyer_api_product_detail(product) if product else "API product selection expired."
+            ),
+            buyer_api_product_detail_keyboard(product) if product else seller_api_keyboard(),
+        )
         return
 
     if data == "seller_api_test":
