@@ -6,6 +6,7 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import random
+import re
 import string
 import requests
 from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_UP
@@ -382,6 +383,7 @@ next_category_number = 1
 shop_order = []
 api_product_mappings = {}
 seller_api_browser_cache = {}
+api_purchase_in_progress = set()
 SELLER_API_BROWSER_CACHE_TTL_SECONDS = 300
 
 DASHBOARD_EMOJI_KEYS = (
@@ -1189,6 +1191,71 @@ def _buyer_api_get(path: str, params: dict = None):
     return payload
 
 
+def purchase_buyer_api_product(api_product_id: str, quantity: int, customer_email: str = None) -> dict:
+    """Place one external purchase and return only the fulfillment fields the bot needs."""
+    _validate_buyer_api_config()
+    payload = {
+        "key": BUYER_API_KEY,
+        "product_id": str(api_product_id),
+        "quantity": int(quantity),
+        "lang": "en",
+    }
+    if customer_email:
+        payload["customer_email"] = str(customer_email).strip()
+    try:
+        response = requests.post(
+            buyer_api_endpoint("/api/telegram-buyer/purchase"),
+            json=payload,
+            timeout=30,
+        )
+    except requests.Timeout as exc:
+        raise BuyerAPIError("Purchase request timed out.") from exc
+    except requests.ConnectionError as exc:
+        raise BuyerAPIError("Could not connect to the purchase service.") from exc
+    except requests.RequestException as exc:
+        raise BuyerAPIError("Purchase request failed.") from exc
+
+    if not response.ok:
+        raise BuyerAPIError(f"Purchase service returned HTTP {response.status_code}.")
+    try:
+        response_payload = response.json()
+    except ValueError as exc:
+        raise BuyerAPIError("Purchase service returned invalid JSON.") from exc
+    if not isinstance(response_payload, dict):
+        raise BuyerAPIError("Purchase service returned an unexpected response format.")
+
+    result = _buyer_api_data(response_payload)
+    result = result if isinstance(result, dict) else response_payload
+    success = response_payload.get("success")
+    if success is None:
+        success = result.get("success")
+    if success is not True:
+        raise BuyerAPIError("Purchase service did not complete the order.")
+
+    accounts = result.get("accounts", response_payload.get("accounts"))
+    if not isinstance(accounts, list):
+        account = result.get("account", response_payload.get("account"))
+        accounts = [account] if isinstance(account, (str, int, float)) else []
+    delivered_items = [str(item) for item in accounts if item not in (None, "") and str(item).strip()]
+    if not delivered_items:
+        raise BuyerAPIError("Purchase completed without deliverable items.")
+
+    order_code = result.get("orderCode", response_payload.get("orderCode"))
+    remaining_stock = None
+    for source in (result, response_payload):
+        for key in ("remainingStock", "remaining_stock", "stock", "available"):
+            if key in source:
+                remaining_stock = _buyer_api_numeric_value(source.get(key))
+                break
+        if remaining_stock is not None:
+            break
+    return {
+        "order_code": str(order_code).strip() if order_code not in (None, "") else "",
+        "accounts": delivered_items,
+        "remaining_stock": remaining_stock,
+    }
+
+
 def _safe_buyer_api_error_body(response) -> str:
     try:
         payload = response.json()
@@ -1705,6 +1772,41 @@ def add_order_record(
     }
     if delivered_items is not None:
         order["delivered_items"] = snapshot_delivered_items(delivered_items)
+    user_orders[user_id].append(order)
+    all_orders.append(order)
+    return order
+
+
+def add_api_order_record(
+    user_id: int,
+    mapping: dict,
+    qty: int,
+    unit_price: float,
+    total: float,
+    delivered_items: list,
+    order_code: str = "",
+):
+    api_product_id = str(mapping.get("api_product_id") or "").strip()
+    order = {
+        "id": get_next_order_id(),
+        "user_id": user_id,
+        "product_id": api_product_id,
+        "product_type": "api",
+        "api_product_id": api_product_id,
+        "product": api_mapping_display_name(mapping),
+        "qty": qty,
+        "unit_price": unit_price,
+        "total": total,
+        "price_type": "Shop price",
+        "status": "Completed",
+        "payment_type": "Wallet",
+        "delivered_items": snapshot_delivered_items(delivered_items),
+        "created_at": now_dt(),
+        "updated_at": now_dt(),
+    }
+    if order_code:
+        order["payment_reference"] = order_code
+        order["seller_order_code"] = order_code
     user_orders[user_id].append(order)
     all_orders.append(order)
     return order
@@ -6005,6 +6107,32 @@ def find_api_shop_mapping(callback_token: str):
     return None
 
 
+def api_shop_mapping_stock(mapping: dict):
+    stock = _buyer_api_numeric_value((mapping or {}).get("last_stock"))
+    if stock is None:
+        return None
+    return max(0, int(stock))
+
+
+def api_shop_mapping_price(mapping: dict):
+    price = _buyer_api_numeric_value((mapping or {}).get("selling_price"))
+    return float(price) if price is not None and price > 0 else None
+
+
+def api_shop_mapping_details_html(mapping: dict) -> str:
+    plain_details = str((mapping or {}).get("details") or "").strip()
+    rich_details = (mapping or {}).get("details_rich")
+    if isinstance(rich_details, dict):
+        rich_text = rich_details.get("text")
+        if isinstance(rich_text, str) and rich_text.strip():
+            rendered = render_serialized_entities_html(rich_text, rich_details.get("entities"))
+            if rendered:
+                return rendered
+    if plain_details:
+        return escape_html(plain_details)
+    return "Please check product information before purchase."
+
+
 def api_shop_product_rows(category_id: str, styled: bool = True) -> list:
     rows = []
     for mapping in enabled_api_shop_mappings(category_id):
@@ -6037,8 +6165,7 @@ def render_api_shop_product_details(mapping: dict) -> str:
     name = api_mapping_display_name(mapping)
     selling_price = _buyer_api_numeric_value(mapping.get("selling_price"))
     stock = _buyer_api_numeric_value(mapping.get("last_stock"))
-    details = str(mapping.get("details") or "").strip()
-    details_text = details if details else "Please check product information before purchase."
+    details_text = api_shop_mapping_details_html(mapping)
     if stock is None:
         stock_text = "N/A"
     elif float(stock).is_integer():
@@ -6052,15 +6179,23 @@ def render_api_shop_product_details(mapping: dict) -> str:
         f"<b>Stock:</b> {escape_html(stock_text)}{' pcs' if stock is not None else ''}\n"
         f"<b>Requires customer email:</b> {'Yes' if _buyer_api_bool_value(mapping.get('requires_customer_email')) else 'No'}\n"
         f"<b>Slot product:</b> {'Yes' if _buyer_api_bool_value(mapping.get('is_slot_product')) else 'No'}\n"
-        "<b>Delivery:</b> Coming soon\n\n"
-        f"<b>Details:</b>\n{escape_html(details_text)}"
+        "<b>Delivery:</b> Instant delivery after purchase\n\n"
+        f"<b>Details:</b>\n{details_text}"
     )
 
 
 def api_shop_product_details_keyboard(mapping: dict, styled: bool = True) -> InlineKeyboardMarkup:
     category_id = str(mapping.get("category_id") or "")
     back_callback = f"shop_category_{category_id}" if category_id != DEFAULT_CATEGORY_ID else "back_shop_cards"
-    return InlineKeyboardMarkup([
+    rows = []
+    stock = api_shop_mapping_stock(mapping)
+    if is_api_shop_mapping_visible(mapping) and stock != 0:
+        rows.append([make_styled_inline_button(
+            "🛒 Buy Now",
+            callback_data=f"api_shop_buy_{api_shop_callback_token(mapping.get('api_product_id'))}",
+            style="success" if styled else None,
+        )])
+    rows.extend([
         [make_styled_inline_button(
             "⬅️ Back to Shop",
             callback_data=back_callback,
@@ -6072,6 +6207,70 @@ def api_shop_product_details_keyboard(mapping: dict, styled: bool = True) -> Inl
             style="danger" if styled else None,
         )],
     ])
+    return InlineKeyboardMarkup(rows)
+
+
+def api_shop_quantity_keyboard(mapping: dict, styled: bool = True) -> InlineKeyboardMarkup:
+    token = api_shop_callback_token(mapping.get("api_product_id"))
+    stock = api_shop_mapping_stock(mapping)
+    quantities = [1]
+    if stock is not None and stock >= 5:
+        quantities.append(5)
+    if stock is not None and stock >= 10:
+        quantities.append(10)
+    rows = [[
+        make_styled_inline_button(
+            str(qty),
+            callback_data=f"api_shop_qty_{token}_{qty}",
+            style="primary" if styled else None,
+        )
+        for qty in quantities
+    ]]
+    rows.append([make_styled_inline_button(
+        "✏️ Custom Quantity",
+        callback_data=f"api_shop_custom_{token}",
+        style="primary" if styled else None,
+    )])
+    rows.append([make_styled_inline_button(
+        "⬅️ Back",
+        callback_data=f"api_shop_view_{token}",
+        style="primary" if styled else None,
+    )])
+    rows.append([make_styled_inline_button(
+        "🏠 Back to Menu",
+        callback_data="user_back_to_dashboard",
+        style="danger" if styled else None,
+    )])
+    return InlineKeyboardMarkup(rows)
+
+
+def render_api_shop_quantity_prompt(mapping: dict) -> str:
+    stock = api_shop_mapping_stock(mapping)
+    stock_text = str(stock) if stock is not None else "Available"
+    return (
+        "🛒 <b>SELECT QUANTITY</b>\n\n"
+        f"<b>Product:</b> {escape_html(api_mapping_display_name(mapping))}\n"
+        f"<b>Unit Price:</b> {format_money(api_shop_mapping_price(mapping))}\n"
+        f"<b>Stock:</b> {escape_html(stock_text)}{' pcs' if stock is not None else ''}\n\n"
+        "Choose a quantity below."
+    )
+
+
+def is_valid_customer_email(value: str) -> bool:
+    return bool(re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", str(value or "").strip()))
+
+
+def validate_api_shop_purchase(mapping: dict, quantity: int) -> str:
+    if not is_api_shop_mapping_visible(mapping):
+        return "This product is no longer available."
+    if not isinstance(quantity, int) or quantity <= 0:
+        return "Quantity must be a whole number greater than 0."
+    stock = api_shop_mapping_stock(mapping)
+    if stock is not None and quantity > stock:
+        return f"Only {stock} pcs are currently available."
+    if api_shop_mapping_price(mapping) is None:
+        return "This product does not have a valid price."
+    return ""
 
 
 def shop_product_rows(product_ids: list, user_id: int = None, styled: bool = True) -> list:
@@ -6216,6 +6415,183 @@ async def send_html_lines(bot, chat_id: int, lines: list, max_len: int = 3800):
         chunk_len += add_len
     if chunk:
         await bot.send_message(chat_id=chat_id, text="\n".join(chunk), parse_mode="HTML", disable_web_page_preview=True)
+
+
+async def continue_api_shop_purchase(context, user_id: int, callback_token: str, quantity: int):
+    mapping = find_api_shop_mapping(callback_token)
+    if mapping is None:
+        await context.bot.send_message(user_id, "❌ This product is no longer available.")
+        return
+    validation_error = validate_api_shop_purchase(mapping, quantity)
+    if validation_error:
+        await context.bot.send_message(user_id, f"❌ {validation_error}")
+        return
+    total = round(api_shop_mapping_price(mapping) * quantity, 2)
+    if float(user_wallet.get(user_id, 0.0)) < total:
+        await context.bot.send_message(
+            user_id,
+            "❌ <b>Wallet balance is not enough.</b>\n\n"
+            f"<b>Total:</b> {format_money(total)}\n"
+            f"<b>Wallet:</b> {format_money(user_wallet.get(user_id, 0.0))}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💳 Top Up", callback_data="user_dashboard_topup")],
+                [InlineKeyboardButton("🏠 Back to Menu", callback_data="user_back_to_dashboard")],
+            ]),
+            parse_mode="HTML",
+        )
+        return
+    if _buyer_api_bool_value(mapping.get("requires_customer_email")):
+        user_state[user_id] = {
+            "step": "api_shop_customer_email",
+            "api_callback_token": callback_token,
+            "qty": quantity,
+        }
+        await context.bot.send_message(
+            user_id,
+            "📧 <b>CUSTOMER EMAIL</b>\n\nSend the email address required for this product.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "⬅️ Back",
+                    callback_data=f"api_shop_buy_{callback_token}",
+                )],
+                [InlineKeyboardButton("🏠 Back to Menu", callback_data="user_back_to_dashboard")],
+            ]),
+            parse_mode="HTML",
+        )
+        return
+    await process_api_shop_purchase(context, user_id, callback_token, quantity)
+
+
+async def process_api_shop_purchase(
+    context: ContextTypes.DEFAULT_TYPE,
+    user_id: int,
+    callback_token: str,
+    quantity: int,
+    customer_email: str = None,
+):
+    mapping = find_api_shop_mapping(callback_token)
+    if mapping is None:
+        await context.bot.send_message(user_id, "❌ This product is no longer available.")
+        return False
+    validation_error = validate_api_shop_purchase(mapping, quantity)
+    if validation_error:
+        await context.bot.send_message(user_id, f"❌ {validation_error}")
+        return False
+    if _buyer_api_bool_value(mapping.get("requires_customer_email")) and not is_valid_customer_email(customer_email):
+        await context.bot.send_message(user_id, "❌ Please enter a valid email address.")
+        return False
+
+    unit_price = api_shop_mapping_price(mapping)
+    total = round(unit_price * quantity, 2)
+    if total <= 0:
+        await context.bot.send_message(user_id, "❌ This product has an invalid price. Please contact support.")
+        return False
+    if float(user_wallet.get(user_id, 0.0)) < total:
+        await context.bot.send_message(
+            user_id,
+            "❌ <b>Wallet balance is not enough.</b>\n\n"
+            f"<b>Total:</b> {format_money(total)}\n"
+            f"<b>Wallet:</b> {format_money(user_wallet.get(user_id, 0.0))}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💳 Top Up", callback_data="user_dashboard_topup")],
+                [InlineKeyboardButton("🏠 Back to Menu", callback_data="user_back_to_dashboard")],
+            ]),
+            parse_mode="HTML",
+        )
+        return False
+    if user_id in api_purchase_in_progress:
+        await context.bot.send_message(user_id, "⏳ Your purchase is already being processed. Please wait.")
+        return False
+
+    api_purchase_in_progress.add(user_id)
+    try:
+        # Recheck immediately before the irreversible external request.
+        if float(user_wallet.get(user_id, 0.0)) < total:
+            await context.bot.send_message(user_id, "❌ Wallet balance is not enough.")
+            return False
+        try:
+            result = await asyncio.to_thread(
+                purchase_buyer_api_product,
+                mapping.get("api_product_id"),
+                quantity,
+                customer_email,
+            )
+        except BuyerAPIError as exc:
+            print(f"Mapped product purchase failed: {type(exc).__name__}: {exc}")
+            user_state[user_id] = {"step": "main"}
+            await context.bot.send_message(
+                user_id,
+                "❌ Product is temporarily unavailable. Please contact support.",
+                reply_markup=user_back_to_menu_keyboard(styled=False),
+            )
+            return False
+        except Exception as exc:
+            print(f"Mapped product purchase failed unexpectedly: {type(exc).__name__}")
+            user_state[user_id] = {"step": "main"}
+            await context.bot.send_message(
+                user_id,
+                "❌ Product is temporarily unavailable. Please contact support.",
+                reply_markup=user_back_to_menu_keyboard(styled=False),
+            )
+            return False
+
+        delivered_items = result["accounts"]
+        order_code = result.get("order_code", "")
+        user_wallet[user_id] -= total
+        update_user_profile(user_id)
+        order = add_api_order_record(
+            user_id,
+            mapping,
+            quantity,
+            unit_price,
+            total,
+            delivered_items,
+            order_code,
+        )
+        add_transaction_record(
+            user_id,
+            "Wallet Purchase",
+            total,
+            "Completed",
+            {
+                "order_id": order["id"],
+                "product_type": "api",
+                "api_product_id": mapping.get("api_product_id"),
+                "qty": quantity,
+            },
+        )
+
+        remaining_stock = result.get("remaining_stock")
+        if remaining_stock is not None:
+            mapping["last_stock"] = max(0, int(remaining_stock))
+        else:
+            known_stock = api_shop_mapping_stock(mapping)
+            if known_stock is not None:
+                mapping["last_stock"] = max(0, known_stock - quantity)
+        user_state[user_id] = {"step": "main"}
+
+        lines = [
+            f"✅ <b>Order Completed:</b> {escape_html(api_mapping_display_name(mapping))}",
+            f"<b>Quantity:</b> {quantity}",
+            f"<b>Total:</b> {format_money(total)}",
+            "",
+            "🔐 <b>Your Account Details:</b>",
+            "",
+        ]
+        for item in delivered_items:
+            lines.append(f"<code>{escape_html(item)}</code>")
+        await send_html_lines(context.bot, user_id, lines)
+        await context.bot.send_message(
+            user_id,
+            "✅ <b>Purchase completed successfully.</b>\n\n"
+            f"<b>{format_money(total)}</b> deducted from your wallet.\n"
+            f"{get_wallet_balance_text(user_id)}",
+            reply_markup=user_back_to_menu_keyboard(styled=False),
+            parse_mode="HTML",
+        )
+        return True
+    finally:
+        api_purchase_in_progress.discard(user_id)
 
 
 async def deliver_accounts_to_user(bot, user_id: int, product_id: str, qty: int):
@@ -7814,6 +8190,32 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_user_dashboard(update.message)
         return
 
+    if user_mode[user_id] != "admin" and step == "api_shop_custom_quantity":
+        callback_token = str(state.get("api_callback_token") or "")
+        mapping = find_api_shop_mapping(callback_token)
+        try:
+            quantity = int(text)
+        except ValueError:
+            quantity = 0
+        validation_error = validate_api_shop_purchase(mapping, quantity) if mapping else "This product is no longer available."
+        if validation_error:
+            await update.message.reply_text(f"❌ {validation_error}\n\nPlease send a valid whole-number quantity.")
+            return
+        await continue_api_shop_purchase(context, user_id, callback_token, quantity)
+        return
+
+    if user_mode[user_id] != "admin" and step == "api_shop_customer_email":
+        if not is_valid_customer_email(text):
+            await update.message.reply_text("❌ Please enter a valid email address.")
+            return
+        callback_token = str(state.get("api_callback_token") or "")
+        try:
+            quantity = int(state.get("qty"))
+        except (TypeError, ValueError):
+            quantity = 0
+        await process_api_shop_purchase(context, user_id, callback_token, quantity, text)
+        return
+
     # ========= ADMIN MAIN MENUS =========
     if user_mode[user_id] == "admin":
         if text == "🚪 Exit Admin":
@@ -7999,7 +8401,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not mapping:
             await update.message.reply_text("❌ Mapped product selection expired.", reply_markup=seller_api_keyboard())
             return
-        details = text.strip()
+        original_details = update.message.text or ""
+        details = original_details.strip()
         if not details:
             await update.message.reply_text("❌ Product details cannot be empty.")
             return
@@ -8007,6 +8410,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Product details must be 2500 characters or fewer.")
             return
         mapping["details"] = details
+        mapping["details_rich"] = {
+            "text": original_details,
+            "entities": serialize_message_entities(update.message.entities),
+        }
         user_state[user_id] = {"step": "seller_api_shop_detail"}
         await update.message.reply_text(
             "✅ <b>Custom product details saved.</b>\n\n" + render_api_shop_mapping_detail(mapping_key, mapping),
@@ -9226,7 +9633,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_seller_api_callback_message(
             query,
             user_id,
-            "📝 <b>EDIT PRODUCT DETAILS</b>\n\nSend plain-text product details up to 2500 characters.",
+            "📝 <b>EDIT PRODUCT DETAILS</b>\n\n"
+            "Send product details up to 2500 characters. Telegram formatting and custom emoji are preserved.",
             InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="seller_api_shop_detail")]]),
         )
         return
@@ -9237,6 +9645,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_api_shop_manager(query, user_id, 0)
             return
         mapping.pop("details", None)
+        mapping.pop("details_rich", None)
         await edit_seller_api_callback_message(
             query,
             user_id,
@@ -11080,6 +11489,97 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         user_state[user_id] = {"step": "shop", "category_id": category_id}
         await send_shop_cards_message(query, from_callback=True, category_id=category_id)
+        return
+
+    if data.startswith("api_shop_buy_"):
+        callback_token = data.replace("api_shop_buy_", "", 1)
+        mapping = find_api_shop_mapping(callback_token)
+        if mapping is None:
+            await send_shop_inline_with_style_fallback(
+                query,
+                "❌ <b>This product is no longer available.</b>",
+                shop_return_keyboard(),
+                shop_return_keyboard(styled=False),
+            )
+            return
+        validation_error = validate_api_shop_purchase(mapping, 1)
+        if validation_error:
+            await send_shop_inline_with_style_fallback(
+                query,
+                f"❌ <b>{escape_html(validation_error)}</b>",
+                api_shop_product_details_keyboard(mapping),
+                api_shop_product_details_keyboard(mapping, styled=False),
+            )
+            return
+        if api_shop_mapping_stock(mapping) == 1:
+            await send_shop_inline_with_style_fallback(
+                query,
+                "⏳ <b>Processing your purchase...</b>",
+                user_back_to_menu_keyboard(),
+                user_back_to_menu_keyboard(styled=False),
+            )
+            await continue_api_shop_purchase(context, user_id, callback_token, 1)
+            return
+        user_state[user_id] = {"step": "api_shop_quantity", "api_callback_token": callback_token}
+        await send_shop_inline_with_style_fallback(
+            query,
+            render_api_shop_quantity_prompt(mapping),
+            api_shop_quantity_keyboard(mapping),
+            api_shop_quantity_keyboard(mapping, styled=False),
+        )
+        return
+
+    if data.startswith("api_shop_qty_"):
+        selection = data.replace("api_shop_qty_", "", 1)
+        callback_token, _, quantity_text = selection.rpartition("_")
+        try:
+            quantity = int(quantity_text)
+        except ValueError:
+            quantity = 0
+        mapping = find_api_shop_mapping(callback_token)
+        validation_error = validate_api_shop_purchase(mapping, quantity) if mapping else "This product is no longer available."
+        if validation_error:
+            await send_shop_inline_with_style_fallback(
+                query,
+                f"❌ <b>{escape_html(validation_error)}</b>",
+                api_shop_quantity_keyboard(mapping) if mapping else shop_return_keyboard(),
+                api_shop_quantity_keyboard(mapping, styled=False) if mapping else shop_return_keyboard(styled=False),
+            )
+            return
+        await send_shop_inline_with_style_fallback(
+            query,
+            "⏳ <b>Processing your purchase...</b>",
+            user_back_to_menu_keyboard(),
+            user_back_to_menu_keyboard(styled=False),
+        )
+        await continue_api_shop_purchase(context, user_id, callback_token, quantity)
+        return
+
+    if data.startswith("api_shop_custom_"):
+        callback_token = data.replace("api_shop_custom_", "", 1)
+        mapping = find_api_shop_mapping(callback_token)
+        if mapping is None:
+            await send_shop_inline_with_style_fallback(
+                query,
+                "❌ <b>This product is no longer available.</b>",
+                shop_return_keyboard(),
+                shop_return_keyboard(styled=False),
+            )
+            return
+        user_state[user_id] = {"step": "api_shop_custom_quantity", "api_callback_token": callback_token}
+        await send_shop_inline_with_style_fallback(
+            query,
+            "✏️ <b>CUSTOM QUANTITY</b>\n\nSend the quantity as a whole number.",
+            InlineKeyboardMarkup([[make_styled_inline_button(
+                "⬅️ Back",
+                callback_data=f"api_shop_buy_{callback_token}",
+                style="primary",
+            )]]),
+            InlineKeyboardMarkup([[InlineKeyboardButton(
+                "⬅️ Back",
+                callback_data=f"api_shop_buy_{callback_token}",
+            )]]),
+        )
         return
 
     if data.startswith("api_shop_view_"):
