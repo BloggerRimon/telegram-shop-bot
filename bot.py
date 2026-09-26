@@ -5689,6 +5689,96 @@ def render_shop_menu_text() -> str:
     return f"{flash_banner}\n\n{base}" if flash_banner else base
 
 
+def is_api_shop_mapping_visible(mapping: dict) -> bool:
+    if not isinstance(mapping, dict) or not _buyer_api_bool_value(mapping.get("enabled")):
+        return False
+    api_product_id = str(mapping.get("api_product_id") or "").strip()
+    category_id = str(mapping.get("category_id") or "").strip()
+    selling_price = _buyer_api_numeric_value(mapping.get("selling_price"))
+    return bool(api_product_id and category_id in CATEGORIES and selling_price is not None and selling_price > 0)
+
+
+def enabled_api_shop_mappings(category_id: str) -> list:
+    return [
+        mapping
+        for mapping in api_product_mappings.values()
+        if is_api_shop_mapping_visible(mapping) and mapping.get("category_id") == category_id
+    ]
+
+
+def api_shop_callback_token(api_product_id: str) -> str:
+    return hashlib.sha256(str(api_product_id).encode("utf-8")).hexdigest()[:32]
+
+
+def find_api_shop_mapping(callback_token: str):
+    safe_token = str(callback_token or "").strip().lower()
+    for mapping in api_product_mappings.values():
+        if not is_api_shop_mapping_visible(mapping):
+            continue
+        api_product_id = str(mapping.get("api_product_id") or "").strip()
+        if api_shop_callback_token(api_product_id) == safe_token:
+            return mapping
+    return None
+
+
+def api_shop_product_rows(category_id: str, styled: bool = True) -> list:
+    rows = []
+    for mapping in enabled_api_shop_mappings(category_id):
+        api_product_id = str(mapping.get("api_product_id") or "").strip()
+        name = str(mapping.get("name") or "API Product").strip() or "API Product"
+        selling_price = _buyer_api_numeric_value(mapping.get("selling_price"))
+        stock = _buyer_api_numeric_value(mapping.get("last_stock"))
+        out_of_stock = stock is not None and stock <= 0
+        stock_label = "🔔 Notify Soon" if out_of_stock else "📦 API Stock"
+        suffix = f" - {format_money(selling_price)} | {stock_label}"
+        name_limit = max(8, 64 - len("🌐 ") - len(suffix))
+        label = f"🌐 {name[:name_limit]}{suffix}"[:64]
+        rows.append([make_styled_inline_button(
+            label,
+            callback_data=f"api_shop_view_{api_shop_callback_token(api_product_id)}",
+            style=("danger" if out_of_stock else "primary") if styled else None,
+        )])
+    return rows
+
+
+def render_api_shop_product_details(mapping: dict) -> str:
+    name = str(mapping.get("name") or "N/A")
+    selling_price = _buyer_api_numeric_value(mapping.get("selling_price"))
+    stock = _buyer_api_numeric_value(mapping.get("last_stock"))
+    if stock is None:
+        stock_text = "N/A"
+    elif float(stock).is_integer():
+        stock_text = str(int(stock))
+    else:
+        stock_text = str(stock)
+    return (
+        "🌐 <b>API Product Details</b>\n\n"
+        f"<b>Name:</b> {escape_html(name)}\n"
+        f"<b>Price:</b> {format_money(selling_price)}\n"
+        f"<b>Seller stock:</b> {escape_html(stock_text)}\n"
+        f"<b>Requires customer email:</b> {'Yes' if _buyer_api_bool_value(mapping.get('requires_customer_email')) else 'No'}\n"
+        f"<b>Slot product:</b> {'Yes' if _buyer_api_bool_value(mapping.get('is_slot_product')) else 'No'}\n"
+        "<b>Delivery:</b> API delivery will be available soon"
+    )
+
+
+def api_shop_product_details_keyboard(mapping: dict, styled: bool = True) -> InlineKeyboardMarkup:
+    category_id = str(mapping.get("category_id") or "")
+    back_callback = f"shop_category_{category_id}" if category_id != DEFAULT_CATEGORY_ID else "back_shop_cards"
+    return InlineKeyboardMarkup([
+        [make_styled_inline_button(
+            "⬅️ Back to Shop",
+            callback_data=back_callback,
+            style="primary" if styled else None,
+        )],
+        [make_styled_inline_button(
+            "🏠 Back to Menu",
+            callback_data="user_back_to_dashboard",
+            style="danger" if styled else None,
+        )],
+    ])
+
+
 def shop_product_rows(product_ids: list, user_id: int = None, styled: bool = True) -> list:
     rows = []
     for product_id in product_ids:
@@ -5743,6 +5833,7 @@ def shop_categories_keyboard(user_id: int = None, styled: bool = True) -> Inline
                 style="primary" if styled else None,
             )
         ])
+    rows.extend(api_shop_product_rows(DEFAULT_CATEGORY_ID, styled=styled))
     rows.append([
         make_styled_inline_button(
             "🏠 Back to Menu",
@@ -5757,6 +5848,7 @@ def shop_menu_keyboard(user_id: int = None, category_id: str = None, styled: boo
     normalize_categories()
     rows = [[InlineKeyboardButton("──── ⚡ AUTO DELIVERY ────", callback_data="noop")]]
     rows.extend(shop_product_rows(get_category_product_ids(category_id), user_id, styled=styled))
+    rows.extend(api_shop_product_rows(category_id, styled=styled))
     if category_id and category_id != DEFAULT_CATEGORY_ID:
         rows.append([
             make_styled_inline_button(
@@ -10320,6 +10412,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         user_state[user_id] = {"step": "shop", "category_id": category_id}
         await send_shop_cards_message(query, from_callback=True, category_id=category_id)
+        return
+
+    if data.startswith("api_shop_view_"):
+        callback_token = data.replace("api_shop_view_", "", 1)
+        mapping = find_api_shop_mapping(callback_token)
+        if mapping is None:
+            await send_shop_inline_with_style_fallback(
+                query,
+                "❌ <b>This API product is no longer available.</b>",
+                shop_return_keyboard(),
+                shop_return_keyboard(styled=False),
+            )
+            return
+        await send_shop_inline_with_style_fallback(
+            query,
+            render_api_shop_product_details(mapping),
+            api_shop_product_details_keyboard(mapping),
+            api_shop_product_details_keyboard(mapping, styled=False),
+        )
         return
 
     if data.startswith("shop_buy_"):
