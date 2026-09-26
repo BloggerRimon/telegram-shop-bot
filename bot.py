@@ -1098,7 +1098,10 @@ def is_admin(user_id: int) -> bool:
 
 
 class BuyerAPIError(Exception):
-    pass
+    def __init__(self, message: str, category: str = "unknown", order_code: str = ""):
+        super().__init__(message)
+        self.category = str(category or "unknown")
+        self.order_code = str(order_code or "").strip()
 
 
 def is_buyer_api_enabled() -> bool:
@@ -1141,11 +1144,11 @@ def buyer_api_endpoint_preview(path: str, params: dict = None) -> str:
 
 def _validate_buyer_api_config():
     if not is_buyer_api_enabled():
-        raise BuyerAPIError("Seller API is disabled. Set BUYER_API_ENABLED=true to enable tests.")
+        raise BuyerAPIError("Seller API is disabled. Set BUYER_API_ENABLED=true to enable tests.", "config")
     if not normalize_buyer_api_url():
-        raise BuyerAPIError("BUYER_API_URL is not configured.")
+        raise BuyerAPIError("BUYER_API_URL is not configured.", "config")
     if not BUYER_API_KEY:
-        raise BuyerAPIError("BUYER_API_KEY is not configured.")
+        raise BuyerAPIError("BUYER_API_KEY is not configured.", "config")
 
 
 def _buyer_api_get(path: str, params: dict = None):
@@ -1191,6 +1194,40 @@ def _buyer_api_get(path: str, params: dict = None):
     return payload
 
 
+def _buyer_api_purchase_failure_metadata(payload, default_category: str = "unknown"):
+    if not isinstance(payload, dict):
+        return default_category, ""
+    sources = [payload]
+    for key in ("data", "result"):
+        if isinstance(payload.get(key), dict):
+            sources.append(payload[key])
+    order_code = ""
+    reason_parts = []
+    for source in sources:
+        if not order_code:
+            value = source.get("orderCode", source.get("order_code"))
+            if value not in (None, ""):
+                order_code = str(value).strip()
+        for key in ("message", "error", "detail", "code", "status"):
+            value = source.get(key)
+            if isinstance(value, (str, int, float, bool)):
+                reason_parts.append(str(value).lower())
+            elif isinstance(value, dict):
+                reason_parts.extend(
+                    str(nested_value).lower()
+                    for nested_value in value.values()
+                    if isinstance(nested_value, (str, int, float, bool))
+                )
+    reason = " ".join(reason_parts)
+    if "balance" in reason and any(marker in reason for marker in ("insufficient", "low", "not enough")):
+        return "insufficient_seller_balance", order_code
+    if "stock" in reason and any(marker in reason for marker in ("out of", "insufficient", "not enough", "unavailable")):
+        return "out_of_stock", order_code
+    if "product" in reason and any(marker in reason for marker in ("unavailable", "disabled", "inactive", "not found")):
+        return "product_unavailable", order_code
+    return default_category, order_code
+
+
 def purchase_buyer_api_product(api_product_id: str, quantity: int, customer_email: str = None) -> dict:
     """Place one external purchase and return only the fulfillment fields the bot needs."""
     _validate_buyer_api_config()
@@ -1209,20 +1246,29 @@ def purchase_buyer_api_product(api_product_id: str, quantity: int, customer_emai
             timeout=30,
         )
     except requests.Timeout as exc:
-        raise BuyerAPIError("Purchase request timed out.") from exc
+        raise BuyerAPIError("Purchase request timed out.", "timeout") from exc
     except requests.ConnectionError as exc:
-        raise BuyerAPIError("Could not connect to the purchase service.") from exc
+        raise BuyerAPIError("Could not connect to the purchase service.", "http_error") from exc
     except requests.RequestException as exc:
-        raise BuyerAPIError("Purchase request failed.") from exc
+        raise BuyerAPIError("Purchase request failed.", "http_error") from exc
 
     if not response.ok:
-        raise BuyerAPIError(f"Purchase service returned HTTP {response.status_code}.")
+        try:
+            error_payload = response.json()
+        except (ValueError, TypeError):
+            error_payload = None
+        category, order_code = _buyer_api_purchase_failure_metadata(error_payload, "http_error")
+        raise BuyerAPIError(
+            f"Purchase service returned HTTP {response.status_code}.",
+            category,
+            order_code,
+        )
     try:
         response_payload = response.json()
     except ValueError as exc:
-        raise BuyerAPIError("Purchase service returned invalid JSON.") from exc
+        raise BuyerAPIError("Purchase service returned invalid JSON.", "invalid_response") from exc
     if not isinstance(response_payload, dict):
-        raise BuyerAPIError("Purchase service returned an unexpected response format.")
+        raise BuyerAPIError("Purchase service returned an unexpected response format.", "invalid_response")
 
     result = _buyer_api_data(response_payload)
     result = result if isinstance(result, dict) else response_payload
@@ -1230,7 +1276,8 @@ def purchase_buyer_api_product(api_product_id: str, quantity: int, customer_emai
     if success is None:
         success = result.get("success")
     if success is not True:
-        raise BuyerAPIError("Purchase service did not complete the order.")
+        category, order_code = _buyer_api_purchase_failure_metadata(response_payload)
+        raise BuyerAPIError("Purchase service did not complete the order.", category, order_code)
 
     accounts = result.get("accounts", response_payload.get("accounts"))
     if not isinstance(accounts, list):
@@ -1238,7 +1285,8 @@ def purchase_buyer_api_product(api_product_id: str, quantity: int, customer_emai
         accounts = [account] if isinstance(account, (str, int, float)) else []
     delivered_items = [str(item) for item in accounts if item not in (None, "") and str(item).strip()]
     if not delivered_items:
-        raise BuyerAPIError("Purchase completed without deliverable items.")
+        _, order_code = _buyer_api_purchase_failure_metadata(response_payload, "empty_delivery")
+        raise BuyerAPIError("Purchase completed without deliverable items.", "empty_delivery", order_code)
 
     order_code = result.get("orderCode", response_payload.get("orderCode"))
     remaining_stock = None
@@ -6172,11 +6220,13 @@ def render_api_shop_product_details(mapping: dict) -> str:
         stock_text = str(int(stock))
     else:
         stock_text = str(stock)
+    availability_line = "<b>Availability:</b> Currently unavailable\n" if stock is not None and stock <= 0 else ""
     return (
         f"{product_icon_html(mapping)} <b>PRODUCT DETAILS</b>\n\n"
         f"<b>Name:</b> {escape_html(name)}\n"
         f"<b>Price:</b> {format_money(selling_price)}\n"
         f"<b>Stock:</b> {escape_html(stock_text)}{' pcs' if stock is not None else ''}\n"
+        f"{availability_line}"
         f"<b>Requires customer email:</b> {'Yes' if _buyer_api_bool_value(mapping.get('requires_customer_email')) else 'No'}\n"
         f"<b>Slot product:</b> {'Yes' if _buyer_api_bool_value(mapping.get('is_slot_product')) else 'No'}\n"
         "<b>Delivery:</b> Instant delivery after purchase\n\n"
@@ -6417,6 +6467,111 @@ async def send_html_lines(bot, chat_id: int, lines: list, max_len: int = 3800):
         await bot.send_message(chat_id=chat_id, text="\n".join(chunk), parse_mode="HTML", disable_web_page_preview=True)
 
 
+def api_purchase_failure_category(error) -> str:
+    allowed = {
+        "insufficient_seller_balance",
+        "out_of_stock",
+        "product_unavailable",
+        "timeout",
+        "http_error",
+        "invalid_response",
+        "empty_delivery",
+        "config",
+        "unknown",
+    }
+    category = str(getattr(error, "category", "unknown") or "unknown")
+    return category if category in allowed else "unknown"
+
+
+def api_purchase_failure_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎧 Contact Support", url=SUPPORT_URL)],
+        [InlineKeyboardButton("🏠 Back to Menu", callback_data="user_back_to_dashboard")],
+    ])
+
+
+async def notify_admin_api_purchase_failure(
+    bot,
+    user_id: int,
+    mapping: dict,
+    quantity: int,
+    unit_price: float,
+    total: float,
+    error,
+):
+    category = api_purchase_failure_category(error)
+    category_labels = {
+        "insufficient_seller_balance": "insufficient seller balance",
+        "out_of_stock": "out of stock",
+        "product_unavailable": "product unavailable",
+        "timeout": "timeout",
+        "http_error": "HTTP error",
+        "invalid_response": "invalid response",
+        "empty_delivery": "empty delivery",
+        "config": "configuration error",
+        "unknown": "unknown",
+    }
+    profile = get_user_profile(user_id)
+    username = str(profile.get("username") or "").strip().lstrip("@")
+    username_text = f"@{username}" if username else "N/A"
+    order_code = str(getattr(error, "order_code", "") or "").strip()
+    notes = []
+    if category == "insufficient_seller_balance":
+        notes.append("Possible seller API balance issue. Please recharge/check seller account.")
+    if category == "timeout":
+        notes.append("Timeout may be ambiguous because the purchase endpoint has no documented idempotency key.")
+    text = (
+        "⚠️ <b>MAPPED PRODUCT PURCHASE FAILED</b>\n\n"
+        f"<b>User ID:</b> <code>{user_id}</code>\n"
+        f"<b>Username:</b> {escape_html(username_text)}\n"
+        f"<b>Product:</b> {escape_html(api_mapping_display_name(mapping))}\n"
+        f"<b>API product ID:</b> <code>{escape_html(mapping.get('api_product_id') or 'N/A')}</code>\n"
+        f"<b>Quantity:</b> {quantity}\n"
+        f"<b>User unit price:</b> {format_money(unit_price)}\n"
+        f"<b>User total:</b> {format_money(total)}\n"
+        f"<b>Failure category:</b> {escape_html(category_labels[category])}\n"
+        f"<b>Order code:</b> <code>{escape_html(order_code or 'N/A')}</code>"
+    )
+    if notes:
+        text += "\n\n" + "\n".join(escape_html(note) for note in notes)
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(
+                chat_id=admin_id,
+                text=text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        except Exception as exc:
+            print(f"Mapped purchase admin alert failed for admin_id={admin_id}: {type(exc).__name__}")
+
+
+async def handle_api_purchase_failure(
+    context,
+    user_id: int,
+    mapping: dict,
+    quantity: int,
+    unit_price: float,
+    total: float,
+    error,
+):
+    user_state[user_id] = {"step": "main"}
+    await notify_admin_api_purchase_failure(
+        context.bot,
+        user_id,
+        mapping,
+        quantity,
+        unit_price,
+        total,
+        error,
+    )
+    await context.bot.send_message(
+        user_id,
+        "⚠️ This product is temporarily unavailable. Please contact support or try again later.",
+        reply_markup=api_purchase_failure_keyboard(),
+    )
+
+
 async def continue_api_shop_purchase(context, user_id: int, callback_token: str, quantity: int):
     mapping = find_api_shop_mapping(callback_token)
     if mapping is None:
@@ -6517,21 +6672,27 @@ async def process_api_shop_purchase(
                 customer_email,
             )
         except BuyerAPIError as exc:
-            print(f"Mapped product purchase failed: {type(exc).__name__}: {exc}")
-            user_state[user_id] = {"step": "main"}
-            await context.bot.send_message(
+            print(f"Mapped product purchase failed: category={api_purchase_failure_category(exc)}")
+            await handle_api_purchase_failure(
+                context,
                 user_id,
-                "❌ Product is temporarily unavailable. Please contact support.",
-                reply_markup=user_back_to_menu_keyboard(styled=False),
+                mapping,
+                quantity,
+                unit_price,
+                total,
+                exc,
             )
             return False
         except Exception as exc:
             print(f"Mapped product purchase failed unexpectedly: {type(exc).__name__}")
-            user_state[user_id] = {"step": "main"}
-            await context.bot.send_message(
+            await handle_api_purchase_failure(
+                context,
                 user_id,
-                "❌ Product is temporarily unavailable. Please contact support.",
-                reply_markup=user_back_to_menu_keyboard(styled=False),
+                mapping,
+                quantity,
+                unit_price,
+                total,
+                BuyerAPIError("Unexpected purchase failure.", "unknown"),
             )
             return False
 
