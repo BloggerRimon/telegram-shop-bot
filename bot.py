@@ -3389,25 +3389,89 @@ def buyer_api_mapping_enable_errors(product: dict) -> list:
     return missing
 
 
+def remember_seller_api_browser_message(user_id: int, message):
+    if message is None:
+        return
+    chat_id = getattr(message, "chat_id", None)
+    message_id = getattr(message, "message_id", None)
+    if chat_id is None or message_id is None:
+        return
+    temp = _seller_api_browser_temp(user_id)
+    temp["seller_api_browser_chat_id"] = chat_id
+    temp["seller_api_browser_message_id"] = message_id
+
+
+async def edit_seller_api_callback_message(query, user_id: int, text: str, keyboard=None):
+    try:
+        await query.edit_message_text(text=text, reply_markup=keyboard, parse_mode="HTML")
+        remember_seller_api_browser_message(user_id, query.message)
+        return
+    except Exception as error:
+        if "message is not modified" in str(error).lower():
+            try:
+                await query.edit_message_reply_markup(reply_markup=keyboard)
+            except Exception:
+                pass
+            remember_seller_api_browser_message(user_id, query.message)
+            return
+        print(f"Seller API navigation edit failed; sending fallback: {type(error).__name__}: {error}")
+    sent_message = await query.message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
+    remember_seller_api_browser_message(user_id, sent_message)
+
+
+async def edit_seller_api_message_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, keyboard=None):
+    user_id = update.effective_user.id
+    temp = _seller_api_browser_temp(user_id)
+    chat_id = temp.get("seller_api_browser_chat_id")
+    message_id = temp.get("seller_api_browser_message_id")
+    if chat_id is not None and message_id is not None:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                reply_markup=keyboard,
+                parse_mode="HTML",
+            )
+            return
+        except Exception as error:
+            if "message is not modified" in str(error).lower():
+                try:
+                    await context.bot.edit_message_reply_markup(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        reply_markup=keyboard,
+                    )
+                except Exception:
+                    pass
+                return
+            print(f"Seller API typed-search edit failed; sending fallback: {type(error).__name__}: {error}")
+    sent_message = await update.message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
+    remember_seller_api_browser_message(user_id, sent_message)
+
+
 async def send_buyer_api_browser(query, user_id: int, page: int = 0):
     try:
         products, total, safe_page, total_pages = await fetch_buyer_api_browser_page(user_id, page)
         user_state[user_id] = {"step": "seller_api_browser"}
-        await send_inline_from_callback(
+        await edit_seller_api_callback_message(
             query,
+            user_id,
             render_buyer_api_browser(products, total, safe_page, total_pages, user_id),
             buyer_api_browser_keyboard(products, safe_page, total_pages),
         )
     except BuyerAPIError as error:
-        await send_inline_from_callback(
+        await edit_seller_api_callback_message(
             query,
+            user_id,
             f"❌ <b>API PRODUCT BROWSER FAILED</b>\n\n{escape_html(str(error))}",
             seller_api_keyboard(),
         )
     except Exception as error:
         print(f"Seller API product browser failed: {type(error).__name__}")
-        await send_inline_from_callback(
+        await edit_seller_api_callback_message(
             query,
+            user_id,
             "❌ <b>API PRODUCT BROWSER FAILED</b>\n\nUnexpected Seller API error.",
             seller_api_keyboard(),
         )
@@ -7423,23 +7487,26 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[user_id] = {"step": "seller_api_browser"}
         try:
             products, total, page, total_pages = await fetch_buyer_api_browser_page(user_id, 0)
-            await update.message.reply_text(
+            await edit_seller_api_message_from_text(
+                update,
+                context,
                 render_buyer_api_browser(products, total, page, total_pages, user_id),
-                reply_markup=buyer_api_browser_keyboard(products, page, total_pages),
-                parse_mode="HTML",
+                buyer_api_browser_keyboard(products, page, total_pages),
             )
         except BuyerAPIError as error:
-            await update.message.reply_text(
+            await edit_seller_api_message_from_text(
+                update,
+                context,
                 f"❌ <b>API PRODUCT SEARCH FAILED</b>\n\n{escape_html(str(error))}",
-                reply_markup=seller_api_keyboard(),
-                parse_mode="HTML",
+                seller_api_keyboard(),
             )
         except Exception as error:
             print(f"Seller API product search failed: {type(error).__name__}")
-            await update.message.reply_text(
+            await edit_seller_api_message_from_text(
+                update,
+                context,
                 "❌ <b>API PRODUCT SEARCH FAILED</b>\n\nUnexpected Seller API error.",
-                reply_markup=seller_api_keyboard(),
-                parse_mode="HTML",
+                seller_api_keyboard(),
             )
         return
 
@@ -8407,7 +8474,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "seller_api_browser_back":
         reset_admin_temp(user_id)
         user_state[user_id] = {"step": "seller_api_admin"}
-        await send_inline_from_callback(query, render_seller_api_panel(), seller_api_keyboard())
+        await edit_seller_api_callback_message(
+            query,
+            user_id,
+            render_seller_api_panel(),
+            seller_api_keyboard(),
+        )
         return
 
     if data == "seller_api_browser_return":
@@ -8425,8 +8497,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "seller_api_search":
         user_state[user_id] = {"step": "seller_api_search_input"}
-        await send_inline_from_callback(
+        remember_seller_api_browser_message(user_id, query.message)
+        await edit_seller_api_callback_message(
             query,
+            user_id,
             "🔎 <b>SEARCH API PRODUCTS</b>\n\n"
             "Send a product name or API product ID.\n"
             "Send <code>clear</code> to remove the current search.",
@@ -8435,8 +8509,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "seller_api_filters":
-        await send_inline_from_callback(
+        await edit_seller_api_callback_message(
             query,
+            user_id,
             "🧩 <b>FILTER API PRODUCTS</b>\n\nChoose a filter below.",
             buyer_api_filters_keyboard(),
         )
@@ -8488,8 +8563,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         temp["selected_api_product"] = product
         temp["seller_api_page"] = max(0, product_index // 10)
         user_state[user_id] = {"step": "seller_api_product_detail"}
-        await send_inline_from_callback(
+        await edit_seller_api_callback_message(
             query,
+            user_id,
             render_buyer_api_product_detail(product),
             buyer_api_product_detail_keyboard(product),
         )
@@ -8506,8 +8582,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         admin_temp.get(user_id, {}).pop("pending_api_selling_price", None)
         user_state[user_id] = {"step": "seller_api_product_detail"}
-        await send_inline_from_callback(
+        await edit_seller_api_callback_message(
             query,
+            user_id,
             render_buyer_api_product_detail(product),
             buyer_api_product_detail_keyboard(product),
         )
@@ -8518,8 +8595,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not product:
             await send_inline_from_callback(query, "❌ <b>API product selection expired.</b>", seller_api_keyboard())
             return
-        await send_inline_from_callback(
+        await edit_seller_api_callback_message(
             query,
+            user_id,
             "📁 <b>MAP API PRODUCT CATEGORY</b>\n\nSelect an existing local category.",
             buyer_api_mapping_category_keyboard(),
         )
@@ -8536,8 +8614,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         update_api_product_mapping(product, category_id=category_id)
-        await send_inline_from_callback(
+        await edit_seller_api_callback_message(
             query,
+            user_id,
             "✅ <b>Category mapping saved.</b>\n\n" + render_buyer_api_product_detail(product),
             buyer_api_product_detail_keyboard(product),
         )
@@ -8550,8 +8629,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         admin_temp.get(user_id, {}).pop("pending_api_selling_price", None)
         user_state[user_id] = {"step": "seller_api_price_input"}
-        await send_inline_from_callback(
+        await edit_seller_api_callback_message(
             query,
+            user_id,
             "💲 <b>SET API PRODUCT SELLING PRICE</b>\n\nSend a selling price greater than 0.",
             InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="seller_api_mapping_detail")]]),
         )
@@ -8565,8 +8645,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         update_api_product_mapping(product, selling_price=float(pending_price))
         user_state[user_id] = {"step": "seller_api_product_detail"}
-        await send_inline_from_callback(
+        await edit_seller_api_callback_message(
             query,
+            user_id,
             "✅ <b>Lower selling price confirmed and saved.</b>\n\n" + render_buyer_api_product_detail(product),
             buyer_api_product_detail_keyboard(product),
         )
@@ -8593,8 +8674,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             update_api_product_mapping(product, enabled=True)
             message = "✅ <b>API product enabled for future shop integration.</b>"
-        await send_inline_from_callback(
+        await edit_seller_api_callback_message(
             query,
+            user_id,
             message + "\n\n" + render_buyer_api_product_detail(product),
             buyer_api_product_detail_keyboard(product),
         )
@@ -8606,8 +8688,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if api_product_id:
             api_product_mappings.pop(api_product_id, None)
         admin_temp.get(user_id, {}).pop("pending_api_selling_price", None)
-        await send_inline_from_callback(
+        await edit_seller_api_callback_message(
             query,
+            user_id,
             "🧹 <b>API product mapping cleared.</b>\n\n" + (
                 render_buyer_api_product_detail(product) if product else "API product selection expired."
             ),
