@@ -2998,6 +2998,7 @@ def admin_menu() -> ReplyKeyboardMarkup:
 
 def seller_api_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛒 My API Shop Products", callback_data="seller_api_shop_products")],
         [InlineKeyboardButton("📦 Browse API Products", callback_data="seller_api_browse")],
         [InlineKeyboardButton("🧪 Test Connection", callback_data="seller_api_test")],
         [InlineKeyboardButton("💰 Check API Balance", callback_data="seller_api_balance")],
@@ -3023,7 +3024,7 @@ def render_seller_api_panel() -> str:
         f"<b>Starts with api_:</b> {prefix_status}\n"
         f"<b>Balance request:</b> <code>{escape_html(buyer_api_endpoint_preview('/api/telegram-buyer/balance'))}</code>"
         f"{warning_text}\n\n"
-        "Read-only connection tests only. No products or orders are saved."
+        "Saved mappings can be managed here. Seller orders are not enabled."
     )
 
 
@@ -3472,8 +3473,33 @@ def extract_api_mapping_icon_from_message(message):
 
 
 async def handle_seller_api_icon_message(update: Update, user_id: int) -> bool:
-    if not is_admin(user_id) or user_state.get(user_id, {}).get("step") != "seller_api_icon_input":
+    step = user_state.get(user_id, {}).get("step")
+    if not is_admin(user_id) or step not in {"seller_api_icon_input", "seller_api_shop_icon_input"}:
         return False
+    if step == "seller_api_shop_icon_input":
+        mapping_key, mapping = selected_saved_api_shop_mapping(user_id)
+        if not mapping:
+            await update.effective_message.reply_text(
+                "❌ <b>Mapped product selection expired.</b>",
+                reply_markup=seller_api_keyboard(),
+                parse_mode="HTML",
+            )
+            return True
+        icon, custom_emoji_id, error = extract_api_mapping_icon_from_message(update.effective_message)
+        if error:
+            await update.effective_message.reply_text(error, parse_mode="HTML")
+            return True
+        mapping["icon"] = icon
+        mapping["icon_custom_emoji_id"] = custom_emoji_id or ""
+        user_state[user_id] = {"step": "seller_api_shop_detail"}
+        icon_type = "custom/animated emoji" if custom_emoji_id else "normal icon"
+        await update.effective_message.reply_text(
+            f"✅ <b>Mapped product {icon_type} saved.</b>\n\n" + render_api_shop_mapping_detail(mapping_key, mapping),
+            reply_markup=api_shop_mapping_manager_keyboard(mapping),
+            parse_mode="HTML",
+        )
+        return True
+
     product = selected_buyer_api_product(user_id)
     if not product:
         await update.effective_message.reply_text(
@@ -3512,6 +3538,195 @@ def buyer_api_mapping_enable_errors(product: dict) -> list:
     if not mapping or mapping.get("category_id") not in CATEGORIES:
         missing.append("category")
     selling_price = _buyer_api_numeric_value(mapping.get("selling_price") if mapping else None)
+    if selling_price is None or selling_price <= 0:
+        missing.append("selling price")
+    return missing
+
+
+def api_mapping_display_name(mapping: dict) -> str:
+    custom_name = str((mapping or {}).get("custom_name") or "").strip()
+    original_name = str((mapping or {}).get("name") or "Product").strip()
+    return custom_name or original_name or "Product"
+
+
+def _saved_api_mapping_identity(mapping_key, mapping: dict) -> str:
+    return str((mapping or {}).get("api_product_id") or mapping_key or "").strip()
+
+
+def saved_api_shop_mappings() -> list:
+    saved = []
+    for mapping_key, mapping in api_product_mappings.items():
+        if not isinstance(mapping, dict):
+            continue
+        saved.append((str(mapping_key), mapping))
+    return saved
+
+
+def find_saved_api_shop_mapping(callback_token: str):
+    safe_token = str(callback_token or "").strip().lower()
+    for mapping_key, mapping in saved_api_shop_mappings():
+        api_product_id = _saved_api_mapping_identity(mapping_key, mapping)
+        if api_product_id and api_shop_callback_token(api_product_id) == safe_token:
+            return mapping_key, mapping
+    return None, None
+
+
+def selected_saved_api_shop_mapping(user_id: int):
+    mapping_key = str(admin_temp.get(user_id, {}).get("selected_api_mapping_key") or "")
+    mapping = api_product_mappings.get(mapping_key)
+    return (mapping_key, mapping) if mapping_key and isinstance(mapping, dict) else (None, None)
+
+
+def _api_mapping_stock_text(mapping: dict) -> str:
+    stock = _buyer_api_numeric_value((mapping or {}).get("last_stock"))
+    if stock is None:
+        return "N/A"
+    return str(int(stock)) if float(stock).is_integer() else str(stock)
+
+
+def _api_mapping_category_name(mapping: dict) -> str:
+    category_id = str((mapping or {}).get("category_id") or "")
+    category = CATEGORIES.get(category_id)
+    return str(category.get("name") or category_id) if isinstance(category, dict) else "Not selected"
+
+
+def api_shop_manager_page(page: int = 0):
+    mappings = saved_api_shop_mappings()
+    total_pages = max(1, (len(mappings) + 9) // 10)
+    safe_page = max(0, min(int(page), total_pages - 1))
+    return mappings, safe_page, total_pages
+
+
+def render_api_shop_manager_page(mappings: list, page: int, total_pages: int) -> str:
+    start = page * 10
+    lines = [
+        "🛒 <b>MY API SHOP PRODUCTS</b>",
+        "",
+        f"<b>Saved mappings:</b> {len(mappings)}",
+        f"<b>Page:</b> {page + 1}/{total_pages}",
+    ]
+    page_items = mappings[start:start + 10]
+    if not page_items:
+        lines.extend(["", "No mapped products saved yet."])
+    for index, (_, mapping) in enumerate(page_items, start=start + 1):
+        status = "✅ Enabled" if _buyer_api_bool_value(mapping.get("enabled")) else "❌ Disabled"
+        price = _buyer_api_numeric_value(mapping.get("selling_price"))
+        price_text = format_money(price) if price is not None and price > 0 else "Not set"
+        lines.extend([
+            "",
+            f"<b>{index}. {status} — {escape_html(api_mapping_display_name(mapping))}</b>",
+            f"Price: {price_text} | Category: {escape_html(_api_mapping_category_name(mapping))} | Stock: {escape_html(_api_mapping_stock_text(mapping))}",
+        ])
+    lines.extend(["", "Select a mapped product to manage it."])
+    return "\n".join(lines)
+
+
+def api_shop_manager_keyboard(mappings: list, page: int, total_pages: int) -> InlineKeyboardMarkup:
+    start = page * 10
+    rows = []
+    for absolute_index, (mapping_key, mapping) in enumerate(mappings[start:start + 10], start=start + 1):
+        status = "✅" if _buyer_api_bool_value(mapping.get("enabled")) else "❌"
+        api_product_id = _saved_api_mapping_identity(mapping_key, mapping)
+        label = f"{absolute_index}. {status} {api_mapping_display_name(mapping)}"
+        rows.append([InlineKeyboardButton(
+            label[:64],
+            callback_data=f"seller_api_shop_view_{api_shop_callback_token(api_product_id)}",
+        )])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"seller_api_shop_page_{page - 1}"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton("➡️ Next", callback_data=f"seller_api_shop_page_{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="seller_api_shop_back")])
+    return InlineKeyboardMarkup(rows)
+
+
+def render_api_shop_mapping_detail(mapping_key: str, mapping: dict) -> str:
+    api_product_id = _saved_api_mapping_identity(mapping_key, mapping)
+    status = "✅ Enabled" if _buyer_api_bool_value(mapping.get("enabled")) else "❌ Disabled"
+    price = _buyer_api_numeric_value(mapping.get("selling_price"))
+    price_text = format_money(price) if price is not None and price > 0 else "Not set"
+    custom_name_status = "Set" if str(mapping.get("custom_name") or "").strip() else "Not set"
+    details_status = "Set" if str(mapping.get("details") or "").strip() else "Not set"
+    if _product_custom_emoji_id(mapping):
+        icon_status = "Custom emoji"
+    elif mapping.get("icon"):
+        icon_status = _normal_icon_text(mapping, fallback="📦")
+    else:
+        icon_status = "Default 📦"
+    return (
+        "🛒 <b>MANAGE MAPPED PRODUCT</b>\n\n"
+        f"<b>Display name:</b> {escape_html(api_mapping_display_name(mapping))}\n"
+        f"<b>Original API name:</b> {escape_html(str(mapping.get('name') or 'N/A'))}\n"
+        f"<b>API product ID:</b> <code>{escape_html(api_product_id or 'N/A')}</code>\n"
+        f"<b>Status:</b> {status}\n"
+        f"<b>Category:</b> {escape_html(_api_mapping_category_name(mapping))}\n"
+        f"<b>Selling price:</b> {price_text}\n"
+        f"<b>Last stock:</b> {escape_html(_api_mapping_stock_text(mapping))}\n"
+        f"<b>Requires customer email:</b> {'Yes' if _buyer_api_bool_value(mapping.get('requires_customer_email')) else 'No'}\n"
+        f"<b>Slot product:</b> {'Yes' if _buyer_api_bool_value(mapping.get('is_slot_product')) else 'No'}\n"
+        f"<b>Icon:</b> {escape_html(icon_status)}\n"
+        f"<b>Custom name:</b> {custom_name_status}\n"
+        f"<b>Custom details:</b> {details_status}"
+    )
+
+
+def api_shop_mapping_manager_keyboard(mapping: dict) -> InlineKeyboardMarkup:
+    toggle_text = "❌ Disable" if _buyer_api_bool_value(mapping.get("enabled")) else "✅ Enable"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(toggle_text, callback_data="seller_api_shop_toggle")],
+        [InlineKeyboardButton("✏️ Edit Product Name", callback_data="seller_api_shop_name")],
+        [InlineKeyboardButton("🧹 Clear Custom Name", callback_data="seller_api_shop_name_clear")],
+        [InlineKeyboardButton("💲 Edit Selling Price", callback_data="seller_api_shop_price")],
+        [InlineKeyboardButton("📁 Change Category", callback_data="seller_api_shop_category")],
+        [InlineKeyboardButton("🎨 Set Icon", callback_data="seller_api_shop_icon")],
+        [InlineKeyboardButton("🧹 Clear Icon", callback_data="seller_api_shop_icon_clear")],
+        [InlineKeyboardButton("📝 Edit Product Details", callback_data="seller_api_shop_details")],
+        [InlineKeyboardButton("🧹 Clear Product Details", callback_data="seller_api_shop_details_clear")],
+        [InlineKeyboardButton("🗑 Remove From Shop", callback_data="seller_api_shop_remove")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="seller_api_shop_return")],
+    ])
+
+
+def api_shop_mapping_category_keyboard() -> InlineKeyboardMarkup:
+    rows = []
+    seen = set()
+    for category_id in [*category_order, *CATEGORIES.keys()]:
+        if category_id in seen or category_id not in CATEGORIES:
+            continue
+        seen.add(category_id)
+        category = CATEGORIES[category_id]
+        rows.append([InlineKeyboardButton(
+            f"📁 {category.get('name', category_id)}",
+            callback_data=f"seller_api_shop_cat_{category_id}",
+        )])
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="seller_api_shop_detail")])
+    return InlineKeyboardMarkup(rows)
+
+
+def api_shop_remove_confirmation_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗑 Yes, Remove", callback_data="seller_api_shop_remove_confirm")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="seller_api_shop_detail")],
+    ])
+
+
+def api_shop_price_warning_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚠️ Confirm Lower Price", callback_data="seller_api_shop_price_confirm")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="seller_api_shop_detail")],
+    ])
+
+
+def api_shop_mapping_enable_errors(mapping_key: str, mapping: dict) -> list:
+    missing = []
+    if not str(mapping.get("api_product_id") or "").strip():
+        missing.append("API product ID")
+    if mapping.get("category_id") not in CATEGORIES:
+        missing.append("category")
+    selling_price = _buyer_api_numeric_value(mapping.get("selling_price"))
     if selling_price is None or selling_price <= 0:
         missing.append("selling price")
     return missing
@@ -3607,6 +3822,19 @@ async def send_buyer_api_browser(query, user_id: int, page: int = 0, force_refre
             "❌ <b>API PRODUCT BROWSER FAILED</b>\n\nUnexpected Seller API error.",
             seller_api_keyboard(),
         )
+
+
+async def send_api_shop_manager(query, user_id: int, page: int = 0):
+    mappings, safe_page, total_pages = api_shop_manager_page(page)
+    temp = admin_temp.setdefault(user_id, {})
+    temp["seller_api_shop_page"] = safe_page
+    user_state[user_id] = {"step": "seller_api_shop_manager"}
+    await edit_seller_api_callback_message(
+        query,
+        user_id,
+        render_api_shop_manager_page(mappings, safe_page, total_pages),
+        api_shop_manager_keyboard(mappings, safe_page, total_pages),
+    )
 
 
 def _buyer_api_key_list(value, limit: int) -> str:
@@ -5781,7 +6009,7 @@ def api_shop_product_rows(category_id: str, styled: bool = True) -> list:
     rows = []
     for mapping in enabled_api_shop_mappings(category_id):
         api_product_id = str(mapping.get("api_product_id") or "").strip()
-        name = str(mapping.get("name") or "Product").strip() or "Product"
+        name = api_mapping_display_name(mapping)
         selling_price = _buyer_api_numeric_value(mapping.get("selling_price"))
         stock = _buyer_api_numeric_value(mapping.get("last_stock"))
         out_of_stock = stock is not None and stock <= 0
@@ -5806,9 +6034,11 @@ def api_shop_product_rows(category_id: str, styled: bool = True) -> list:
 
 
 def render_api_shop_product_details(mapping: dict) -> str:
-    name = str(mapping.get("name") or "N/A")
+    name = api_mapping_display_name(mapping)
     selling_price = _buyer_api_numeric_value(mapping.get("selling_price"))
     stock = _buyer_api_numeric_value(mapping.get("last_stock"))
+    details = str(mapping.get("details") or "").strip()
+    details_text = details if details else "Please check product information before purchase."
     if stock is None:
         stock_text = "N/A"
     elif float(stock).is_integer():
@@ -5822,7 +6052,8 @@ def render_api_shop_product_details(mapping: dict) -> str:
         f"<b>Stock:</b> {escape_html(stock_text)}{' pcs' if stock is not None else ''}\n"
         f"<b>Requires customer email:</b> {'Yes' if _buyer_api_bool_value(mapping.get('requires_customer_email')) else 'No'}\n"
         f"<b>Slot product:</b> {'Yes' if _buyer_api_bool_value(mapping.get('is_slot_product')) else 'No'}\n"
-        "<b>Delivery:</b> Coming soon"
+        "<b>Delivery:</b> Coming soon\n\n"
+        f"<b>Details:</b>\n{escape_html(details_text)}"
     )
 
 
@@ -7742,7 +7973,80 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    if step == "seller_api_icon_input" and is_admin(user_id):
+    if step == "seller_api_shop_name_input" and is_admin(user_id):
+        mapping_key, mapping = selected_saved_api_shop_mapping(user_id)
+        if not mapping:
+            await update.message.reply_text("❌ Mapped product selection expired.", reply_markup=seller_api_keyboard())
+            return
+        custom_name = text.strip()
+        if not custom_name:
+            await update.message.reply_text("❌ Product name cannot be empty.")
+            return
+        if len(custom_name) > 80:
+            await update.message.reply_text("❌ Product name must be 80 characters or fewer.")
+            return
+        mapping["custom_name"] = custom_name
+        user_state[user_id] = {"step": "seller_api_shop_detail"}
+        await update.message.reply_text(
+            "✅ <b>Custom product name saved.</b>\n\n" + render_api_shop_mapping_detail(mapping_key, mapping),
+            reply_markup=api_shop_mapping_manager_keyboard(mapping),
+            parse_mode="HTML",
+        )
+        return
+
+    if step == "seller_api_shop_details_input" and is_admin(user_id):
+        mapping_key, mapping = selected_saved_api_shop_mapping(user_id)
+        if not mapping:
+            await update.message.reply_text("❌ Mapped product selection expired.", reply_markup=seller_api_keyboard())
+            return
+        details = text.strip()
+        if not details:
+            await update.message.reply_text("❌ Product details cannot be empty.")
+            return
+        if len(details) > 2500:
+            await update.message.reply_text("❌ Product details must be 2500 characters or fewer.")
+            return
+        mapping["details"] = details
+        user_state[user_id] = {"step": "seller_api_shop_detail"}
+        await update.message.reply_text(
+            "✅ <b>Custom product details saved.</b>\n\n" + render_api_shop_mapping_detail(mapping_key, mapping),
+            reply_markup=api_shop_mapping_manager_keyboard(mapping),
+            parse_mode="HTML",
+        )
+        return
+
+    if step == "seller_api_shop_price_input" and is_admin(user_id):
+        mapping_key, mapping = selected_saved_api_shop_mapping(user_id)
+        if not mapping:
+            await update.message.reply_text("❌ Mapped product selection expired.", reply_markup=seller_api_keyboard())
+            return
+        selling_price = safe_decimal(text)
+        if selling_price is None or not selling_price.is_finite() or selling_price <= 0:
+            await update.message.reply_text("❌ Selling price must be a number greater than 0.")
+            return
+        api_cost = _buyer_api_numeric_value(mapping.get("api_cost"))
+        if api_cost is not None and selling_price < safe_decimal(api_cost):
+            admin_temp[user_id]["pending_api_shop_price"] = float(selling_price)
+            user_state[user_id] = {"step": "seller_api_shop_price_confirm"}
+            await update.message.reply_text(
+                "⚠️ <b>Selling price is lower than API cost. This may cause loss. Confirm?</b>\n\n"
+                f"<b>API cost:</b> {format_money(api_cost)}\n"
+                f"<b>Selling price:</b> {format_money(float(selling_price))}",
+                reply_markup=api_shop_price_warning_keyboard(),
+                parse_mode="HTML",
+            )
+            return
+        mapping["selling_price"] = float(selling_price)
+        admin_temp[user_id].pop("pending_api_shop_price", None)
+        user_state[user_id] = {"step": "seller_api_shop_detail"}
+        await update.message.reply_text(
+            "✅ <b>Selling price saved.</b>\n\n" + render_api_shop_mapping_detail(mapping_key, mapping),
+            reply_markup=api_shop_mapping_manager_keyboard(mapping),
+            parse_mode="HTML",
+        )
+        return
+
+    if step in {"seller_api_icon_input", "seller_api_shop_icon_input"} and is_admin(user_id):
         await handle_seller_api_icon_message(update, user_id)
         return
 
@@ -8699,6 +9003,269 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "seller_api_debug":
         await send_inline_from_callback(query, render_seller_api_debug_config(), seller_api_keyboard())
+        return
+
+    if data == "seller_api_shop_products":
+        reset_admin_temp(user_id)
+        await send_api_shop_manager(query, user_id, 0)
+        return
+
+    if data == "seller_api_shop_back":
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "seller_api_admin"}
+        await edit_seller_api_callback_message(
+            query,
+            user_id,
+            render_seller_api_panel(),
+            seller_api_keyboard(),
+        )
+        return
+
+    if data.startswith("seller_api_shop_page_"):
+        try:
+            page = int(data.replace("seller_api_shop_page_", "", 1))
+        except ValueError:
+            page = 0
+        await send_api_shop_manager(query, user_id, page)
+        return
+
+    if data == "seller_api_shop_return":
+        page = int(admin_temp.get(user_id, {}).get("seller_api_shop_page", 0) or 0)
+        admin_temp.get(user_id, {}).pop("selected_api_mapping_key", None)
+        await send_api_shop_manager(query, user_id, page)
+        return
+
+    if data.startswith("seller_api_shop_view_"):
+        callback_token = data.replace("seller_api_shop_view_", "", 1)
+        mapping_key, mapping = find_saved_api_shop_mapping(callback_token)
+        if not mapping:
+            await edit_seller_api_callback_message(
+                query,
+                user_id,
+                "❌ <b>Mapped product was not found.</b>",
+                seller_api_keyboard(),
+            )
+            return
+        admin_temp.setdefault(user_id, {})["selected_api_mapping_key"] = mapping_key
+        user_state[user_id] = {"step": "seller_api_shop_detail"}
+        await edit_seller_api_callback_message(
+            query,
+            user_id,
+            render_api_shop_mapping_detail(mapping_key, mapping),
+            api_shop_mapping_manager_keyboard(mapping),
+        )
+        return
+
+    if data == "seller_api_shop_detail":
+        mapping_key, mapping = selected_saved_api_shop_mapping(user_id)
+        if not mapping:
+            await send_api_shop_manager(query, user_id, 0)
+            return
+        admin_temp.get(user_id, {}).pop("pending_api_shop_price", None)
+        user_state[user_id] = {"step": "seller_api_shop_detail"}
+        await edit_seller_api_callback_message(
+            query,
+            user_id,
+            render_api_shop_mapping_detail(mapping_key, mapping),
+            api_shop_mapping_manager_keyboard(mapping),
+        )
+        return
+
+    if data == "seller_api_shop_toggle":
+        mapping_key, mapping = selected_saved_api_shop_mapping(user_id)
+        if not mapping:
+            await send_api_shop_manager(query, user_id, 0)
+            return
+        if _buyer_api_bool_value(mapping.get("enabled")):
+            mapping["enabled"] = False
+            message = "✅ <b>Mapped product disabled.</b>"
+        else:
+            missing = api_shop_mapping_enable_errors(mapping_key, mapping)
+            if missing:
+                await edit_seller_api_callback_message(
+                    query,
+                    user_id,
+                    "❌ <b>Cannot enable mapped product.</b>\n\nMissing: " + escape_html(", ".join(missing)),
+                    api_shop_mapping_manager_keyboard(mapping),
+                )
+                return
+            mapping["enabled"] = True
+            message = "✅ <b>Mapped product enabled.</b>"
+        await edit_seller_api_callback_message(
+            query,
+            user_id,
+            message + "\n\n" + render_api_shop_mapping_detail(mapping_key, mapping),
+            api_shop_mapping_manager_keyboard(mapping),
+        )
+        return
+
+    if data == "seller_api_shop_name":
+        _, mapping = selected_saved_api_shop_mapping(user_id)
+        if not mapping:
+            await send_api_shop_manager(query, user_id, 0)
+            return
+        user_state[user_id] = {"step": "seller_api_shop_name_input"}
+        await edit_seller_api_callback_message(
+            query,
+            user_id,
+            "✏️ <b>EDIT PRODUCT NAME</b>\n\nSend a custom display name up to 80 characters.",
+            InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="seller_api_shop_detail")]]),
+        )
+        return
+
+    if data == "seller_api_shop_name_clear":
+        mapping_key, mapping = selected_saved_api_shop_mapping(user_id)
+        if not mapping:
+            await send_api_shop_manager(query, user_id, 0)
+            return
+        mapping.pop("custom_name", None)
+        await edit_seller_api_callback_message(
+            query,
+            user_id,
+            "✅ <b>Custom name cleared.</b>\n\n" + render_api_shop_mapping_detail(mapping_key, mapping),
+            api_shop_mapping_manager_keyboard(mapping),
+        )
+        return
+
+    if data == "seller_api_shop_price":
+        _, mapping = selected_saved_api_shop_mapping(user_id)
+        if not mapping:
+            await send_api_shop_manager(query, user_id, 0)
+            return
+        admin_temp.get(user_id, {}).pop("pending_api_shop_price", None)
+        user_state[user_id] = {"step": "seller_api_shop_price_input"}
+        await edit_seller_api_callback_message(
+            query,
+            user_id,
+            "💲 <b>EDIT SELLING PRICE</b>\n\nSend a selling price greater than 0.",
+            InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="seller_api_shop_detail")]]),
+        )
+        return
+
+    if data == "seller_api_shop_price_confirm":
+        mapping_key, mapping = selected_saved_api_shop_mapping(user_id)
+        pending_price = admin_temp.get(user_id, {}).pop("pending_api_shop_price", None)
+        price = _buyer_api_numeric_value(pending_price)
+        if not mapping or price is None or price <= 0:
+            await send_api_shop_manager(query, user_id, 0)
+            return
+        mapping["selling_price"] = price
+        user_state[user_id] = {"step": "seller_api_shop_detail"}
+        await edit_seller_api_callback_message(
+            query,
+            user_id,
+            "✅ <b>Lower selling price confirmed and saved.</b>\n\n" + render_api_shop_mapping_detail(mapping_key, mapping),
+            api_shop_mapping_manager_keyboard(mapping),
+        )
+        return
+
+    if data == "seller_api_shop_category":
+        _, mapping = selected_saved_api_shop_mapping(user_id)
+        if not mapping:
+            await send_api_shop_manager(query, user_id, 0)
+            return
+        await edit_seller_api_callback_message(
+            query,
+            user_id,
+            "📁 <b>CHANGE MAPPED PRODUCT CATEGORY</b>\n\nSelect an existing local category.",
+            api_shop_mapping_category_keyboard(),
+        )
+        return
+
+    if data.startswith("seller_api_shop_cat_"):
+        category_id = data.replace("seller_api_shop_cat_", "", 1)
+        mapping_key, mapping = selected_saved_api_shop_mapping(user_id)
+        if not mapping or category_id not in CATEGORIES:
+            await send_api_shop_manager(query, user_id, 0)
+            return
+        mapping["category_id"] = category_id
+        await edit_seller_api_callback_message(
+            query,
+            user_id,
+            "✅ <b>Category mapping saved.</b>\n\n" + render_api_shop_mapping_detail(mapping_key, mapping),
+            api_shop_mapping_manager_keyboard(mapping),
+        )
+        return
+
+    if data == "seller_api_shop_icon":
+        _, mapping = selected_saved_api_shop_mapping(user_id)
+        if not mapping:
+            await send_api_shop_manager(query, user_id, 0)
+            return
+        user_state[user_id] = {"step": "seller_api_shop_icon_input"}
+        await edit_seller_api_callback_message(
+            query,
+            user_id,
+            "🎨 <b>SET MAPPED PRODUCT ICON</b>\n\n"
+            "Send a normal icon, Telegram custom/animated emoji, or custom emoji sticker.",
+            InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="seller_api_shop_detail")]]),
+        )
+        return
+
+    if data == "seller_api_shop_icon_clear":
+        mapping_key, mapping = selected_saved_api_shop_mapping(user_id)
+        if not mapping:
+            await send_api_shop_manager(query, user_id, 0)
+            return
+        mapping.pop("icon", None)
+        mapping.pop("icon_custom_emoji_id", None)
+        await edit_seller_api_callback_message(
+            query,
+            user_id,
+            "✅ <b>Mapped product icon cleared.</b>\n\n" + render_api_shop_mapping_detail(mapping_key, mapping),
+            api_shop_mapping_manager_keyboard(mapping),
+        )
+        return
+
+    if data == "seller_api_shop_details":
+        _, mapping = selected_saved_api_shop_mapping(user_id)
+        if not mapping:
+            await send_api_shop_manager(query, user_id, 0)
+            return
+        user_state[user_id] = {"step": "seller_api_shop_details_input"}
+        await edit_seller_api_callback_message(
+            query,
+            user_id,
+            "📝 <b>EDIT PRODUCT DETAILS</b>\n\nSend plain-text product details up to 2500 characters.",
+            InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="seller_api_shop_detail")]]),
+        )
+        return
+
+    if data == "seller_api_shop_details_clear":
+        mapping_key, mapping = selected_saved_api_shop_mapping(user_id)
+        if not mapping:
+            await send_api_shop_manager(query, user_id, 0)
+            return
+        mapping.pop("details", None)
+        await edit_seller_api_callback_message(
+            query,
+            user_id,
+            "✅ <b>Custom product details cleared.</b>\n\n" + render_api_shop_mapping_detail(mapping_key, mapping),
+            api_shop_mapping_manager_keyboard(mapping),
+        )
+        return
+
+    if data == "seller_api_shop_remove":
+        _, mapping = selected_saved_api_shop_mapping(user_id)
+        if not mapping:
+            await send_api_shop_manager(query, user_id, 0)
+            return
+        await edit_seller_api_callback_message(
+            query,
+            user_id,
+            "🗑 <b>Remove this API product from your shop?</b>\n\n"
+            "This removes only the saved mapping. It does not affect the Seller API product or local products.",
+            api_shop_remove_confirmation_keyboard(),
+        )
+        return
+
+    if data == "seller_api_shop_remove_confirm":
+        mapping_key, mapping = selected_saved_api_shop_mapping(user_id)
+        if mapping_key and mapping:
+            api_product_mappings.pop(mapping_key, None)
+        admin_temp.get(user_id, {}).pop("selected_api_mapping_key", None)
+        page = int(admin_temp.get(user_id, {}).get("seller_api_shop_page", 0) or 0)
+        await send_api_shop_manager(query, user_id, page)
         return
 
     if data == "seller_api_browse":
@@ -10890,7 +11457,7 @@ async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step = user_state.get(user_id, {}).get("step")
     if step in {"dashboard_emoji_input", "dashboard_header_emoji_input"}:
         return await handle_dashboard_emoji_message(update, user_id)
-    if step == "seller_api_icon_input":
+    if step in {"seller_api_icon_input", "seller_api_shop_icon_input"}:
         return await handle_seller_api_icon_message(update, user_id)
     if step not in {"category_add_icon", "category_icon_input"}:
         return False
@@ -10912,7 +11479,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if step in {"dashboard_emoji_input", "dashboard_header_emoji_input"}:
         await handle_dashboard_emoji_message(update, user_id)
         return
-    if step == "seller_api_icon_input":
+    if step in {"seller_api_icon_input", "seller_api_shop_icon_input"}:
         await handle_seller_api_icon_message(update, user_id)
         return
     if step not in ("stock_add_single_input", "stock_add_bulk_input"):
@@ -10980,7 +11547,7 @@ async def handle_dashboard_emoji_media(update: Update, context: ContextTypes.DEF
     if not is_admin(user_id):
         return False
     step = user_state.get(user_id, {}).get("step")
-    if step == "seller_api_icon_input":
+    if step in {"seller_api_icon_input", "seller_api_shop_icon_input"}:
         return await handle_seller_api_icon_message(update, user_id)
     if step not in {"dashboard_emoji_input", "dashboard_header_emoji_input"}:
         return False
