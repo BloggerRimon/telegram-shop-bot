@@ -3447,6 +3447,64 @@ def update_api_product_mapping(product: dict, **changes) -> dict:
     return mapping
 
 
+def sync_api_product_mapping_validity(products: list, allow_missing: bool = True) -> dict:
+    """Refresh saved mappings by exact seller product ID without deleting mappings."""
+    current_products = {}
+    for product in products or []:
+        api_product_id = _buyer_api_product_id(product)
+        if api_product_id:
+            current_products[api_product_id] = product
+
+    now_text = datetime.now().isoformat(timespec="seconds")
+    result = {"missing": 0, "restored": 0, "updated": 0}
+    for mapping_key, mapping in saved_api_shop_mappings():
+        api_product_id = _saved_api_mapping_identity(mapping_key, mapping)
+        current_product = current_products.get(api_product_id)
+        if current_product is None:
+            if not allow_missing:
+                continue
+            if not _buyer_api_bool_value(mapping.get("seller_missing")):
+                item = api_product_shop_order_item(api_product_id)
+                if item in shop_order:
+                    mapping["shop_order_index_before_missing"] = shop_order.index(item)
+                mapping["enabled_before_missing"] = _buyer_api_bool_value(mapping.get("enabled"))
+                mapping["last_missing_at"] = now_text
+            mapping["seller_missing"] = True
+            mapping["enabled"] = False
+            remove_api_product_shop_order_item(api_product_id)
+            result["missing"] += 1
+            continue
+
+        was_missing = _buyer_api_bool_value(mapping.get("seller_missing"))
+        fresh_snapshot = _api_product_mapping_snapshot(current_product)
+        if str(fresh_snapshot.get("name") or "").strip().lower() in {"", "n/a"}:
+            fresh_snapshot.pop("name", None)
+        if fresh_snapshot.get("api_cost") is None:
+            fresh_snapshot.pop("api_cost", None)
+        if fresh_snapshot.get("last_stock") is None:
+            fresh_snapshot.pop("last_stock", None)
+        mapping.update(fresh_snapshot)
+        mapping["seller_missing"] = False
+        if was_missing:
+            mapping["last_restored_at"] = now_text
+            mapping["enabled"] = _buyer_api_bool_value(mapping.get("enabled_before_missing"))
+            item = api_product_shop_order_item(api_product_id)
+            remove_api_product_shop_order_item(api_product_id)
+            if _buyer_api_bool_value(mapping.get("enabled")):
+                saved_index = mapping.get("shop_order_index_before_missing")
+                try:
+                    saved_index = max(0, min(int(saved_index), len(shop_order)))
+                except (TypeError, ValueError):
+                    saved_index = len(shop_order)
+                shop_order.insert(saved_index, item)
+            result["restored"] += 1
+        else:
+            result["updated"] += 1
+
+    normalize_shop_order()
+    return result
+
+
 def filter_buyer_api_products(products: list, search: str = "", filter_name: str = "all") -> list:
     search_text = str(search or "").strip().casefold()
     filtered = []
@@ -3517,6 +3575,8 @@ async def fetch_cached_buyer_api_products(user_id: int, force_refresh: bool = Fa
         temp["seller_api_cache_warning"] = "API refresh failed. Showing cached data."
         return stale_cache["products"], int(stale_cache.get("total", len(stale_cache["products"])))
 
+    # Only a complete fresh list can safely prove that a saved product is missing.
+    sync_result = sync_api_product_mapping_validity(products, allow_missing=total <= len(products))
     fetched_at = datetime.now().timestamp()
     seller_api_browser_cache[user_id] = {
         "products": products,
@@ -3526,6 +3586,7 @@ async def fetch_cached_buyer_api_products(user_id: int, force_refresh: bool = Fa
     }
     temp["seller_api_cache_source"] = "Live"
     temp["seller_api_cache_fetched_at"] = fetched_at
+    temp["seller_api_mapping_sync"] = sync_result
     temp.pop("seller_api_cache_warning", None)
     return products, total
 
@@ -3796,6 +3857,8 @@ def buyer_api_mapping_enable_errors(product: dict) -> list:
         return ["API product ID"]
     mapping = api_product_mappings.get(api_product_id)
     missing = []
+    if mapping and _buyer_api_bool_value(mapping.get("seller_missing")):
+        missing.append("product is missing from Seller API")
     if not mapping or mapping.get("category_id") not in CATEGORIES:
         missing.append("category")
     selling_price = _buyer_api_numeric_value(mapping.get("selling_price") if mapping else None)
@@ -3870,7 +3933,10 @@ def render_api_shop_manager_page(mappings: list, page: int, total_pages: int) ->
     if not page_items:
         lines.extend(["", "No mapped products saved yet."])
     for index, (_, mapping) in enumerate(page_items, start=start + 1):
-        status = "✅ Enabled" if _buyer_api_bool_value(mapping.get("enabled")) else "❌ Disabled"
+        if _buyer_api_bool_value(mapping.get("seller_missing")):
+            status = "⚠️ Missing from Seller API"
+        else:
+            status = "✅ Enabled" if _buyer_api_bool_value(mapping.get("enabled")) else "❌ Disabled"
         price = _buyer_api_numeric_value(mapping.get("selling_price"))
         price_text = format_money(price) if price is not None and price > 0 else "Not set"
         lines.extend([
@@ -3886,7 +3952,10 @@ def api_shop_manager_keyboard(mappings: list, page: int, total_pages: int) -> In
     start = page * 10
     rows = []
     for absolute_index, (mapping_key, mapping) in enumerate(mappings[start:start + 10], start=start + 1):
-        status = "✅" if _buyer_api_bool_value(mapping.get("enabled")) else "❌"
+        if _buyer_api_bool_value(mapping.get("seller_missing")):
+            status = "⚠️"
+        else:
+            status = "✅" if _buyer_api_bool_value(mapping.get("enabled")) else "❌"
         api_product_id = _saved_api_mapping_identity(mapping_key, mapping)
         label = f"{absolute_index}. {status} {api_mapping_display_name(mapping)}"
         rows.append([InlineKeyboardButton(
@@ -3917,6 +3986,14 @@ def render_api_shop_mapping_detail(mapping_key: str, mapping: dict) -> str:
         icon_status = _normal_icon_text(mapping, fallback="📦")
     else:
         icon_status = "Default 📦"
+    missing_notice = ""
+    if _buyer_api_bool_value(mapping.get("seller_missing")):
+        missing_notice = (
+            "\n\n⚠️ <b>This product was not found in the latest Seller API product list.</b>\n"
+            "It is hidden from user shop."
+        )
+    elif mapping.get("last_restored_at"):
+        missing_notice = f"\n\n✅ <b>Restored from Seller API:</b> {escape_html(str(mapping.get('last_restored_at')))}"
     return (
         "🛒 <b>MANAGE MAPPED PRODUCT</b>\n\n"
         f"<b>Display name:</b> {escape_html(api_mapping_display_name(mapping))}\n"
@@ -3931,10 +4008,17 @@ def render_api_shop_mapping_detail(mapping_key: str, mapping: dict) -> str:
         f"<b>Icon:</b> {escape_html(icon_status)}\n"
         f"<b>Custom name:</b> {custom_name_status}\n"
         f"<b>Custom details:</b> {details_status}"
+        f"{missing_notice}"
     )
 
 
 def api_shop_mapping_manager_keyboard(mapping: dict) -> InlineKeyboardMarkup:
+    if _buyer_api_bool_value(mapping.get("seller_missing")):
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Recheck Seller API", callback_data="seller_api_shop_recheck")],
+            [InlineKeyboardButton("🗑 Remove From Shop", callback_data="seller_api_shop_remove")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="seller_api_shop_return")],
+        ])
     toggle_text = "❌ Disable" if _buyer_api_bool_value(mapping.get("enabled")) else "✅ Enable"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(toggle_text, callback_data="seller_api_shop_toggle")],
@@ -3983,6 +4067,8 @@ def api_shop_price_warning_keyboard() -> InlineKeyboardMarkup:
 
 def api_shop_mapping_enable_errors(mapping_key: str, mapping: dict) -> list:
     missing = []
+    if _buyer_api_bool_value(mapping.get("seller_missing")):
+        missing.append("product is missing from Seller API")
     if not str(mapping.get("api_product_id") or "").strip():
         missing.append("API product ID")
     if mapping.get("category_id") not in CATEGORIES:
@@ -6282,7 +6368,11 @@ def render_shop_menu_text() -> str:
 
 
 def is_api_shop_mapping_visible(mapping: dict) -> bool:
-    if not isinstance(mapping, dict) or not _buyer_api_bool_value(mapping.get("enabled")):
+    if (
+        not isinstance(mapping, dict)
+        or _buyer_api_bool_value(mapping.get("seller_missing"))
+        or not _buyer_api_bool_value(mapping.get("enabled"))
+    ):
         return False
     api_product_id = str(mapping.get("api_product_id") or "").strip()
     category_id = str(mapping.get("category_id") or "").strip()
@@ -6491,6 +6581,8 @@ def is_valid_customer_email(value: str) -> bool:
 
 
 def validate_api_shop_purchase(mapping: dict, quantity: int) -> str:
+    if _buyer_api_bool_value((mapping or {}).get("seller_missing")):
+        return "This product is currently unavailable."
     if not is_api_shop_mapping_visible(mapping):
         return "This product is no longer available."
     if not isinstance(quantity, int) or quantity <= 0:
@@ -9872,10 +9964,58 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if data == "seller_api_shop_recheck":
+        mapping_key, mapping = selected_saved_api_shop_mapping(user_id)
+        if not mapping:
+            await send_api_shop_manager(query, user_id, 0)
+            return
+        try:
+            await fetch_cached_buyer_api_products(user_id, force_refresh=True)
+        except BuyerAPIError as error:
+            await edit_seller_api_callback_message(
+                query,
+                user_id,
+                f"❌ <b>Seller API recheck failed.</b>\n\n{escape_html(str(error))}",
+                api_shop_mapping_manager_keyboard(mapping),
+            )
+            return
+        except Exception as error:
+            print(f"Seller API mapped product recheck failed: {type(error).__name__}")
+            await edit_seller_api_callback_message(
+                query,
+                user_id,
+                "❌ <b>Seller API recheck failed.</b>\n\nPlease try again later.",
+                api_shop_mapping_manager_keyboard(mapping),
+            )
+            return
+
+        if _seller_api_browser_temp(user_id).get("seller_api_cache_source") != "Live":
+            message = "⚠️ <b>Live recheck failed.</b> Cached product data was not used to change missing status."
+        elif _buyer_api_bool_value(mapping.get("seller_missing")):
+            message = "⚠️ <b>Product is still missing from Seller API.</b>\n\nIt remains hidden from user shop."
+        else:
+            message = "✅ <b>Product restored from Seller API.</b>\n\nIts previous shop settings were preserved."
+        await edit_seller_api_callback_message(
+            query,
+            user_id,
+            message + "\n\n" + render_api_shop_mapping_detail(mapping_key, mapping),
+            api_shop_mapping_manager_keyboard(mapping),
+        )
+        return
+
     if data == "seller_api_shop_toggle":
         mapping_key, mapping = selected_saved_api_shop_mapping(user_id)
         if not mapping:
             await send_api_shop_manager(query, user_id, 0)
+            return
+        if _buyer_api_bool_value(mapping.get("seller_missing")):
+            await edit_seller_api_callback_message(
+                query,
+                user_id,
+                "❌ <b>This product is missing from Seller API. Recheck or remove it.</b>\n\n"
+                + render_api_shop_mapping_detail(mapping_key, mapping),
+                api_shop_mapping_manager_keyboard(mapping),
+            )
             return
         if _buyer_api_bool_value(mapping.get("enabled")):
             mapping["enabled"] = False
@@ -10305,6 +10445,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not product or not api_product_id:
             await send_inline_from_callback(query, "❌ <b>API product ID is missing.</b>", seller_api_keyboard())
             return
+        if mapping and _buyer_api_bool_value(mapping.get("seller_missing")):
+            await send_inline_from_callback(
+                query,
+                "❌ <b>This product is missing from Seller API. Recheck or remove it.</b>",
+                buyer_api_product_detail_keyboard(product),
+            )
+            return
         if mapping and mapping.get("enabled"):
             update_api_product_mapping(product, enabled=False)
             message = "✅ <b>API product disabled.</b>"
@@ -10375,6 +10522,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "seller_api_products":
         try:
             products, total = await asyncio.to_thread(fetch_buyer_api_products)
+            sync_api_product_mapping_validity(products, allow_missing=total <= len(products))
             text = render_buyer_api_products(products, total)
         except BuyerAPIError as error:
             text = f"❌ <b>API PRODUCT FETCH FAILED</b>\n\n{escape_html(str(error))}"
@@ -10386,7 +10534,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "seller_api_inspect":
         try:
-            products, _ = await asyncio.to_thread(fetch_buyer_api_products)
+            products, total = await asyncio.to_thread(fetch_buyer_api_products)
+            sync_api_product_mapping_validity(products, allow_missing=total <= len(products))
             text = render_buyer_api_product_field_inspection(products)
         except BuyerAPIError as error:
             text = f"❌ <b>API PRODUCT FIELD INSPECTION FAILED</b>\n\n{escape_html(str(error))}"
