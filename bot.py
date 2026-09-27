@@ -6836,6 +6836,97 @@ async def notify_admin_api_purchase_failure(
             print(f"Mapped purchase admin alert failed for admin_id={admin_id}: {type(exc).__name__}")
 
 
+async def notify_admin_api_purchase_success(
+    bot,
+    user_id: int,
+    order: dict,
+    mapping: dict,
+    quantity: int,
+    unit_price: float,
+    total: float,
+    order_code: str,
+    delivered_count: int,
+):
+    balance_data = None
+    try:
+        balance_data = await asyncio.to_thread(fetch_buyer_api_balance)
+    except Exception as exc:
+        print(f"Seller API post-purchase balance check failed: {type(exc).__name__}")
+
+    profile = get_user_profile(user_id)
+    username = str(profile.get("username") or "").strip().lstrip("@")
+    username_text = f"@{username}" if username else "N/A"
+    full_name = " ".join(
+        part for part in (
+            str(profile.get("first_name") or "").strip(),
+            str(profile.get("last_name") or "").strip(),
+        ) if part
+    ) or "N/A"
+
+    api_cost = _buyer_api_numeric_value(mapping.get("api_cost"))
+    if api_cost is None:
+        api_cost_text = "N/A"
+        api_total_text = "N/A"
+        profit_text = "N/A"
+    else:
+        api_total = round(api_cost * quantity, 2)
+        api_cost_text = format_money(api_cost)
+        api_total_text = format_money(api_total)
+        profit_text = format_money(total - api_total)
+
+    balance_number = None
+    if isinstance(balance_data, dict):
+        balance_number = _buyer_api_numeric_value(balance_data.get("balance"))
+        if balance_number is None:
+            balance_number = _buyer_api_numeric_value(balance_data.get("balanceText"))
+        balance_text = balance_data.get("balanceText")
+        if balance_text in (None, ""):
+            balance_text = balance_data.get("balance")
+            currency = str(balance_data.get("walletCurrency") or "").strip()
+            if balance_text not in (None, "") and currency:
+                balance_text = f"{balance_text} {currency}"
+        balance_display = _format_buyer_api_value(balance_text)
+    else:
+        balance_display = "Could not fetch"
+
+    text = (
+        "✅ <b>API Product Sold</b>\n\n"
+        "<b>User</b>\n"
+        f"• User ID: <code>{user_id}</code>\n"
+        f"• Username: {escape_html(username_text)}\n"
+        f"• Full name: {escape_html(full_name)}\n\n"
+        "<b>Product</b>\n"
+        f"• Display name: {escape_html(api_mapping_display_name(mapping))}\n"
+        f"• API product ID: <code>{escape_html(mapping.get('api_product_id') or 'N/A')}</code>\n"
+        f"• Quantity: {quantity}\n"
+        f"• Unit selling price: {format_money(unit_price)}\n"
+        f"• Total paid: {format_money(total)}\n\n"
+        "<b>Seller/API</b>\n"
+        f"• Seller order code: <code>{escape_html(order_code or 'N/A')}</code>\n"
+        f"• API cost per item: {api_cost_text}\n"
+        f"• Estimated API total cost: {api_total_text}\n"
+        f"• Estimated profit: {profit_text}\n"
+        f"• API balance: {balance_display}\n\n"
+        "<b>Order</b>\n"
+        f"• Our order ID: <code>{escape_html(order.get('id') or 'N/A')}</code>\n"
+        "• Status: Completed\n"
+        f"• Delivered items count: {delivered_count}"
+    )
+    if balance_number is not None and balance_number < 5:
+        text += "\n\n⚠️ <b>Low Seller API balance. Please recharge soon.</b>"
+
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(
+                chat_id=admin_id,
+                text=text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        except Exception as exc:
+            print(f"Mapped purchase success alert failed for admin_id={admin_id}: {type(exc).__name__}")
+
+
 async def handle_api_purchase_failure(
     context,
     user_id: int,
@@ -7054,6 +7145,21 @@ async def process_api_shop_purchase(
             known_stock = api_shop_mapping_stock(mapping)
             if known_stock is not None:
                 mapping["last_stock"] = max(0, known_stock - quantity)
+        try:
+            context.application.create_task(notify_admin_api_purchase_success(
+                context.bot,
+                user_id,
+                order,
+                mapping,
+                quantity,
+                unit_price,
+                total,
+                order_code,
+                len(delivered_items),
+            ))
+        except Exception as exc:
+            # Admin reporting must never change an already completed user purchase.
+            print(f"Mapped purchase success notification scheduling failed: {type(exc).__name__}")
         user_state[user_id] = {"step": "main"}
 
         lines = [
