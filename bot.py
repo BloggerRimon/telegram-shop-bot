@@ -385,6 +385,23 @@ api_product_mappings = {}
 seller_api_browser_cache = {}
 api_purchase_in_progress = set()
 SELLER_API_BROWSER_CACHE_TTL_SECONDS = 300
+seller_api_auto_refresh = {
+    "enabled": False,
+    "interval_minutes": 10,
+    "last_run_at": None,
+    "last_success_at": None,
+    "last_error": None,
+    "last_total_products": 0,
+    "last_missing_marked": 0,
+    "last_restored": 0,
+    "last_balance": None,
+    "last_balance_text": None,
+    "low_balance_threshold": 5,
+    "last_low_balance_alert_at": None,
+    "low_balance_alert_active": False,
+}
+seller_api_refresh_running = False
+seller_api_auto_refresh_task = None
 
 DASHBOARD_EMOJI_KEYS = (
     "shop",
@@ -549,6 +566,7 @@ def build_state_snapshot():
         "category_order": category_order,
         "shop_order": shop_order,
         "api_product_mappings": api_product_mappings,
+        "seller_api_auto_refresh": seller_api_auto_refresh,
         "dashboard_custom_emoji_ids": dashboard_custom_emoji_ids,
         "dashboard_header_custom_emoji_ids": dashboard_header_custom_emoji_ids,
         "PROMO_CODES": PROMO_CODES,
@@ -620,6 +638,20 @@ def apply_loaded_state(data: dict):
         for api_product_id, mapping in loaded_api_product_mappings.items():
             if isinstance(mapping, dict) and str(api_product_id).strip():
                 api_product_mappings[str(api_product_id)] = dict(mapping)
+
+    loaded_auto_refresh = data.get("seller_api_auto_refresh", {})
+    if isinstance(loaded_auto_refresh, dict):
+        for key in seller_api_auto_refresh:
+            if key in loaded_auto_refresh:
+                seller_api_auto_refresh[key] = loaded_auto_refresh[key]
+    seller_api_auto_refresh["enabled"] = _buyer_api_bool_value(seller_api_auto_refresh.get("enabled"))
+    try:
+        interval_minutes = int(seller_api_auto_refresh.get("interval_minutes", 10))
+    except (TypeError, ValueError):
+        interval_minutes = 10
+    seller_api_auto_refresh["interval_minutes"] = interval_minutes if interval_minutes in {5, 10, 30} else 10
+    threshold = _buyer_api_numeric_value(seller_api_auto_refresh.get("low_balance_threshold"))
+    seller_api_auto_refresh["low_balance_threshold"] = float(threshold) if threshold is not None and threshold > 0 else 5
     if "normalize_shop_order" in globals():
         normalize_shop_order()
 
@@ -3258,6 +3290,7 @@ def admin_menu() -> ReplyKeyboardMarkup:
 
 def seller_api_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Auto Refresh Settings", callback_data="seller_api_auto_settings")],
         [InlineKeyboardButton("🛒 My API Shop Products", callback_data="seller_api_shop_products")],
         [InlineKeyboardButton("📦 Browse API Products", callback_data="seller_api_browse")],
         [InlineKeyboardButton("🧪 Test Connection", callback_data="seller_api_test")],
@@ -3267,6 +3300,51 @@ def seller_api_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🔎 Debug Config", callback_data="seller_api_debug")],
         [InlineKeyboardButton("⬅️ Back", callback_data="seller_api_back")],
     ])
+
+
+def _seller_api_status_value(value, fallback: str = "Never") -> str:
+    return escape_html(str(value)) if value not in (None, "") else fallback
+
+
+def render_seller_api_auto_refresh_status() -> str:
+    enabled = "✅ Enabled" if _buyer_api_bool_value(seller_api_auto_refresh.get("enabled")) else "❌ Disabled"
+    balance_text = seller_api_auto_refresh.get("last_balance_text")
+    if balance_text in (None, "") and seller_api_auto_refresh.get("last_error"):
+        balance_text = "Could not fetch"
+    return (
+        f"<b>Auto Refresh:</b> {enabled}\n"
+        f"<b>Interval:</b> {int(seller_api_auto_refresh.get('interval_minutes', 10))} minutes\n"
+        f"<b>Last run:</b> {_seller_api_status_value(seller_api_auto_refresh.get('last_run_at'))}\n"
+        f"<b>Last success:</b> {_seller_api_status_value(seller_api_auto_refresh.get('last_success_at'))}\n"
+        f"<b>Last error:</b> {_seller_api_status_value(seller_api_auto_refresh.get('last_error'), 'None')}\n"
+        f"<b>Last total products:</b> {int(seller_api_auto_refresh.get('last_total_products', 0) or 0)}\n"
+        f"<b>Missing marked:</b> {int(seller_api_auto_refresh.get('last_missing_marked', 0) or 0)}\n"
+        f"<b>Restored:</b> {int(seller_api_auto_refresh.get('last_restored', 0) or 0)}\n"
+        f"<b>Current API balance:</b> {_seller_api_status_value(balance_text, 'N/A')}\n"
+        f"<b>Low balance threshold:</b> {float(seller_api_auto_refresh.get('low_balance_threshold', 5)):.2f} USDT\n"
+        f"<b>Last low-balance alert:</b> {_seller_api_status_value(seller_api_auto_refresh.get('last_low_balance_alert_at'))}"
+    )
+
+
+def seller_api_auto_refresh_keyboard() -> InlineKeyboardMarkup:
+    enabled = _buyer_api_bool_value(seller_api_auto_refresh.get("enabled"))
+    interval = int(seller_api_auto_refresh.get("interval_minutes", 10) or 10)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            "❌ Disable Auto Refresh" if enabled else "✅ Enable Auto Refresh",
+            callback_data="seller_api_auto_toggle",
+        )],
+        [InlineKeyboardButton(
+            f"{'✅ ' if interval == minutes else ''}{minutes} minutes",
+            callback_data=f"seller_api_auto_interval_{minutes}",
+        ) for minutes in (5, 10, 30)],
+        [InlineKeyboardButton("▶️ Run Refresh Now", callback_data="seller_api_auto_run_now")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="seller_api_auto_back")],
+    ])
+
+
+def render_seller_api_auto_refresh_panel() -> str:
+    return "🔄 <b>SELLER API AUTO REFRESH</b>\n\n" + render_seller_api_auto_refresh_status()
 
 
 def render_seller_api_panel() -> str:
@@ -3284,7 +3362,8 @@ def render_seller_api_panel() -> str:
         f"<b>Starts with api_:</b> {prefix_status}\n"
         f"<b>Balance request:</b> <code>{escape_html(buyer_api_endpoint_preview('/api/telegram-buyer/balance'))}</code>"
         f"{warning_text}\n\n"
-        "Saved mappings can be managed here. Seller orders are not enabled."
+        f"{render_seller_api_auto_refresh_status()}\n\n"
+        "Saved mappings can be managed here."
     )
 
 
@@ -3463,7 +3542,8 @@ def sync_api_product_mapping_validity(products: list, allow_missing: bool = True
         if current_product is None:
             if not allow_missing:
                 continue
-            if not _buyer_api_bool_value(mapping.get("seller_missing")):
+            newly_missing = not _buyer_api_bool_value(mapping.get("seller_missing"))
+            if newly_missing:
                 item = api_product_shop_order_item(api_product_id)
                 if item in shop_order:
                     mapping["shop_order_index_before_missing"] = shop_order.index(item)
@@ -3472,7 +3552,8 @@ def sync_api_product_mapping_validity(products: list, allow_missing: bool = True
             mapping["seller_missing"] = True
             mapping["enabled"] = False
             remove_api_product_shop_order_item(api_product_id)
-            result["missing"] += 1
+            if newly_missing:
+                result["missing"] += 1
             continue
 
         was_missing = _buyer_api_bool_value(mapping.get("seller_missing"))
@@ -3555,6 +3636,180 @@ def _seller_api_browser_cache_entry(user_id: int, allow_expired: bool = False):
     return None
 
 
+def _seller_api_refresh_error_text(error) -> str:
+    text = str(error or "Unknown refresh error.").strip() or "Unknown refresh error."
+    if BUYER_API_KEY:
+        text = text.replace(BUYER_API_KEY, "[redacted]")
+    return text[:200]
+
+
+def _seller_api_balance_values(balance_data: dict):
+    if not isinstance(balance_data, dict):
+        return None, "Could not fetch"
+    balance = _buyer_api_numeric_value(balance_data.get("balance"))
+    if balance is None:
+        balance = _buyer_api_numeric_value(balance_data.get("balanceText"))
+    balance_text = balance_data.get("balanceText")
+    if balance_text in (None, ""):
+        balance_text = balance_data.get("balance")
+        currency = str(balance_data.get("walletCurrency") or "").strip()
+        if balance_text not in (None, "") and currency:
+            balance_text = f"{balance_text} {currency}"
+    return balance, str(balance_text) if balance_text not in (None, "") else "N/A"
+
+
+async def maybe_notify_low_seller_api_balance(bot, balance) -> bool:
+    threshold = _buyer_api_numeric_value(seller_api_auto_refresh.get("low_balance_threshold")) or 5
+    if balance is None:
+        return False
+    if balance >= threshold:
+        seller_api_auto_refresh["low_balance_alert_active"] = False
+        return False
+
+    now = datetime.now()
+    active = _buyer_api_bool_value(seller_api_auto_refresh.get("low_balance_alert_active"))
+    last_alert = seller_api_auto_refresh.get("last_low_balance_alert_at")
+    try:
+        last_alert_dt = datetime.fromisoformat(str(last_alert)) if last_alert else None
+    except (TypeError, ValueError):
+        last_alert_dt = None
+    if active and last_alert_dt and (now - last_alert_dt).total_seconds() < 6 * 60 * 60:
+        return False
+
+    text = (
+        "⚠️ <b>Low Seller API Balance</b>\n\n"
+        f"<b>Current Balance:</b> {float(balance):.2f} USDT\n"
+        "Please recharge your seller API account soon."
+    )
+    sent = False
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, text, parse_mode="HTML")
+            sent = True
+        except Exception as exc:
+            print(f"Seller API low-balance alert failed for admin_id={admin_id}: {type(exc).__name__}")
+    if sent:
+        seller_api_auto_refresh["last_low_balance_alert_at"] = now.isoformat(timespec="seconds")
+        seller_api_auto_refresh["low_balance_alert_active"] = True
+    return sent
+
+
+async def notify_admin_seller_api_refresh_changes(bot, total: int, sync_result: dict, balance_text: str):
+    text = (
+        "🔄 <b>Seller API auto refresh completed</b>\n\n"
+        f"<b>Total products:</b> {total}\n"
+        f"<b>Missing marked:</b> {int(sync_result.get('missing', 0) or 0)}\n"
+        f"<b>Restored:</b> {int(sync_result.get('restored', 0) or 0)}\n"
+        f"<b>Current balance:</b> {escape_html(balance_text)}"
+    )
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, text, parse_mode="HTML")
+        except Exception as exc:
+            print(f"Seller API refresh summary failed for admin_id={admin_id}: {type(exc).__name__}")
+
+
+async def run_seller_api_refresh(bot, source: str = "manual") -> dict:
+    global seller_api_refresh_running
+    if seller_api_refresh_running:
+        return {"skipped": True, "error": "A Seller API refresh is already running."}
+
+    seller_api_refresh_running = True
+    now_text = datetime.now().isoformat(timespec="seconds")
+    seller_api_auto_refresh["last_run_at"] = now_text
+    seller_api_auto_refresh["last_missing_marked"] = 0
+    seller_api_auto_refresh["last_restored"] = 0
+    result = {"skipped": False, "success": False, "products": None, "total": 0, "sync": {}}
+    errors = []
+    try:
+        products_result, balance_result = await asyncio.gather(
+            asyncio.to_thread(fetch_buyer_api_products),
+            asyncio.to_thread(fetch_buyer_api_balance),
+            return_exceptions=True,
+        )
+
+        if isinstance(products_result, Exception):
+            errors.append(_seller_api_refresh_error_text(products_result))
+        else:
+            products, total = products_result
+            if total > len(products):
+                errors.append("Seller API returned an incomplete product list; mappings were left unchanged.")
+            else:
+                sync_result = sync_api_product_mapping_validity(products, allow_missing=True)
+                result.update({"success": True, "products": products, "total": total, "sync": sync_result})
+                seller_api_auto_refresh["last_success_at"] = datetime.now().isoformat(timespec="seconds")
+                seller_api_auto_refresh["last_total_products"] = total
+                seller_api_auto_refresh["last_missing_marked"] = int(sync_result.get("missing", 0) or 0)
+                seller_api_auto_refresh["last_restored"] = int(sync_result.get("restored", 0) or 0)
+                fetched_at = datetime.now().timestamp()
+                for admin_id in set(ADMIN_IDS) | set(seller_api_browser_cache.keys()):
+                    seller_api_browser_cache[admin_id] = {
+                        "products": products,
+                        "total": total,
+                        "fetched_at": fetched_at,
+                        "ttl_seconds": SELLER_API_BROWSER_CACHE_TTL_SECONDS,
+                    }
+
+        if isinstance(balance_result, Exception):
+            seller_api_auto_refresh["last_balance"] = None
+            seller_api_auto_refresh["last_balance_text"] = "Could not fetch"
+            errors.append("Balance: " + _seller_api_refresh_error_text(balance_result))
+            balance = None
+            balance_text = "Could not fetch"
+        else:
+            balance, balance_text = _seller_api_balance_values(balance_result)
+            seller_api_auto_refresh["last_balance"] = balance
+            seller_api_auto_refresh["last_balance_text"] = balance_text
+            await maybe_notify_low_seller_api_balance(bot, balance)
+
+        seller_api_auto_refresh["last_error"] = " | ".join(errors) if errors else None
+        result["error"] = seller_api_auto_refresh["last_error"]
+        result["balance"] = balance
+        result["balance_text"] = balance_text
+        if source == "auto" and result["success"] and (
+            seller_api_auto_refresh["last_missing_marked"] or seller_api_auto_refresh["last_restored"]
+        ):
+            await notify_admin_seller_api_refresh_changes(bot, result["total"], result["sync"], balance_text)
+        return result
+    except Exception as exc:
+        safe_error = _seller_api_refresh_error_text(exc)
+        seller_api_auto_refresh["last_error"] = safe_error
+        result["error"] = safe_error
+        print(f"Seller API refresh failed safely: {type(exc).__name__}")
+        return result
+    finally:
+        seller_api_refresh_running = False
+        try:
+            save_bot_state()
+        except Exception as exc:
+            print(f"Seller API refresh state save failed: {type(exc).__name__}")
+
+
+async def seller_api_auto_refresh_loop(application, first_delay: int = 30):
+    try:
+        await asyncio.sleep(max(1, int(first_delay)))
+        while _buyer_api_bool_value(seller_api_auto_refresh.get("enabled")):
+            await run_seller_api_refresh(application.bot, source="auto")
+            interval = int(seller_api_auto_refresh.get("interval_minutes", 10) or 10)
+            await asyncio.sleep(interval * 60)
+    except asyncio.CancelledError:
+        return
+    except Exception as exc:
+        seller_api_auto_refresh["last_error"] = _seller_api_refresh_error_text(exc)
+        print(f"Seller API auto-refresh loop failed: {type(exc).__name__}")
+
+
+def schedule_seller_api_auto_refresh(application, first_delay: int = 30):
+    global seller_api_auto_refresh_task
+    if seller_api_auto_refresh_task and not seller_api_auto_refresh_task.done():
+        seller_api_auto_refresh_task.cancel()
+    seller_api_auto_refresh_task = None
+    if _buyer_api_bool_value(seller_api_auto_refresh.get("enabled")):
+        seller_api_auto_refresh_task = application.create_task(
+            seller_api_auto_refresh_loop(application, first_delay=first_delay)
+        )
+
+
 async def fetch_cached_buyer_api_products(user_id: int, force_refresh: bool = False):
     temp = _seller_api_browser_temp(user_id)
     cached = _seller_api_browser_cache_entry(user_id)
@@ -3566,7 +3821,13 @@ async def fetch_cached_buyer_api_products(user_id: int, force_refresh: bool = Fa
 
     stale_cache = _seller_api_browser_cache_entry(user_id, allow_expired=True)
     try:
-        products, total = await asyncio.to_thread(fetch_buyer_api_products)
+        refresh_result = await run_seller_api_refresh(app_instance.bot, source="manual")
+        if refresh_result.get("skipped"):
+            raise BuyerAPIError(refresh_result.get("error") or "Seller API refresh is already running.")
+        if not refresh_result.get("success"):
+            raise BuyerAPIError(refresh_result.get("error") or "Seller API product refresh failed.")
+        products = refresh_result["products"]
+        total = refresh_result["total"]
     except Exception:
         if stale_cache is None:
             raise
@@ -3575,8 +3836,6 @@ async def fetch_cached_buyer_api_products(user_id: int, force_refresh: bool = Fa
         temp["seller_api_cache_warning"] = "API refresh failed. Showing cached data."
         return stale_cache["products"], int(stale_cache.get("total", len(stale_cache["products"])))
 
-    # Only a complete fresh list can safely prove that a saved product is missing.
-    sync_result = sync_api_product_mapping_validity(products, allow_missing=total <= len(products))
     fetched_at = datetime.now().timestamp()
     seller_api_browser_cache[user_id] = {
         "products": products,
@@ -3586,7 +3845,7 @@ async def fetch_cached_buyer_api_products(user_id: int, force_refresh: bool = Fa
     }
     temp["seller_api_cache_source"] = "Live"
     temp["seller_api_cache_fetched_at"] = fetched_at
-    temp["seller_api_mapping_sync"] = sync_result
+    temp["seller_api_mapping_sync"] = refresh_result.get("sync", {})
     temp.pop("seller_api_cache_warning", None)
     return products, total
 
@@ -8487,6 +8746,18 @@ async def post_init(application):
     ])
     load_nowpayments_pending()
     start_nowpayments_webhook_server()
+    schedule_seller_api_auto_refresh(application, first_delay=30)
+
+
+async def post_shutdown(application):
+    global seller_api_auto_refresh_task
+    if seller_api_auto_refresh_task and not seller_api_auto_refresh_task.done():
+        seller_api_auto_refresh_task.cancel()
+        try:
+            await seller_api_auto_refresh_task
+        except asyncio.CancelledError:
+            pass
+    seller_api_auto_refresh_task = None
 
 
 # =========================
@@ -10004,6 +10275,68 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_inline_from_callback(query, render_seller_api_debug_config(), seller_api_keyboard())
         return
 
+    if data == "seller_api_auto_settings":
+        await send_inline_from_callback(
+            query,
+            render_seller_api_auto_refresh_panel(),
+            seller_api_auto_refresh_keyboard(),
+        )
+        return
+
+    if data == "seller_api_auto_back":
+        await send_inline_from_callback(query, render_seller_api_panel(), seller_api_keyboard())
+        return
+
+    if data == "seller_api_auto_toggle":
+        seller_api_auto_refresh["enabled"] = not _buyer_api_bool_value(
+            seller_api_auto_refresh.get("enabled")
+        )
+        schedule_seller_api_auto_refresh(context.application, first_delay=30)
+        await send_inline_from_callback(
+            query,
+            render_seller_api_auto_refresh_panel(),
+            seller_api_auto_refresh_keyboard(),
+        )
+        return
+
+    if data.startswith("seller_api_auto_interval_"):
+        try:
+            interval = int(data.replace("seller_api_auto_interval_", "", 1))
+        except ValueError:
+            interval = 10
+        if interval not in {5, 10, 30}:
+            interval = 10
+        seller_api_auto_refresh["interval_minutes"] = interval
+        if _buyer_api_bool_value(seller_api_auto_refresh.get("enabled")):
+            schedule_seller_api_auto_refresh(context.application, first_delay=interval * 60)
+        await send_inline_from_callback(
+            query,
+            render_seller_api_auto_refresh_panel(),
+            seller_api_auto_refresh_keyboard(),
+        )
+        return
+
+    if data == "seller_api_auto_run_now":
+        refresh_result = await run_seller_api_refresh(context.bot, source="manual")
+        if refresh_result.get("skipped"):
+            message = "⏳ <b>A Seller API refresh is already running.</b>"
+        elif refresh_result.get("success"):
+            message = (
+                "✅ <b>Seller API refresh completed.</b>\n\n"
+                f"Products: {int(refresh_result.get('total', 0) or 0)}\n"
+                f"Missing marked: {int(refresh_result.get('sync', {}).get('missing', 0) or 0)}\n"
+                f"Restored: {int(refresh_result.get('sync', {}).get('restored', 0) or 0)}\n"
+                f"Balance: {escape_html(refresh_result.get('balance_text') or 'Could not fetch')}"
+            )
+        else:
+            message = "❌ <b>Seller API refresh failed.</b>\n\nMappings were left unchanged."
+        await send_inline_from_callback(
+            query,
+            message + "\n\n" + render_seller_api_auto_refresh_status(),
+            seller_api_auto_refresh_keyboard(),
+        )
+        return
+
     if data == "seller_api_shop_products":
         reset_admin_temp(user_id)
         await send_api_shop_manager(query, user_id, 0)
@@ -10627,8 +10960,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "seller_api_products":
         try:
-            products, total = await asyncio.to_thread(fetch_buyer_api_products)
-            sync_api_product_mapping_validity(products, allow_missing=total <= len(products))
+            refresh_result = await run_seller_api_refresh(context.bot, source="manual")
+            if not refresh_result.get("success"):
+                raise BuyerAPIError(refresh_result.get("error") or "Seller API product refresh failed.")
+            products, total = refresh_result["products"], refresh_result["total"]
             text = render_buyer_api_products(products, total)
         except BuyerAPIError as error:
             text = f"❌ <b>API PRODUCT FETCH FAILED</b>\n\n{escape_html(str(error))}"
@@ -10640,8 +10975,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "seller_api_inspect":
         try:
-            products, total = await asyncio.to_thread(fetch_buyer_api_products)
-            sync_api_product_mapping_validity(products, allow_missing=total <= len(products))
+            refresh_result = await run_seller_api_refresh(context.bot, source="manual")
+            if not refresh_result.get("success"):
+                raise BuyerAPIError(refresh_result.get("error") or "Seller API product refresh failed.")
+            products = refresh_result["products"]
             text = render_buyer_api_product_field_inspection(products)
         except BuyerAPIError as error:
             text = f"❌ <b>API PRODUCT FIELD INSPECTION FAILED</b>\n\n{escape_html(str(error))}"
@@ -12804,7 +13141,13 @@ async def handle_callback_persistent(update: Update, context: ContextTypes.DEFAU
 # =========================
 def main():
     global app_instance
-    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
+    )
     app_instance = app
 
     app.add_handler(CommandHandler("start", start_persistent))
