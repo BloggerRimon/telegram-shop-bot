@@ -71,6 +71,8 @@ BUYER_API_ENABLED = os.getenv("BUYER_API_ENABLED", "false").strip()
 BUYER_API_URL = os.getenv("BUYER_API_URL", "").strip()
 BUYER_API_KEY = os.getenv("BUYER_API_KEY", "").strip()
 
+SELLER_API_PROVIDER_SLOTS = ("default", "2", "3", "4", "5")
+
 BINANCE_ID = "828543482"
 BYBIT_ID = "199582741"
 
@@ -385,7 +387,10 @@ api_product_mappings = {}
 seller_api_browser_cache = {}
 api_purchase_in_progress = set()
 SELLER_API_BROWSER_CACHE_TTL_SECONDS = 300
-seller_api_auto_refresh = {
+
+
+def _new_seller_api_auto_refresh_status():
+    return {
     "enabled": False,
     "interval_minutes": 10,
     "last_run_at": None,
@@ -399,9 +404,16 @@ seller_api_auto_refresh = {
     "low_balance_threshold": 5,
     "last_low_balance_alert_at": None,
     "low_balance_alert_active": False,
-}
-seller_api_refresh_running = False
-seller_api_auto_refresh_task = None
+    }
+
+
+# Only non-secret operational status is persisted. Provider credentials are always
+# loaded from environment variables and never enter bot_state/local JSON.
+seller_api_provider_status = {"default": {"auto_refresh": _new_seller_api_auto_refresh_status()}}
+# Backward-compatible alias for the original provider's saved Phase 11H status.
+seller_api_auto_refresh = seller_api_provider_status["default"]["auto_refresh"]
+seller_api_refresh_running = set()
+seller_api_auto_refresh_tasks = {}
 
 DASHBOARD_EMOJI_KEYS = (
     "shop",
@@ -567,6 +579,7 @@ def build_state_snapshot():
         "shop_order": shop_order,
         "api_product_mappings": api_product_mappings,
         "seller_api_auto_refresh": seller_api_auto_refresh,
+        "seller_api_provider_status": seller_api_provider_status,
         "dashboard_custom_emoji_ids": dashboard_custom_emoji_ids,
         "dashboard_header_custom_emoji_ids": dashboard_header_custom_emoji_ids,
         "PROMO_CODES": PROMO_CODES,
@@ -637,7 +650,9 @@ def apply_loaded_state(data: dict):
     if isinstance(loaded_api_product_mappings, dict):
         for api_product_id, mapping in loaded_api_product_mappings.items():
             if isinstance(mapping, dict) and str(api_product_id).strip():
-                api_product_mappings[str(api_product_id)] = dict(mapping)
+                safe_mapping = dict(mapping)
+                safe_mapping["provider_id"] = mapping_provider_id(safe_mapping)
+                api_product_mappings[str(api_product_id)] = safe_mapping
 
     loaded_auto_refresh = data.get("seller_api_auto_refresh", {})
     if isinstance(loaded_auto_refresh, dict):
@@ -652,6 +667,28 @@ def apply_loaded_state(data: dict):
     seller_api_auto_refresh["interval_minutes"] = interval_minutes if interval_minutes in {5, 10, 30} else 10
     threshold = _buyer_api_numeric_value(seller_api_auto_refresh.get("low_balance_threshold"))
     seller_api_auto_refresh["low_balance_threshold"] = float(threshold) if threshold is not None and threshold > 0 else 5
+    loaded_provider_status = data.get("seller_api_provider_status", {})
+    if isinstance(loaded_provider_status, dict):
+        for provider_id, provider_entry in loaded_provider_status.items():
+            if not isinstance(provider_entry, dict):
+                continue
+            loaded_status = provider_entry.get("auto_refresh", {})
+            if not isinstance(loaded_status, dict):
+                continue
+            status = get_seller_api_provider_status(provider_id)
+            for key in status:
+                if key in loaded_status:
+                    status[key] = loaded_status[key]
+            status["enabled"] = _buyer_api_bool_value(status.get("enabled"))
+            try:
+                provider_interval = int(status.get("interval_minutes", 10))
+            except (TypeError, ValueError):
+                provider_interval = 10
+            status["interval_minutes"] = provider_interval if provider_interval in {5, 10, 30} else 10
+            provider_threshold = _buyer_api_numeric_value(status.get("low_balance_threshold"))
+            status["low_balance_threshold"] = (
+                float(provider_threshold) if provider_threshold is not None and provider_threshold > 0 else 5
+            )
     if "normalize_shop_order" in globals():
         normalize_shop_order()
 
@@ -1136,60 +1173,151 @@ class BuyerAPIError(Exception):
         self.order_code = str(order_code or "").strip()
 
 
-def is_buyer_api_enabled() -> bool:
-    return BUYER_API_ENABLED.lower() == "true"
+def load_seller_api_providers() -> dict:
+    """Load provider credentials from environment only; never persist this result."""
+    providers = {}
+    for slot in SELLER_API_PROVIDER_SLOTS:
+        if slot == "default":
+            prefix = "BUYER_API"
+            provider_id = "default"
+            default_name = "Seller API 1"
+        else:
+            prefix = f"BUYER_API_{slot}"
+            provider_id = f"seller_{slot}"
+            default_name = f"Seller API {slot}"
+        enabled_env = os.getenv(f"{prefix}_ENABLED", "").strip()
+        enabled_text = enabled_env or "false"
+        name = os.getenv(f"{prefix}_NAME", default_name).strip() or default_name
+        base_url = os.getenv(f"{prefix}_URL", "").strip()
+        api_key = os.getenv(f"{prefix}_KEY", "").strip()
+        if slot != "default" and not any((
+            enabled_env, base_url, api_key, os.getenv(f"{prefix}_NAME", "").strip()
+        )):
+            continue
+        normalized_url = base_url.rstrip("/")
+        api_suffix = "/api/telegram-buyer"
+        if normalized_url.lower().endswith(api_suffix):
+            normalized_url = normalized_url[:-len(api_suffix)].rstrip("/")
+        configured = bool(normalized_url and api_key)
+        providers[provider_id] = {
+            "id": provider_id,
+            "name": name,
+            "enabled": enabled_text.lower() == "true",
+            "base_url": normalized_url,
+            "api_key": api_key,
+            "masked_key": mask_secret_value(api_key),
+            "configured": configured,
+            "env_prefix": prefix,
+            "url_had_api_suffix": base_url.rstrip("/").lower().endswith(api_suffix),
+        }
+    return providers
 
 
-def mask_buyer_api_key() -> str:
-    if not BUYER_API_KEY:
+def mask_secret_value(value: str) -> str:
+    value = str(value or "")
+    if not value:
         return "Not configured"
-    if len(BUYER_API_KEY) <= 8:
-        return "*" * len(BUYER_API_KEY)
-    return f"{BUYER_API_KEY[:4]}{'*' * (len(BUYER_API_KEY) - 8)}{BUYER_API_KEY[-4:]}"
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}{'*' * (len(value) - 8)}{value[-4:]}"
 
 
-def normalize_buyer_api_url() -> str:
-    base_url = BUYER_API_URL.strip().rstrip("/")
-    api_suffix = "/api/telegram-buyer"
-    if base_url.lower().endswith(api_suffix):
-        base_url = base_url[:-len(api_suffix)].rstrip("/")
-    return base_url
+def get_seller_api_provider(provider_id: str = "default") -> dict:
+    provider_id = str(provider_id or "default").strip() or "default"
+    provider = load_seller_api_providers().get(provider_id)
+    if provider is None:
+        raise BuyerAPIError(f"Seller API provider '{provider_id}' is not configured.", "config")
+    return provider
 
 
-def buyer_api_url_warning() -> str:
-    configured_url = BUYER_API_URL.strip().rstrip("/")
-    if configured_url.lower().endswith("/api/telegram-buyer"):
-        return "BUYER_API_URL should be base URL only: http://54.255.147.200:3002"
+def seller_api_provider_name(provider_id: str = "default") -> str:
+    try:
+        return str(get_seller_api_provider(provider_id).get("name") or provider_id)
+    except BuyerAPIError:
+        return str(provider_id or "default")
+
+
+def mapping_provider_id(mapping: dict = None) -> str:
+    return str((mapping or {}).get("provider_id") or "default").strip() or "default"
+
+
+def seller_api_mapping_key(api_product_id: str, provider_id: str = "default") -> str:
+    api_product_id = str(api_product_id or "").strip()
+    provider_id = str(provider_id or "default").strip() or "default"
+    return api_product_id if provider_id == "default" else f"{provider_id}:{api_product_id}"
+
+
+def get_seller_api_provider_status(provider_id: str = "default") -> dict:
+    provider_id = str(provider_id or "default").strip() or "default"
+    entry = seller_api_provider_status.setdefault(provider_id, {})
+    status = entry.get("auto_refresh")
+    if not isinstance(status, dict):
+        status = _new_seller_api_auto_refresh_status()
+        entry["auto_refresh"] = status
+    defaults = _new_seller_api_auto_refresh_status()
+    for key, value in defaults.items():
+        status.setdefault(key, value)
+    return status
+
+
+def is_buyer_api_enabled(provider_id: str = "default") -> bool:
+    try:
+        return bool(get_seller_api_provider(provider_id).get("enabled"))
+    except BuyerAPIError:
+        return False
+
+
+def mask_buyer_api_key(provider_id: str = "default") -> str:
+    try:
+        return str(get_seller_api_provider(provider_id).get("masked_key") or "Not configured")
+    except BuyerAPIError:
+        return "Not configured"
+
+
+def normalize_buyer_api_url(provider_id: str = "default") -> str:
+    try:
+        return str(get_seller_api_provider(provider_id).get("base_url") or "")
+    except BuyerAPIError:
+        return ""
+
+
+def buyer_api_url_warning(provider_id: str = "default") -> str:
+    try:
+        provider = get_seller_api_provider(provider_id)
+    except BuyerAPIError:
+        return ""
+    if provider.get("url_had_api_suffix"):
+        return f"{provider.get('env_prefix')}_URL should be a base URL only."
     return ""
 
 
-def buyer_api_endpoint(path: str) -> str:
-    return f"{normalize_buyer_api_url()}{path}"
+def buyer_api_endpoint(path: str, provider_id: str = "default") -> str:
+    return f"{normalize_buyer_api_url(provider_id)}{path}"
 
 
-def buyer_api_endpoint_preview(path: str, params: dict = None) -> str:
-    query_parts = [f"key={mask_buyer_api_key()}"]
+def buyer_api_endpoint_preview(path: str, params: dict = None, provider_id: str = "default") -> str:
+    query_parts = [f"key={mask_buyer_api_key(provider_id)}"]
     for key, value in (params or {}).items():
         query_parts.append(f"{key}={value}")
-    return f"GET {buyer_api_endpoint(path)}?{'&'.join(query_parts)}"
+    return f"GET {buyer_api_endpoint(path, provider_id)}?{'&'.join(query_parts)}"
 
 
-def _validate_buyer_api_config():
-    if not is_buyer_api_enabled():
-        raise BuyerAPIError("Seller API is disabled. Set BUYER_API_ENABLED=true to enable tests.", "config")
-    if not normalize_buyer_api_url():
-        raise BuyerAPIError("BUYER_API_URL is not configured.", "config")
-    if not BUYER_API_KEY:
-        raise BuyerAPIError("BUYER_API_KEY is not configured.", "config")
+def _validate_buyer_api_config(provider_id: str = "default") -> dict:
+    provider = get_seller_api_provider(provider_id)
+    if not provider.get("enabled"):
+        raise BuyerAPIError(f"{provider.get('name')} is disabled.", "config")
+    if not provider.get("base_url") or not provider.get("api_key"):
+        raise BuyerAPIError(f"{provider.get('name')} configuration is incomplete.", "config")
+    return provider
 
 
-def _buyer_api_get(path: str, params: dict = None):
-    _validate_buyer_api_config()
+def _buyer_api_get(path: str, params: dict = None, provider_id: str = "default"):
+    provider = _validate_buyer_api_config(provider_id)
     request_params = dict(params or {})
-    request_params["key"] = BUYER_API_KEY
+    request_params["key"] = provider["api_key"]
     try:
         response = requests.get(
-            buyer_api_endpoint(path),
+            buyer_api_endpoint(path, provider_id),
             params=request_params,
             timeout=20,
         )
@@ -1201,7 +1329,7 @@ def _buyer_api_get(path: str, params: dict = None):
         raise BuyerAPIError("Seller API request failed.") from exc
 
     if response.status_code == 401:
-        response_note = _safe_buyer_api_error_body(response)
+        response_note = _safe_buyer_api_error_body(response, provider_id)
         message = (
             "HTTP 401 Unauthorized\n\n"
             "Possible reasons:\n"
@@ -1260,11 +1388,16 @@ def _buyer_api_purchase_failure_metadata(payload, default_category: str = "unkno
     return default_category, order_code
 
 
-def purchase_buyer_api_product(api_product_id: str, quantity: int, customer_email: str = None) -> dict:
+def purchase_buyer_api_product(
+    api_product_id: str,
+    quantity: int,
+    customer_email: str = None,
+    provider_id: str = "default",
+) -> dict:
     """Place one external purchase and return only the fulfillment fields the bot needs."""
-    _validate_buyer_api_config()
+    provider = _validate_buyer_api_config(provider_id)
     payload = {
-        "key": BUYER_API_KEY,
+        "key": provider["api_key"],
         "product_id": str(api_product_id),
         "quantity": int(quantity),
         "lang": "en",
@@ -1273,7 +1406,7 @@ def purchase_buyer_api_product(api_product_id: str, quantity: int, customer_emai
         payload["customer_email"] = str(customer_email).strip()
     try:
         response = requests.post(
-            buyer_api_endpoint("/api/telegram-buyer/purchase"),
+            buyer_api_endpoint("/api/telegram-buyer/purchase", provider_id),
             json=payload,
             timeout=30,
         )
@@ -1336,7 +1469,7 @@ def purchase_buyer_api_product(api_product_id: str, quantity: int, customer_emai
     }
 
 
-def _safe_buyer_api_error_body(response) -> str:
+def _safe_buyer_api_error_body(response, provider_id: str = "default") -> str:
     try:
         payload = response.json()
     except (ValueError, TypeError):
@@ -1358,7 +1491,11 @@ def _safe_buyer_api_error_body(response) -> str:
     candidate = " ".join(candidate.split()).strip()
     if not candidate:
         return ""
-    if BUYER_API_KEY and BUYER_API_KEY.lower() in candidate.lower():
+    try:
+        provider_key = str(get_seller_api_provider(provider_id).get("api_key") or "")
+    except BuyerAPIError:
+        provider_key = ""
+    if provider_key and provider_key.lower() in candidate.lower():
         return ""
     lowered = candidate.lower()
     sensitive_markers = (
@@ -1378,15 +1515,15 @@ def _buyer_api_data(payload):
     return payload
 
 
-def fetch_buyer_api_balance() -> dict:
-    payload = _buyer_api_data(_buyer_api_get("/api/telegram-buyer/balance"))
+def fetch_buyer_api_balance(provider_id: str = "default") -> dict:
+    payload = _buyer_api_data(_buyer_api_get("/api/telegram-buyer/balance", provider_id=provider_id))
     if not isinstance(payload, dict):
         raise BuyerAPIError("Seller API balance response is missing balance data.")
     return payload
 
 
-def fetch_buyer_api_products():
-    payload = _buyer_api_get("/api/telegram-buyer/products", {"lang": "en"})
+def fetch_buyer_api_products(provider_id: str = "default"):
+    payload = _buyer_api_get("/api/telegram-buyer/products", {"lang": "en"}, provider_id=provider_id)
     data = _buyer_api_data(payload)
     if isinstance(data, list):
         total = payload.get("total", payload.get("count", len(data))) if isinstance(payload, dict) else len(data)
@@ -1601,14 +1738,25 @@ def get_category_product_ids(category_id: str) -> list:
     ]
 
 
-def api_product_shop_order_item(api_product_id: str) -> str:
-    return f"api_product:{str(api_product_id or '').strip()}"
+def api_product_order_identity(api_product_id: str, provider_id: str = "default") -> str:
+    api_product_id = str(api_product_id or "").strip()
+    provider_id = str(provider_id or "default").strip() or "default"
+    return api_product_id if provider_id == "default" else f"{provider_id}|{api_product_id}"
 
 
-def api_product_mapping_by_id(api_product_id: str):
+def api_product_shop_order_item(api_product_id: str, provider_id: str = "default") -> str:
+    return f"api_product:{api_product_order_identity(api_product_id, provider_id)}"
+
+
+def api_product_mapping_by_id(api_product_id: str, provider_id: str = None):
     wanted_id = str(api_product_id or "").strip()
+    if provider_id is None and "|" in wanted_id:
+        provider_id, wanted_id = wanted_id.split("|", 1)
     for mapping in api_product_mappings.values():
-        if str((mapping or {}).get("api_product_id") or "").strip() == wanted_id:
+        if (
+            str((mapping or {}).get("api_product_id") or "").strip() == wanted_id
+            and (provider_id is None or mapping_provider_id(mapping) == provider_id)
+        ):
             return mapping
     return None
 
@@ -1642,7 +1790,10 @@ def normalize_shop_order() -> bool:
     valid_items = {
         *[f"product:{product_id}" for product_id in valid_product_ids],
         *[f"category:{category_id}" for category_id in valid_category_ids],
-        *[api_product_shop_order_item(api_product_id) for api_product_id in valid_api_product_ids],
+        *[
+            api_product_shop_order_item(mapping.get("api_product_id"), mapping_provider_id(mapping))
+            for mapping in api_product_mappings.values() if is_api_shop_mapping_visible(mapping)
+        ],
     }
     cleaned_order = []
     for item in shop_order:
@@ -1663,8 +1814,10 @@ def normalize_shop_order() -> bool:
             item = f"category:{category_id}"
             if item not in cleaned_order:
                 cleaned_order.append(item)
-    for api_product_id in valid_api_product_ids:
-        item = api_product_shop_order_item(api_product_id)
+    for mapping in api_product_mappings.values():
+        if not is_api_shop_mapping_visible(mapping):
+            continue
+        item = api_product_shop_order_item(mapping.get("api_product_id"), mapping_provider_id(mapping))
         if item not in cleaned_order:
             cleaned_order.append(item)
 
@@ -1754,8 +1907,8 @@ def move_shop_order_item(item: str, direction: int) -> bool:
     return True
 
 
-def remove_api_product_shop_order_item(api_product_id: str) -> bool:
-    item = api_product_shop_order_item(api_product_id)
+def remove_api_product_shop_order_item(api_product_id: str, provider_id: str = "default") -> bool:
+    item = api_product_shop_order_item(api_product_id, provider_id)
     original_length = len(shop_order)
     shop_order[:] = [candidate for candidate in shop_order if candidate != item]
     return len(shop_order) != original_length
@@ -1765,13 +1918,14 @@ def sync_api_product_shop_order(mapping: dict) -> bool:
     api_product_id = str((mapping or {}).get("api_product_id") or "").strip()
     if not api_product_id:
         return False
-    item = api_product_shop_order_item(api_product_id)
+    provider_id = mapping_provider_id(mapping)
+    item = api_product_shop_order_item(api_product_id, provider_id)
     changed = False
     if is_api_shop_mapping_visible(mapping) and item not in shop_order:
         shop_order.append(item)
         changed = True
     elif not is_api_shop_mapping_visible(mapping):
-        changed = remove_api_product_shop_order_item(api_product_id)
+        changed = remove_api_product_shop_order_item(api_product_id, provider_id)
     elif shop_order.count(item) > 1:
         found = False
         deduplicated = []
@@ -3281,14 +3435,34 @@ def admin_menu() -> ReplyKeyboardMarkup:
         ["👑 Gold VIP", "⚡ Flash Deal"],
         ["👥 User Details", "📊 Analytics"],
         ["🎨 Dashboard Emojis"],
-        ["🔌 Seller API"],
+        ["🔌 Seller APIs"],
         ["📢 Broadcast"],
         ["🚪 Exit Admin"],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
+def _seller_api_status_value(value, fallback: str = "Never") -> str:
+    return escape_html(str(value)) if value not in (None, "") else fallback
+
+
 def seller_api_keyboard() -> InlineKeyboardMarkup:
+    rows = []
+    for provider_id, provider in load_seller_api_providers().items():
+        marker = "✅" if provider.get("enabled") and provider.get("configured") else "❌"
+        rows.append([InlineKeyboardButton(
+            f"{marker} {provider.get('name')} / {provider_id}",
+            callback_data=f"seller_api_provider_{provider_id}",
+        )])
+    rows.extend([
+        [InlineKeyboardButton("🔄 Auto Refresh Overview", callback_data="seller_api_auto_overview")],
+        [InlineKeyboardButton("ℹ️ Provider Setup Guide", callback_data="seller_api_provider_guide")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="seller_api_back")],
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+def seller_api_provider_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 Auto Refresh Settings", callback_data="seller_api_auto_settings")],
         [InlineKeyboardButton("🛒 My API Shop Products", callback_data="seller_api_shop_products")],
@@ -3298,37 +3472,35 @@ def seller_api_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📦 Fetch API Products", callback_data="seller_api_products")],
         [InlineKeyboardButton("🔎 Inspect Product Fields", callback_data="seller_api_inspect")],
         [InlineKeyboardButton("🔎 Debug Config", callback_data="seller_api_debug")],
-        [InlineKeyboardButton("⬅️ Back", callback_data="seller_api_back")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="seller_api_provider_back")],
     ])
 
 
-def _seller_api_status_value(value, fallback: str = "Never") -> str:
-    return escape_html(str(value)) if value not in (None, "") else fallback
-
-
-def render_seller_api_auto_refresh_status() -> str:
-    enabled = "✅ Enabled" if _buyer_api_bool_value(seller_api_auto_refresh.get("enabled")) else "❌ Disabled"
-    balance_text = seller_api_auto_refresh.get("last_balance_text")
-    if balance_text in (None, "") and seller_api_auto_refresh.get("last_error"):
+def render_seller_api_auto_refresh_status(provider_id: str = "default") -> str:
+    status = get_seller_api_provider_status(provider_id)
+    enabled = "✅ Enabled" if _buyer_api_bool_value(status.get("enabled")) else "❌ Disabled"
+    balance_text = status.get("last_balance_text")
+    if balance_text in (None, "") and status.get("last_error"):
         balance_text = "Could not fetch"
     return (
         f"<b>Auto Refresh:</b> {enabled}\n"
-        f"<b>Interval:</b> {int(seller_api_auto_refresh.get('interval_minutes', 10))} minutes\n"
-        f"<b>Last run:</b> {_seller_api_status_value(seller_api_auto_refresh.get('last_run_at'))}\n"
-        f"<b>Last success:</b> {_seller_api_status_value(seller_api_auto_refresh.get('last_success_at'))}\n"
-        f"<b>Last error:</b> {_seller_api_status_value(seller_api_auto_refresh.get('last_error'), 'None')}\n"
-        f"<b>Last total products:</b> {int(seller_api_auto_refresh.get('last_total_products', 0) or 0)}\n"
-        f"<b>Missing marked:</b> {int(seller_api_auto_refresh.get('last_missing_marked', 0) or 0)}\n"
-        f"<b>Restored:</b> {int(seller_api_auto_refresh.get('last_restored', 0) or 0)}\n"
+        f"<b>Interval:</b> {int(status.get('interval_minutes', 10))} minutes\n"
+        f"<b>Last run:</b> {_seller_api_status_value(status.get('last_run_at'))}\n"
+        f"<b>Last success:</b> {_seller_api_status_value(status.get('last_success_at'))}\n"
+        f"<b>Last error:</b> {_seller_api_status_value(status.get('last_error'), 'None')}\n"
+        f"<b>Last total products:</b> {int(status.get('last_total_products', 0) or 0)}\n"
+        f"<b>Missing marked:</b> {int(status.get('last_missing_marked', 0) or 0)}\n"
+        f"<b>Restored:</b> {int(status.get('last_restored', 0) or 0)}\n"
         f"<b>Current API balance:</b> {_seller_api_status_value(balance_text, 'N/A')}\n"
-        f"<b>Low balance threshold:</b> {float(seller_api_auto_refresh.get('low_balance_threshold', 5)):.2f} USDT\n"
-        f"<b>Last low-balance alert:</b> {_seller_api_status_value(seller_api_auto_refresh.get('last_low_balance_alert_at'))}"
+        f"<b>Low balance threshold:</b> {float(status.get('low_balance_threshold', 5)):.2f} USDT\n"
+        f"<b>Last low-balance alert:</b> {_seller_api_status_value(status.get('last_low_balance_alert_at'))}"
     )
 
 
-def seller_api_auto_refresh_keyboard() -> InlineKeyboardMarkup:
-    enabled = _buyer_api_bool_value(seller_api_auto_refresh.get("enabled"))
-    interval = int(seller_api_auto_refresh.get("interval_minutes", 10) or 10)
+def seller_api_auto_refresh_keyboard(provider_id: str = "default") -> InlineKeyboardMarkup:
+    status = get_seller_api_provider_status(provider_id)
+    enabled = _buyer_api_bool_value(status.get("enabled"))
+    interval = int(status.get("interval_minutes", 10) or 10)
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(
             "❌ Disable Auto Refresh" if enabled else "✅ Enable Auto Refresh",
@@ -3343,50 +3515,70 @@ def seller_api_auto_refresh_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
-def render_seller_api_auto_refresh_panel() -> str:
-    return "🔄 <b>SELLER API AUTO REFRESH</b>\n\n" + render_seller_api_auto_refresh_status()
+def render_seller_api_auto_refresh_panel(provider_id: str = "default") -> str:
+    return "🔄 <b>SELLER API AUTO REFRESH</b>\n\n" + render_seller_api_auto_refresh_status(provider_id)
 
 
 def render_seller_api_panel() -> str:
-    enabled = "✅ Enabled" if is_buyer_api_enabled() else "❌ Disabled"
-    api_url = BUYER_API_URL or "Not configured"
-    prefix_status = "✅ Yes" if BUYER_API_KEY.startswith("api_") else "❌ No"
-    warning = buyer_api_url_warning()
-    warning_text = f"\n\n⚠️ {escape_html(warning)}" if warning else ""
     return (
-        "🔌 <b>SELLER API</b>\n\n"
-        f"<b>Status:</b> {enabled}\n"
-        f"<b>API URL:</b> <code>{escape_html(api_url)}</code>\n"
-        f"<b>API key:</b> <code>{escape_html(mask_buyer_api_key())}</code>\n"
-        f"<b>Key length:</b> {len(BUYER_API_KEY)}\n"
-        f"<b>Starts with api_:</b> {prefix_status}\n"
-        f"<b>Balance request:</b> <code>{escape_html(buyer_api_endpoint_preview('/api/telegram-buyer/balance'))}</code>"
-        f"{warning_text}\n\n"
-        f"{render_seller_api_auto_refresh_status()}\n\n"
-        "Saved mappings can be managed here."
+        "🔌 <b>SELLER APIs</b>\n\n"
+        "Choose an environment-configured provider. Credentials remain in Railway variables only.\n\n"
+        "Existing mappings without a provider ID use <b>default</b>."
     )
 
 
-def render_seller_api_debug_config() -> str:
-    enabled = "true" if is_buyer_api_enabled() else "false"
-    api_url = BUYER_API_URL or "Not configured"
-    prefix_status = "Yes" if BUYER_API_KEY.startswith("api_") else "No"
-    warning = buyer_api_url_warning()
+def render_seller_api_auto_refresh_overview() -> str:
+    lines = ["🔄 <b>SELLER API AUTO REFRESH OVERVIEW</b>"]
+    for provider_id, provider in load_seller_api_providers().items():
+        status = get_seller_api_provider_status(provider_id)
+        enabled = "Enabled" if _buyer_api_bool_value(status.get("enabled")) else "Disabled"
+        lines.extend([
+            "",
+            f"<b>{escape_html(provider.get('name'))}</b> (<code>{escape_html(provider_id)}</code>)",
+            f"Auto refresh: {enabled} / {int(status.get('interval_minutes', 10))} minutes",
+            f"Balance: {_seller_api_status_value(status.get('last_balance_text'), 'N/A')}",
+            f"Last success: {_seller_api_status_value(status.get('last_success_at'))}",
+        ])
+    return "\n".join(lines)
+
+
+def render_seller_api_provider_panel(provider_id: str = "default") -> str:
+    provider = get_seller_api_provider(provider_id)
+    status_text = "✅ Enabled" if provider.get("enabled") else "❌ Disabled"
+    configured = "✅ Configured" if provider.get("configured") else "❌ Missing config"
+    api_key = str(provider.get("api_key") or "")
+    warning = buyer_api_url_warning(provider_id)
+    warning_text = f"\n\n⚠️ {escape_html(warning)}" if warning else ""
+    return (
+        f"🔌 <b>{escape_html(provider.get('name'))}</b>\n\n"
+        f"<b>Provider ID:</b> <code>{escape_html(provider_id)}</code>\n"
+        f"<b>Status:</b> {status_text}\n"
+        f"<b>Configuration:</b> {configured}\n"
+        f"<b>API URL:</b> <code>{escape_html(provider.get('base_url') or 'Not configured')}</code>\n"
+        f"<b>API key:</b> <code>{escape_html(provider.get('masked_key'))}</code>\n"
+        f"<b>Key length:</b> {len(api_key)}\n"
+        f"<b>Starts with api_:</b> {'Yes' if api_key.startswith('api_') else 'No'}"
+        f"{warning_text}\n\n{render_seller_api_auto_refresh_status(provider_id)}"
+    )
+
+
+def render_seller_api_debug_config(provider_id: str = "default") -> str:
+    provider = get_seller_api_provider(provider_id)
+    api_key = str(provider.get("api_key") or "")
     lines = [
         "🔎 <b>SELLER API DEBUG CONFIG</b>",
         "",
-        f"<b>Enabled:</b> {enabled}",
-        f"<b>Base URL:</b> <code>{escape_html(api_url)}</code>",
-        f"<b>Masked key:</b> <code>{escape_html(mask_buyer_api_key())}</code>",
-        f"<b>Key length:</b> {len(BUYER_API_KEY)}",
-        f"<b>Starts with api_:</b> {prefix_status}",
+        f"<b>Provider:</b> {escape_html(provider.get('name'))} (<code>{escape_html(provider_id)}</code>)",
+        f"<b>Enabled:</b> {'true' if provider.get('enabled') else 'false'}",
+        f"<b>Base URL:</b> <code>{escape_html(provider.get('base_url') or 'Not configured')}</code>",
+        f"<b>Masked key:</b> <code>{escape_html(provider.get('masked_key'))}</code>",
+        f"<b>Key length:</b> {len(api_key)}",
+        f"<b>Starts with api_:</b> {'Yes' if api_key.startswith('api_') else 'No'}",
         "",
-        "<b>Balance endpoint:</b>",
-        f"<code>{escape_html(buyer_api_endpoint_preview('/api/telegram-buyer/balance'))}</code>",
-        "",
-        "<b>Products endpoint:</b>",
-        f"<code>{escape_html(buyer_api_endpoint_preview('/api/telegram-buyer/products', {'lang': 'en'}))}</code>",
+        f"<code>{escape_html(buyer_api_endpoint_preview('/api/telegram-buyer/balance', provider_id=provider_id))}</code>",
+        f"<code>{escape_html(buyer_api_endpoint_preview('/api/telegram-buyer/products', {'lang': 'en'}, provider_id))}</code>",
     ]
+    warning = buyer_api_url_warning(provider_id)
     if warning:
         lines.extend(["", f"⚠️ <b>Warning:</b> {escape_html(warning)}"])
     return "\n".join(lines)
@@ -3495,12 +3687,22 @@ def _buyer_api_product_id(product: dict) -> str:
     return str(value).strip() if value not in (None, "") else ""
 
 
-def _api_product_mapping_snapshot(product: dict) -> dict:
+def api_product_mapping_for_product(product: dict):
+    if not isinstance(product, dict):
+        return None
+    provider_id = str(product.get("_seller_provider_id") or "default")
+    return api_product_mappings.get(
+        seller_api_mapping_key(_buyer_api_product_id(product), provider_id)
+    )
+
+
+def _api_product_mapping_snapshot(product: dict, provider_id: str = "default") -> dict:
     fields = extract_buyer_api_product_fields(product)
     stock = _buyer_api_numeric_value(fields.get("stock"))
     if stock is not None and float(stock).is_integer():
         stock = int(stock)
     return {
+        "provider_id": str(provider_id or "default"),
         "api_product_id": _buyer_api_product_id(product),
         "name": str(fields.get("name") or "N/A"),
         "api_cost": _buyer_api_numeric_value(fields.get("price")),
@@ -3511,22 +3713,28 @@ def _api_product_mapping_snapshot(product: dict) -> dict:
     }
 
 
-def update_api_product_mapping(product: dict, **changes) -> dict:
+def update_api_product_mapping(product: dict, provider_id: str = None, **changes) -> dict:
     api_product_id = _buyer_api_product_id(product)
     if not api_product_id:
         raise ValueError("API product ID is missing.")
-    mapping = dict(api_product_mappings.get(api_product_id) or {})
+    provider_id = str(provider_id or product.get("_seller_provider_id") or "default")
+    mapping_key = seller_api_mapping_key(api_product_id, provider_id)
+    mapping = dict(api_product_mappings.get(mapping_key) or {})
     mapping.setdefault("enabled", False)
     mapping.setdefault("selling_price", None)
     mapping.setdefault("category_id", None)
-    mapping.update(_api_product_mapping_snapshot(product))
+    mapping.update(_api_product_mapping_snapshot(product, provider_id))
     mapping.update(changes)
-    api_product_mappings[api_product_id] = mapping
+    api_product_mappings[mapping_key] = mapping
     sync_api_product_shop_order(mapping)
     return mapping
 
 
-def sync_api_product_mapping_validity(products: list, allow_missing: bool = True) -> dict:
+def sync_api_product_mapping_validity(
+    products: list,
+    allow_missing: bool = True,
+    provider_id: str = "default",
+) -> dict:
     """Refresh saved mappings by exact seller product ID without deleting mappings."""
     current_products = {}
     for product in products or []:
@@ -3537,6 +3745,8 @@ def sync_api_product_mapping_validity(products: list, allow_missing: bool = True
     now_text = datetime.now().isoformat(timespec="seconds")
     result = {"missing": 0, "restored": 0, "updated": 0}
     for mapping_key, mapping in saved_api_shop_mappings():
+        if mapping_provider_id(mapping) != provider_id:
+            continue
         api_product_id = _saved_api_mapping_identity(mapping_key, mapping)
         current_product = current_products.get(api_product_id)
         if current_product is None:
@@ -3544,20 +3754,20 @@ def sync_api_product_mapping_validity(products: list, allow_missing: bool = True
                 continue
             newly_missing = not _buyer_api_bool_value(mapping.get("seller_missing"))
             if newly_missing:
-                item = api_product_shop_order_item(api_product_id)
+                item = api_product_shop_order_item(api_product_id, provider_id)
                 if item in shop_order:
                     mapping["shop_order_index_before_missing"] = shop_order.index(item)
                 mapping["enabled_before_missing"] = _buyer_api_bool_value(mapping.get("enabled"))
                 mapping["last_missing_at"] = now_text
             mapping["seller_missing"] = True
             mapping["enabled"] = False
-            remove_api_product_shop_order_item(api_product_id)
+            remove_api_product_shop_order_item(api_product_id, provider_id)
             if newly_missing:
                 result["missing"] += 1
             continue
 
         was_missing = _buyer_api_bool_value(mapping.get("seller_missing"))
-        fresh_snapshot = _api_product_mapping_snapshot(current_product)
+        fresh_snapshot = _api_product_mapping_snapshot(current_product, provider_id)
         if str(fresh_snapshot.get("name") or "").strip().lower() in {"", "n/a"}:
             fresh_snapshot.pop("name", None)
         if fresh_snapshot.get("api_cost") is None:
@@ -3569,8 +3779,8 @@ def sync_api_product_mapping_validity(products: list, allow_missing: bool = True
         if was_missing:
             mapping["last_restored_at"] = now_text
             mapping["enabled"] = _buyer_api_bool_value(mapping.get("enabled_before_missing"))
-            item = api_product_shop_order_item(api_product_id)
-            remove_api_product_shop_order_item(api_product_id)
+            item = api_product_shop_order_item(api_product_id, provider_id)
+            remove_api_product_shop_order_item(api_product_id, provider_id)
             if _buyer_api_bool_value(mapping.get("enabled")):
                 saved_index = mapping.get("shop_order_index_before_missing")
                 try:
@@ -3586,7 +3796,12 @@ def sync_api_product_mapping_validity(products: list, allow_missing: bool = True
     return result
 
 
-def filter_buyer_api_products(products: list, search: str = "", filter_name: str = "all") -> list:
+def filter_buyer_api_products(
+    products: list,
+    search: str = "",
+    filter_name: str = "all",
+    provider_id: str = "default",
+) -> list:
     search_text = str(search or "").strip().casefold()
     filtered = []
     for product in products:
@@ -3599,7 +3814,7 @@ def filter_buyer_api_products(products: list, search: str = "", filter_name: str
             continue
 
         stock = _buyer_api_numeric_value(fields.get("stock"))
-        mapping = api_product_mappings.get(api_product_id, {})
+        mapping = api_product_mappings.get(seller_api_mapping_key(api_product_id, provider_id), {})
         if filter_name == "in_stock" and not (stock is not None and stock > 0):
             continue
         if filter_name == "email" and not _buyer_api_bool_value(fields.get("requires_email")):
@@ -3617,11 +3832,21 @@ def _seller_api_browser_temp(user_id: int) -> dict:
     temp.setdefault("seller_api_search", "")
     temp.setdefault("seller_api_filter", "all")
     temp.setdefault("seller_api_page", 0)
+    temp.setdefault("seller_api_provider_id", "default")
     return temp
 
 
-def _seller_api_browser_cache_entry(user_id: int, allow_expired: bool = False):
-    entry = seller_api_browser_cache.get(user_id)
+def selected_seller_api_provider_id(user_id: int) -> str:
+    return str(_seller_api_browser_temp(user_id).get("seller_api_provider_id") or "default")
+
+
+def _seller_api_browser_cache_entry(
+    user_id: int,
+    provider_id: str = "default",
+    allow_expired: bool = False,
+):
+    user_cache = seller_api_browser_cache.get(user_id, {})
+    entry = user_cache.get(provider_id) if isinstance(user_cache, dict) else None
     if not isinstance(entry, dict) or not isinstance(entry.get("products"), list):
         return None
     fetched_at = entry.get("fetched_at")
@@ -3638,8 +3863,10 @@ def _seller_api_browser_cache_entry(user_id: int, allow_expired: bool = False):
 
 def _seller_api_refresh_error_text(error) -> str:
     text = str(error or "Unknown refresh error.").strip() or "Unknown refresh error."
-    if BUYER_API_KEY:
-        text = text.replace(BUYER_API_KEY, "[redacted]")
+    for provider in load_seller_api_providers().values():
+        api_key = str(provider.get("api_key") or "")
+        if api_key:
+            text = text.replace(api_key, "[redacted]")
     return text[:200]
 
 
@@ -3658,17 +3885,18 @@ def _seller_api_balance_values(balance_data: dict):
     return balance, str(balance_text) if balance_text not in (None, "") else "N/A"
 
 
-async def maybe_notify_low_seller_api_balance(bot, balance) -> bool:
-    threshold = _buyer_api_numeric_value(seller_api_auto_refresh.get("low_balance_threshold")) or 5
+async def maybe_notify_low_seller_api_balance(bot, balance, provider_id: str = "default") -> bool:
+    status = get_seller_api_provider_status(provider_id)
+    threshold = _buyer_api_numeric_value(status.get("low_balance_threshold")) or 5
     if balance is None:
         return False
     if balance >= threshold:
-        seller_api_auto_refresh["low_balance_alert_active"] = False
+        status["low_balance_alert_active"] = False
         return False
 
     now = datetime.now()
-    active = _buyer_api_bool_value(seller_api_auto_refresh.get("low_balance_alert_active"))
-    last_alert = seller_api_auto_refresh.get("last_low_balance_alert_at")
+    active = _buyer_api_bool_value(status.get("low_balance_alert_active"))
+    last_alert = status.get("last_low_balance_alert_at")
     try:
         last_alert_dt = datetime.fromisoformat(str(last_alert)) if last_alert else None
     except (TypeError, ValueError):
@@ -3678,6 +3906,7 @@ async def maybe_notify_low_seller_api_balance(bot, balance) -> bool:
 
     text = (
         "⚠️ <b>Low Seller API Balance</b>\n\n"
+        f"<b>Provider:</b> {escape_html(seller_api_provider_name(provider_id))}\n"
         f"<b>Current Balance:</b> {float(balance):.2f} USDT\n"
         "Please recharge your seller API account soon."
     )
@@ -3689,14 +3918,17 @@ async def maybe_notify_low_seller_api_balance(bot, balance) -> bool:
         except Exception as exc:
             print(f"Seller API low-balance alert failed for admin_id={admin_id}: {type(exc).__name__}")
     if sent:
-        seller_api_auto_refresh["last_low_balance_alert_at"] = now.isoformat(timespec="seconds")
-        seller_api_auto_refresh["low_balance_alert_active"] = True
+        status["last_low_balance_alert_at"] = now.isoformat(timespec="seconds")
+        status["low_balance_alert_active"] = True
     return sent
 
 
-async def notify_admin_seller_api_refresh_changes(bot, total: int, sync_result: dict, balance_text: str):
+async def notify_admin_seller_api_refresh_changes(
+    bot, total: int, sync_result: dict, balance_text: str, provider_id: str = "default"
+):
     text = (
         "🔄 <b>Seller API auto refresh completed</b>\n\n"
+        f"<b>Provider:</b> {escape_html(seller_api_provider_name(provider_id))}\n"
         f"<b>Total products:</b> {total}\n"
         f"<b>Missing marked:</b> {int(sync_result.get('missing', 0) or 0)}\n"
         f"<b>Restored:</b> {int(sync_result.get('restored', 0) or 0)}\n"
@@ -3709,22 +3941,22 @@ async def notify_admin_seller_api_refresh_changes(bot, total: int, sync_result: 
             print(f"Seller API refresh summary failed for admin_id={admin_id}: {type(exc).__name__}")
 
 
-async def run_seller_api_refresh(bot, source: str = "manual") -> dict:
-    global seller_api_refresh_running
-    if seller_api_refresh_running:
+async def run_seller_api_refresh(bot, source: str = "manual", provider_id: str = "default") -> dict:
+    if provider_id in seller_api_refresh_running:
         return {"skipped": True, "error": "A Seller API refresh is already running."}
 
-    seller_api_refresh_running = True
+    seller_api_refresh_running.add(provider_id)
+    status = get_seller_api_provider_status(provider_id)
     now_text = datetime.now().isoformat(timespec="seconds")
-    seller_api_auto_refresh["last_run_at"] = now_text
-    seller_api_auto_refresh["last_missing_marked"] = 0
-    seller_api_auto_refresh["last_restored"] = 0
+    status["last_run_at"] = now_text
+    status["last_missing_marked"] = 0
+    status["last_restored"] = 0
     result = {"skipped": False, "success": False, "products": None, "total": 0, "sync": {}}
     errors = []
     try:
         products_result, balance_result = await asyncio.gather(
-            asyncio.to_thread(fetch_buyer_api_products),
-            asyncio.to_thread(fetch_buyer_api_balance),
+            asyncio.to_thread(fetch_buyer_api_products, provider_id),
+            asyncio.to_thread(fetch_buyer_api_balance, provider_id),
             return_exceptions=True,
         )
 
@@ -3735,15 +3967,17 @@ async def run_seller_api_refresh(bot, source: str = "manual") -> dict:
             if total > len(products):
                 errors.append("Seller API returned an incomplete product list; mappings were left unchanged.")
             else:
-                sync_result = sync_api_product_mapping_validity(products, allow_missing=True)
+                sync_result = sync_api_product_mapping_validity(
+                    products, allow_missing=True, provider_id=provider_id
+                )
                 result.update({"success": True, "products": products, "total": total, "sync": sync_result})
-                seller_api_auto_refresh["last_success_at"] = datetime.now().isoformat(timespec="seconds")
-                seller_api_auto_refresh["last_total_products"] = total
-                seller_api_auto_refresh["last_missing_marked"] = int(sync_result.get("missing", 0) or 0)
-                seller_api_auto_refresh["last_restored"] = int(sync_result.get("restored", 0) or 0)
+                status["last_success_at"] = datetime.now().isoformat(timespec="seconds")
+                status["last_total_products"] = total
+                status["last_missing_marked"] = int(sync_result.get("missing", 0) or 0)
+                status["last_restored"] = int(sync_result.get("restored", 0) or 0)
                 fetched_at = datetime.now().timestamp()
                 for admin_id in set(ADMIN_IDS) | set(seller_api_browser_cache.keys()):
-                    seller_api_browser_cache[admin_id] = {
+                    seller_api_browser_cache.setdefault(admin_id, {})[provider_id] = {
                         "products": products,
                         "total": total,
                         "fetched_at": fetched_at,
@@ -3751,77 +3985,93 @@ async def run_seller_api_refresh(bot, source: str = "manual") -> dict:
                     }
 
         if isinstance(balance_result, Exception):
-            seller_api_auto_refresh["last_balance"] = None
-            seller_api_auto_refresh["last_balance_text"] = "Could not fetch"
+            status["last_balance"] = None
+            status["last_balance_text"] = "Could not fetch"
             errors.append("Balance: " + _seller_api_refresh_error_text(balance_result))
             balance = None
             balance_text = "Could not fetch"
         else:
             balance, balance_text = _seller_api_balance_values(balance_result)
-            seller_api_auto_refresh["last_balance"] = balance
-            seller_api_auto_refresh["last_balance_text"] = balance_text
-            await maybe_notify_low_seller_api_balance(bot, balance)
+            status["last_balance"] = balance
+            status["last_balance_text"] = balance_text
+            await maybe_notify_low_seller_api_balance(bot, balance, provider_id)
 
-        seller_api_auto_refresh["last_error"] = " | ".join(errors) if errors else None
-        result["error"] = seller_api_auto_refresh["last_error"]
+        status["last_error"] = " | ".join(errors) if errors else None
+        result["error"] = status["last_error"]
         result["balance"] = balance
         result["balance_text"] = balance_text
         if source == "auto" and result["success"] and (
-            seller_api_auto_refresh["last_missing_marked"] or seller_api_auto_refresh["last_restored"]
+            status["last_missing_marked"] or status["last_restored"]
         ):
-            await notify_admin_seller_api_refresh_changes(bot, result["total"], result["sync"], balance_text)
+            await notify_admin_seller_api_refresh_changes(
+                bot, result["total"], result["sync"], balance_text, provider_id
+            )
         return result
     except Exception as exc:
         safe_error = _seller_api_refresh_error_text(exc)
-        seller_api_auto_refresh["last_error"] = safe_error
+        status["last_error"] = safe_error
         result["error"] = safe_error
         print(f"Seller API refresh failed safely: {type(exc).__name__}")
         return result
     finally:
-        seller_api_refresh_running = False
+        seller_api_refresh_running.discard(provider_id)
         try:
             save_bot_state()
         except Exception as exc:
             print(f"Seller API refresh state save failed: {type(exc).__name__}")
 
 
-async def seller_api_auto_refresh_loop(application, first_delay: int = 30):
+async def seller_api_auto_refresh_loop(
+    application, provider_id: str = "default", first_delay: int = 30
+):
+    status = get_seller_api_provider_status(provider_id)
     try:
         await asyncio.sleep(max(1, int(first_delay)))
-        while _buyer_api_bool_value(seller_api_auto_refresh.get("enabled")):
-            await run_seller_api_refresh(application.bot, source="auto")
-            interval = int(seller_api_auto_refresh.get("interval_minutes", 10) or 10)
+        while _buyer_api_bool_value(status.get("enabled")):
+            await run_seller_api_refresh(application.bot, source="auto", provider_id=provider_id)
+            interval = int(status.get("interval_minutes", 10) or 10)
             await asyncio.sleep(interval * 60)
     except asyncio.CancelledError:
         return
     except Exception as exc:
-        seller_api_auto_refresh["last_error"] = _seller_api_refresh_error_text(exc)
+        status["last_error"] = _seller_api_refresh_error_text(exc)
         print(f"Seller API auto-refresh loop failed: {type(exc).__name__}")
 
 
-def schedule_seller_api_auto_refresh(application, first_delay: int = 30):
-    global seller_api_auto_refresh_task
-    if seller_api_auto_refresh_task and not seller_api_auto_refresh_task.done():
-        seller_api_auto_refresh_task.cancel()
-    seller_api_auto_refresh_task = None
-    if _buyer_api_bool_value(seller_api_auto_refresh.get("enabled")):
-        seller_api_auto_refresh_task = application.create_task(
-            seller_api_auto_refresh_loop(application, first_delay=first_delay)
-        )
+def schedule_seller_api_auto_refresh(
+    application, first_delay: int = 30, provider_id: str = None
+):
+    provider_ids = [provider_id] if provider_id else list(load_seller_api_providers())
+    for current_provider_id in provider_ids:
+        task = seller_api_auto_refresh_tasks.pop(current_provider_id, None)
+        if task and not task.done():
+            task.cancel()
+        status = get_seller_api_provider_status(current_provider_id)
+        if _buyer_api_bool_value(status.get("enabled")):
+            seller_api_auto_refresh_tasks[current_provider_id] = application.create_task(
+                seller_api_auto_refresh_loop(
+                    application,
+                    provider_id=current_provider_id,
+                    first_delay=first_delay,
+                )
+            )
 
 
 async def fetch_cached_buyer_api_products(user_id: int, force_refresh: bool = False):
     temp = _seller_api_browser_temp(user_id)
-    cached = _seller_api_browser_cache_entry(user_id)
+    provider_id = selected_seller_api_provider_id(user_id)
+    cached = _seller_api_browser_cache_entry(user_id, provider_id)
     if cached is not None and not force_refresh:
         temp["seller_api_cache_source"] = "Cached"
         temp["seller_api_cache_fetched_at"] = cached.get("fetched_at")
         temp.pop("seller_api_cache_warning", None)
         return cached["products"], int(cached.get("total", len(cached["products"])))
 
-    stale_cache = _seller_api_browser_cache_entry(user_id, allow_expired=True)
+    stale_cache = _seller_api_browser_cache_entry(user_id, provider_id, allow_expired=True)
     try:
-        refresh_result = await run_seller_api_refresh(app_instance.bot, source="manual")
+        refresh_result = await run_seller_api_refresh(
+            app_instance.bot, source="manual", provider_id=provider_id
+        )
         if refresh_result.get("skipped"):
             raise BuyerAPIError(refresh_result.get("error") or "Seller API refresh is already running.")
         if not refresh_result.get("success"):
@@ -3837,7 +4087,7 @@ async def fetch_cached_buyer_api_products(user_id: int, force_refresh: bool = Fa
         return stale_cache["products"], int(stale_cache.get("total", len(stale_cache["products"])))
 
     fetched_at = datetime.now().timestamp()
-    seller_api_browser_cache[user_id] = {
+    seller_api_browser_cache.setdefault(user_id, {})[provider_id] = {
         "products": products,
         "total": total,
         "fetched_at": fetched_at,
@@ -3870,6 +4120,7 @@ async def fetch_buyer_api_browser_page(user_id: int, page: int = 0, force_refres
         products,
         temp.get("seller_api_search", ""),
         temp.get("seller_api_filter", "all"),
+        selected_seller_api_provider_id(user_id),
     )
     total_pages = max(1, (len(filtered) + 9) // 10)
     safe_page = max(0, min(int(page), total_pages - 1))
@@ -3893,6 +4144,7 @@ def render_buyer_api_browser(products: list, api_total: int, page: int, total_pa
     cache_warning = str(temp.get("seller_api_cache_warning") or "")
     return (
         "📦 <b>SELLER API PRODUCT BROWSER</b>\n\n"
+        f"<b>Provider:</b> {escape_html(seller_api_provider_name(selected_seller_api_provider_id(user_id)))}\n"
         f"<b>API products:</b> {api_total}\n"
         f"<b>Matching products:</b> {len(products)}\n"
         f"<b>Page:</b> {page + 1}/{total_pages}\n"
@@ -3956,7 +4208,7 @@ def buyer_api_filters_keyboard() -> InlineKeyboardMarkup:
 def render_buyer_api_product_detail(product: dict) -> str:
     fields = extract_buyer_api_product_fields(product)
     api_product_id = _buyer_api_product_id(product)
-    mapping = api_product_mappings.get(api_product_id)
+    mapping = api_product_mapping_for_product(product)
     category_id = mapping.get("category_id") if isinstance(mapping, dict) else None
     category = CATEGORIES.get(category_id, {}) if category_id else {}
     category_name = category.get("name") if category else None
@@ -3992,7 +4244,7 @@ def render_buyer_api_product_detail(product: dict) -> str:
 
 def buyer_api_product_detail_keyboard(product: dict) -> InlineKeyboardMarkup:
     api_product_id = _buyer_api_product_id(product)
-    mapping = api_product_mappings.get(api_product_id, {})
+    mapping = api_product_mapping_for_product(product) or {}
     toggle_text = "❌ Disable" if mapping.get("enabled") else "✅ Enable"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(toggle_text, callback_data="seller_api_mapping_toggle")],
@@ -4114,7 +4366,7 @@ def buyer_api_mapping_enable_errors(product: dict) -> list:
     api_product_id = _buyer_api_product_id(product)
     if not api_product_id:
         return ["API product ID"]
-    mapping = api_product_mappings.get(api_product_id)
+    mapping = api_product_mapping_for_product(product)
     missing = []
     if mapping and _buyer_api_bool_value(mapping.get("seller_missing")):
         missing.append("product is missing from Seller API")
@@ -4149,7 +4401,7 @@ def find_saved_api_shop_mapping(callback_token: str):
     safe_token = str(callback_token or "").strip().lower()
     for mapping_key, mapping in saved_api_shop_mappings():
         api_product_id = _saved_api_mapping_identity(mapping_key, mapping)
-        if api_product_id and api_shop_callback_token(api_product_id) == safe_token:
+        if api_product_id and api_shop_callback_token(api_product_id, mapping_provider_id(mapping)) == safe_token:
             return mapping_key, mapping
     return None, None
 
@@ -4173,8 +4425,11 @@ def _api_mapping_category_name(mapping: dict) -> str:
     return str(category.get("name") or category_id) if isinstance(category, dict) else "Not selected"
 
 
-def api_shop_manager_page(page: int = 0):
-    mappings = saved_api_shop_mappings()
+def api_shop_manager_page(page: int = 0, provider_id: str = None):
+    mappings = [
+        item for item in saved_api_shop_mappings()
+        if provider_id is None or mapping_provider_id(item[1]) == provider_id
+    ]
     total_pages = max(1, (len(mappings) + 9) // 10)
     safe_page = max(0, min(int(page), total_pages - 1))
     return mappings, safe_page, total_pages
@@ -4219,7 +4474,7 @@ def api_shop_manager_keyboard(mappings: list, page: int, total_pages: int) -> In
         label = f"{absolute_index}. {status} {api_mapping_display_name(mapping)}"
         rows.append([InlineKeyboardButton(
             label[:64],
-            callback_data=f"seller_api_shop_view_{api_shop_callback_token(api_product_id)}",
+            callback_data=f"seller_api_shop_view_{api_shop_callback_token(api_product_id, mapping_provider_id(mapping))}",
         )])
     nav = []
     if page > 0:
@@ -4256,6 +4511,8 @@ def render_api_shop_mapping_detail(mapping_key: str, mapping: dict) -> str:
     return (
         "🛒 <b>MANAGE MAPPED PRODUCT</b>\n\n"
         f"<b>Display name:</b> {escape_html(api_mapping_display_name(mapping))}\n"
+        f"<b>Provider:</b> {escape_html(seller_api_provider_name(mapping_provider_id(mapping)))} "
+        f"(<code>{escape_html(mapping_provider_id(mapping))}</code>)\n"
         f"<b>Original API name:</b> {escape_html(str(mapping.get('name') or 'N/A'))}\n"
         f"<b>API product ID:</b> <code>{escape_html(api_product_id or 'N/A')}</code>\n"
         f"<b>Status:</b> {status}\n"
@@ -4431,7 +4688,8 @@ async def send_buyer_api_browser(query, user_id: int, page: int = 0, force_refre
 
 
 async def send_api_shop_manager(query, user_id: int, page: int = 0):
-    mappings, safe_page, total_pages = api_shop_manager_page(page)
+    provider_id = selected_seller_api_provider_id(user_id)
+    mappings, safe_page, total_pages = api_shop_manager_page(page, provider_id)
     temp = admin_temp.setdefault(user_id, {})
     temp["seller_api_shop_page"] = safe_page
     user_state[user_id] = {"step": "seller_api_shop_manager"}
@@ -4449,7 +4707,11 @@ def _buyer_api_key_list(value, limit: int) -> str:
     keys = []
     for key in list(value.keys())[:limit]:
         key_text = str(key)[:40]
-        if BUYER_API_KEY and BUYER_API_KEY.lower() in key_text.lower():
+        if any(
+            str(provider.get("api_key") or "")
+            and str(provider.get("api_key")).lower() in key_text.lower()
+            for provider in load_seller_api_providers().values()
+        ):
             key_text = "[redacted-field]"
         keys.append(key_text)
     suffix = ", …" if len(value) > limit else ""
@@ -5028,7 +5290,7 @@ def admin_shop_reorder_select_keyboard() -> InlineKeyboardMarkup:
         elif item.startswith("api_product:"):
             mapping = api_product_mapping_by_id(item.split(":", 1)[1])
             if mapping and is_api_shop_mapping_visible(mapping):
-                token = api_shop_callback_token(mapping.get("api_product_id"))
+                token = api_shop_callback_token(mapping.get("api_product_id"), mapping_provider_id(mapping))
                 rows.append([InlineKeyboardButton(
                     _short_button_text(
                         f"🌐 API: {api_mapping_display_name(mapping)} - {format_money(mapping.get('selling_price'))}"
@@ -5088,8 +5350,9 @@ def admin_reorder_selected_keyboard(product_id: str) -> InlineKeyboardMarkup:
 def admin_api_reorder_selected_keyboard(mapping: dict) -> InlineKeyboardMarkup:
     normalize_shop_order()
     api_product_id = str((mapping or {}).get("api_product_id") or "").strip()
-    item = api_product_shop_order_item(api_product_id)
-    token = api_shop_callback_token(api_product_id)
+    provider_id = mapping_provider_id(mapping)
+    item = api_product_shop_order_item(api_product_id, provider_id)
+    token = api_shop_callback_token(api_product_id, provider_id)
     if item not in shop_order:
         return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="admin_reorder_menu")]])
     rows = []
@@ -6647,8 +6910,9 @@ def enabled_api_shop_mappings(category_id: str) -> list:
     ]
 
 
-def api_shop_callback_token(api_product_id: str) -> str:
-    return hashlib.sha256(str(api_product_id).encode("utf-8")).hexdigest()[:32]
+def api_shop_callback_token(api_product_id: str, provider_id: str = "default") -> str:
+    identity = api_product_order_identity(api_product_id, provider_id)
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
 
 
 def find_api_shop_mapping(callback_token: str):
@@ -6657,7 +6921,7 @@ def find_api_shop_mapping(callback_token: str):
         if not is_api_shop_mapping_visible(mapping):
             continue
         api_product_id = str(mapping.get("api_product_id") or "").strip()
-        if api_shop_callback_token(api_product_id) == safe_token:
+        if api_shop_callback_token(api_product_id, mapping_provider_id(mapping)) == safe_token:
             return mapping
     return None
 
@@ -6710,7 +6974,7 @@ def api_shop_product_row(mapping: dict, styled: bool = True) -> list:
     return [[make_product_inline_button(
         mapping,
         f"{name[:name_limit]}{suffix}",
-        callback_data=f"api_shop_view_{api_shop_callback_token(api_product_id)}",
+        callback_data=f"api_shop_view_{api_shop_callback_token(api_product_id, mapping_provider_id(mapping))}",
         style=("danger" if out_of_stock else "primary") if styled else None,
     )]]
 
@@ -6771,7 +7035,7 @@ def api_shop_product_details_keyboard(mapping: dict, styled: bool = True) -> Inl
     if is_api_shop_mapping_visible(mapping) and stock != 0:
         rows.append([make_styled_inline_button(
             "🛒 Buy Now",
-            callback_data=f"api_shop_buy_{api_shop_callback_token(mapping.get('api_product_id'))}",
+            callback_data=f"api_shop_buy_{api_shop_callback_token(mapping.get('api_product_id'), mapping_provider_id(mapping))}",
             style="success" if styled else None,
         )])
     rows.extend([
@@ -6790,7 +7054,7 @@ def api_shop_product_details_keyboard(mapping: dict, styled: bool = True) -> Inl
 
 
 def api_shop_quantity_keyboard(mapping: dict, styled: bool = True) -> InlineKeyboardMarkup:
-    token = api_shop_callback_token(mapping.get("api_product_id"))
+    token = api_shop_callback_token(mapping.get("api_product_id"), mapping_provider_id(mapping))
     stock = api_shop_mapping_stock(mapping)
     quantities = [1]
     if stock is not None and stock >= 5:
@@ -6844,6 +7108,12 @@ def validate_api_shop_purchase(mapping: dict, quantity: int) -> str:
         return "This product is currently unavailable."
     if not is_api_shop_mapping_visible(mapping):
         return "This product is no longer available."
+    try:
+        provider = get_seller_api_provider(mapping_provider_id(mapping))
+    except BuyerAPIError:
+        return "This product is currently unavailable."
+    if not provider.get("enabled") or not provider.get("configured"):
+        return "This product is currently unavailable."
     if not isinstance(quantity, int) or quantity <= 0:
         return "Quantity must be a whole number greater than 0."
     stock = api_shop_mapping_stock(mapping)
@@ -7061,6 +7331,7 @@ async def notify_admin_api_purchase_failure(
     username = str(profile.get("username") or "").strip().lstrip("@")
     username_text = f"@{username}" if username else "N/A"
     order_code = str(getattr(error, "order_code", "") or "").strip()
+    provider_id = mapping_provider_id(mapping)
     notes = []
     if category == "insufficient_seller_balance":
         notes.append("Possible seller API balance issue. Please recharge/check seller account.")
@@ -7068,6 +7339,8 @@ async def notify_admin_api_purchase_failure(
         notes.append("Timeout may be ambiguous because the purchase endpoint has no documented idempotency key.")
     text = (
         "🚨 <b>API ORDER NEEDS SUPPORT</b>\n\n"
+        f"<b>Provider:</b> {escape_html(seller_api_provider_name(provider_id))} "
+        f"(<code>{escape_html(provider_id)}</code>)\n"
         f"<b>User ID:</b> <code>{user_id}</code>\n"
         f"<b>Username:</b> {escape_html(username_text)}\n"
         f"<b>Order ID:</b> <code>{escape_html(order.get('id') or 'N/A')}</code>\n"
@@ -7108,7 +7381,9 @@ async def notify_admin_api_purchase_success(
 ):
     balance_data = None
     try:
-        balance_data = await asyncio.to_thread(fetch_buyer_api_balance)
+        balance_data = await asyncio.to_thread(
+            fetch_buyer_api_balance, mapping_provider_id(mapping)
+        )
     except Exception as exc:
         print(f"Seller API post-purchase balance check failed: {type(exc).__name__}")
 
@@ -7150,6 +7425,8 @@ async def notify_admin_api_purchase_success(
 
     text = (
         "✅ <b>API Product Sold</b>\n\n"
+        f"<b>Provider:</b> {escape_html(seller_api_provider_name(mapping_provider_id(mapping)))} "
+        f"(<code>{escape_html(mapping_provider_id(mapping))}</code>)\n\n"
         "<b>User</b>\n"
         f"• User ID: <code>{user_id}</code>\n"
         f"• Username: {escape_html(username_text)}\n"
@@ -7171,7 +7448,10 @@ async def notify_admin_api_purchase_success(
         "• Status: Completed\n"
         f"• Delivered items count: {delivered_count}"
     )
-    if balance_number is not None and balance_number < 5:
+    provider_threshold = _buyer_api_numeric_value(
+        get_seller_api_provider_status(mapping_provider_id(mapping)).get("low_balance_threshold")
+    ) or 5
+    if balance_number is not None and balance_number < provider_threshold:
         text += "\n\n⚠️ <b>Low Seller API balance. Please recharge soon.</b>"
 
     for admin_id in ADMIN_IDS:
@@ -7247,11 +7527,42 @@ async def handle_api_purchase_failure(
     return order
 
 
+async def notify_unavailable_api_provider(context, user_id: int, mapping: dict) -> None:
+    provider_id = mapping_provider_id(mapping)
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_message(
+                admin_id,
+                "⚠️ <b>Mapped product provider unavailable</b>\n\n"
+                f"<b>Provider:</b> {escape_html(seller_api_provider_name(provider_id))} "
+                f"(<code>{escape_html(provider_id)}</code>)\n"
+                f"<b>Product:</b> {escape_html(api_mapping_display_name(mapping))}\n"
+                f"<b>User ID:</b> <code>{user_id}</code>\n\n"
+                "No wallet deduction or provider purchase was attempted.",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+    await context.bot.send_message(
+        user_id,
+        "⚠️ This product is temporarily unavailable. Please contact support or try again later.",
+        reply_markup=api_purchase_failure_keyboard(),
+    )
+
+
 async def continue_api_shop_purchase(context, user_id: int, callback_token: str, quantity: int):
     mapping = find_api_shop_mapping(callback_token)
     if mapping is None:
         await context.bot.send_message(user_id, "❌ This product is no longer available.")
         return
+    provider_id = mapping_provider_id(mapping)
+    try:
+        provider = get_seller_api_provider(provider_id)
+    except BuyerAPIError:
+        provider = None
+    if not provider or not provider.get("enabled") or not provider.get("configured"):
+        await notify_unavailable_api_provider(context, user_id, mapping)
+        return False
     validation_error = validate_api_shop_purchase(mapping, quantity)
     if validation_error:
         await context.bot.send_message(user_id, f"❌ {validation_error}")
@@ -7303,6 +7614,14 @@ async def process_api_shop_purchase(
     if mapping is None:
         await context.bot.send_message(user_id, "❌ This product is no longer available.")
         return False
+    provider_id = mapping_provider_id(mapping)
+    try:
+        provider = get_seller_api_provider(provider_id)
+    except BuyerAPIError:
+        provider = None
+    if not provider or not provider.get("enabled") or not provider.get("configured"):
+        await notify_unavailable_api_provider(context, user_id, mapping)
+        return False
     validation_error = validate_api_shop_purchase(mapping, quantity)
     if validation_error:
         await context.bot.send_message(user_id, f"❌ {validation_error}")
@@ -7345,9 +7664,13 @@ async def process_api_shop_purchase(
                 mapping.get("api_product_id"),
                 quantity,
                 customer_email,
+                provider_id,
             )
         except BuyerAPIError as exc:
             print(f"Mapped product purchase failed: category={api_purchase_failure_category(exc)}")
+            if api_purchase_failure_category(exc) == "config":
+                await notify_unavailable_api_provider(context, user_id, mapping)
+                return False
             await handle_api_purchase_failure(
                 context,
                 user_id,
@@ -8750,14 +9073,16 @@ async def post_init(application):
 
 
 async def post_shutdown(application):
-    global seller_api_auto_refresh_task
-    if seller_api_auto_refresh_task and not seller_api_auto_refresh_task.done():
-        seller_api_auto_refresh_task.cancel()
+    tasks = list(seller_api_auto_refresh_tasks.values())
+    seller_api_auto_refresh_tasks.clear()
+    for task in tasks:
+        if task and not task.done():
+            task.cancel()
+    for task in tasks:
         try:
-            await seller_api_auto_refresh_task
+            await task
         except asyncio.CancelledError:
             pass
-    seller_api_auto_refresh_task = None
 
 
 # =========================
@@ -9182,7 +9507,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        if text == "🔌 Seller API":
+        if text in {"🔌 Seller API", "🔌 Seller APIs"}:
             user_state[user_id] = {"step": "seller_api_admin"}
             await update.message.reply_text(
                 "🔌 <b>SELLER API TEST PANEL</b>",
@@ -10266,58 +10591,119 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_inline_from_callback(query, "❌ <b>You are not allowed.</b>", close_keyboard())
         return
 
+    if data == "seller_api_provider_guide":
+        await send_inline_from_callback(
+            query,
+            "ℹ️ <b>ADD A SELLER API PROVIDER</b>\n\n"
+            "Add Railway environment variables such as:\n"
+            "<code>BUYER_API_2_NAME</code>\n<code>BUYER_API_2_URL</code>\n"
+            "<code>BUYER_API_2_KEY</code>\n<code>BUYER_API_2_ENABLED=true</code>\n\n"
+            "Provider credentials cannot be entered through Telegram and are never saved in bot state.",
+            seller_api_keyboard(),
+        )
+        return
+
+    if data == "seller_api_auto_overview":
+        await send_inline_from_callback(
+            query,
+            render_seller_api_auto_refresh_overview(),
+            seller_api_keyboard(),
+        )
+        return
+
+    if data.startswith("seller_api_provider_") and data not in {
+        "seller_api_provider_guide", "seller_api_provider_back"
+    }:
+        provider_id = data.replace("seller_api_provider_", "", 1)
+        if provider_id not in load_seller_api_providers():
+            await send_inline_from_callback(query, "❌ <b>Provider is not configured.</b>", seller_api_keyboard())
+            return
+        temp = _seller_api_browser_temp(user_id)
+        temp["seller_api_provider_id"] = provider_id
+        temp["seller_api_search"] = ""
+        temp["seller_api_filter"] = "all"
+        temp["seller_api_page"] = 0
+        user_state[user_id] = {"step": "seller_api_provider"}
+        await send_inline_from_callback(
+            query,
+            render_seller_api_provider_panel(provider_id),
+            seller_api_provider_keyboard(),
+        )
+        return
+
+    if data == "seller_api_provider_back":
+        user_state[user_id] = {"step": "seller_api_admin"}
+        await send_inline_from_callback(query, render_seller_api_panel(), seller_api_keyboard())
+        return
+
     if data == "seller_api_back":
         user_state[user_id] = {"step": "admin_main"}
         await send_inline_from_callback(query, "⬅️ Back to admin menu.", close_keyboard())
         return
 
     if data == "seller_api_debug":
-        await send_inline_from_callback(query, render_seller_api_debug_config(), seller_api_keyboard())
+        provider_id = selected_seller_api_provider_id(user_id)
+        await send_inline_from_callback(
+            query, render_seller_api_debug_config(provider_id), seller_api_provider_keyboard()
+        )
         return
 
     if data == "seller_api_auto_settings":
+        provider_id = selected_seller_api_provider_id(user_id)
         await send_inline_from_callback(
             query,
-            render_seller_api_auto_refresh_panel(),
-            seller_api_auto_refresh_keyboard(),
+            render_seller_api_auto_refresh_panel(provider_id),
+            seller_api_auto_refresh_keyboard(provider_id),
         )
         return
 
     if data == "seller_api_auto_back":
-        await send_inline_from_callback(query, render_seller_api_panel(), seller_api_keyboard())
+        provider_id = selected_seller_api_provider_id(user_id)
+        await send_inline_from_callback(
+            query, render_seller_api_provider_panel(provider_id), seller_api_provider_keyboard()
+        )
         return
 
     if data == "seller_api_auto_toggle":
-        seller_api_auto_refresh["enabled"] = not _buyer_api_bool_value(
-            seller_api_auto_refresh.get("enabled")
+        provider_id = selected_seller_api_provider_id(user_id)
+        status = get_seller_api_provider_status(provider_id)
+        status["enabled"] = not _buyer_api_bool_value(status.get("enabled"))
+        schedule_seller_api_auto_refresh(
+            context.application, first_delay=30, provider_id=provider_id
         )
-        schedule_seller_api_auto_refresh(context.application, first_delay=30)
         await send_inline_from_callback(
             query,
-            render_seller_api_auto_refresh_panel(),
-            seller_api_auto_refresh_keyboard(),
+            render_seller_api_auto_refresh_panel(provider_id),
+            seller_api_auto_refresh_keyboard(provider_id),
         )
         return
 
     if data.startswith("seller_api_auto_interval_"):
+        provider_id = selected_seller_api_provider_id(user_id)
+        status = get_seller_api_provider_status(provider_id)
         try:
             interval = int(data.replace("seller_api_auto_interval_", "", 1))
         except ValueError:
             interval = 10
         if interval not in {5, 10, 30}:
             interval = 10
-        seller_api_auto_refresh["interval_minutes"] = interval
-        if _buyer_api_bool_value(seller_api_auto_refresh.get("enabled")):
-            schedule_seller_api_auto_refresh(context.application, first_delay=interval * 60)
+        status["interval_minutes"] = interval
+        if _buyer_api_bool_value(status.get("enabled")):
+            schedule_seller_api_auto_refresh(
+                context.application, first_delay=interval * 60, provider_id=provider_id
+            )
         await send_inline_from_callback(
             query,
-            render_seller_api_auto_refresh_panel(),
-            seller_api_auto_refresh_keyboard(),
+            render_seller_api_auto_refresh_panel(provider_id),
+            seller_api_auto_refresh_keyboard(provider_id),
         )
         return
 
     if data == "seller_api_auto_run_now":
-        refresh_result = await run_seller_api_refresh(context.bot, source="manual")
+        provider_id = selected_seller_api_provider_id(user_id)
+        refresh_result = await run_seller_api_refresh(
+            context.bot, source="manual", provider_id=provider_id
+        )
         if refresh_result.get("skipped"):
             message = "⏳ <b>A Seller API refresh is already running.</b>"
         elif refresh_result.get("success"):
@@ -10332,24 +10718,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message = "❌ <b>Seller API refresh failed.</b>\n\nMappings were left unchanged."
         await send_inline_from_callback(
             query,
-            message + "\n\n" + render_seller_api_auto_refresh_status(),
-            seller_api_auto_refresh_keyboard(),
+            message + "\n\n" + render_seller_api_auto_refresh_status(provider_id),
+            seller_api_auto_refresh_keyboard(provider_id),
         )
         return
 
     if data == "seller_api_shop_products":
-        reset_admin_temp(user_id)
+        provider_id = selected_seller_api_provider_id(user_id)
+        admin_temp[user_id] = {"seller_api_provider_id": provider_id}
         await send_api_shop_manager(query, user_id, 0)
         return
 
     if data == "seller_api_shop_back":
-        reset_admin_temp(user_id)
+        provider_id = selected_seller_api_provider_id(user_id)
+        admin_temp[user_id] = {"seller_api_provider_id": provider_id}
         user_state[user_id] = {"step": "seller_api_admin"}
         await edit_seller_api_callback_message(
             query,
             user_id,
-            render_seller_api_panel(),
-            seller_api_keyboard(),
+            render_seller_api_provider_panel(provider_id),
+            seller_api_provider_keyboard(),
         )
         return
 
@@ -10645,7 +11033,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "seller_api_shop_remove_confirm":
         mapping_key, mapping = selected_saved_api_shop_mapping(user_id)
         if mapping_key and mapping:
-            remove_api_product_shop_order_item(mapping.get("api_product_id"))
+            remove_api_product_shop_order_item(
+                mapping.get("api_product_id"), mapping_provider_id(mapping)
+            )
             api_product_mappings.pop(mapping_key, None)
         admin_temp.get(user_id, {}).pop("selected_api_mapping_key", None)
         page = int(admin_temp.get(user_id, {}).get("seller_api_shop_page", 0) or 0)
@@ -10653,7 +11043,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "seller_api_browse":
-        reset_admin_temp(user_id)
+        provider_id = selected_seller_api_provider_id(user_id)
+        admin_temp[user_id] = {"seller_api_provider_id": provider_id}
         _seller_api_browser_temp(user_id)
         await send_buyer_api_browser(query, user_id, 0, force_refresh=True)
         return
@@ -10663,13 +11054,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "seller_api_browser_back":
-        reset_admin_temp(user_id)
+        provider_id = selected_seller_api_provider_id(user_id)
+        admin_temp[user_id] = {"seller_api_provider_id": provider_id}
         user_state[user_id] = {"step": "seller_api_admin"}
         await edit_seller_api_callback_message(
             query,
             user_id,
-            render_seller_api_panel(),
-            seller_api_keyboard(),
+            render_seller_api_provider_panel(provider_id),
+            seller_api_provider_keyboard(),
         )
         return
 
@@ -10727,7 +11119,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             if product_index < 0 or product_index >= len(products):
                 raise IndexError
-            product = products[product_index]
+            product = dict(products[product_index])
+            product["_seller_provider_id"] = selected_seller_api_provider_id(user_id)
         except (ValueError, IndexError):
             await send_inline_from_callback(
                 query,
@@ -10846,7 +11239,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "seller_api_mapping_icon_clear":
         product = selected_buyer_api_product(user_id)
         api_product_id = _buyer_api_product_id(product) if product else ""
-        mapping = api_product_mappings.get(api_product_id)
+        mapping = api_product_mapping_for_product(product)
         if not product or not isinstance(mapping, dict):
             await send_inline_from_callback(query, "❌ <b>API product mapping was not found.</b>", seller_api_keyboard())
             return
@@ -10880,7 +11273,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "seller_api_mapping_toggle":
         product = selected_buyer_api_product(user_id)
         api_product_id = _buyer_api_product_id(product) if product else ""
-        mapping = api_product_mappings.get(api_product_id)
+        mapping = api_product_mapping_for_product(product)
         if not product or not api_product_id:
             await send_inline_from_callback(query, "❌ <b>API product ID is missing.</b>", seller_api_keyboard())
             return
@@ -10916,9 +11309,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "seller_api_mapping_clear":
         product = selected_buyer_api_product(user_id)
         api_product_id = _buyer_api_product_id(product) if product else ""
+        provider_id = str((product or {}).get("_seller_provider_id") or "default")
         if api_product_id:
-            remove_api_product_shop_order_item(api_product_id)
-            api_product_mappings.pop(api_product_id, None)
+            remove_api_product_shop_order_item(api_product_id, provider_id)
+            api_product_mappings.pop(seller_api_mapping_key(api_product_id, provider_id), None)
         admin_temp.get(user_id, {}).pop("pending_api_selling_price", None)
         await edit_seller_api_callback_message(
             query,
@@ -10931,11 +11325,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "seller_api_test":
+        provider_id = selected_seller_api_provider_id(user_id)
         try:
-            balance_data = await asyncio.to_thread(fetch_buyer_api_balance)
+            balance_data = await asyncio.to_thread(fetch_buyer_api_balance, provider_id)
             text = (
                 "✅ <b>SELLER API CONNECTION SUCCESSFUL</b>\n\n"
-                f"<b>API key:</b> <code>{escape_html(mask_buyer_api_key())}</code>\n\n"
+                f"<b>API key:</b> <code>{escape_html(mask_buyer_api_key(provider_id))}</code>\n\n"
                 + render_buyer_api_balance(balance_data, "BALANCE ENDPOINT RESPONSE")
             )
         except BuyerAPIError as error:
@@ -10943,24 +11338,28 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as error:
             print(f"Seller API connection test failed: {type(error).__name__}")
             text = "❌ <b>SELLER API CONNECTION FAILED</b>\n\nUnexpected Seller API error."
-        await send_inline_from_callback(query, text, seller_api_keyboard())
+        await send_inline_from_callback(query, text, seller_api_provider_keyboard())
         return
 
     if data == "seller_api_balance":
+        provider_id = selected_seller_api_provider_id(user_id)
         try:
-            balance_data = await asyncio.to_thread(fetch_buyer_api_balance)
+            balance_data = await asyncio.to_thread(fetch_buyer_api_balance, provider_id)
             text = render_buyer_api_balance(balance_data)
         except BuyerAPIError as error:
             text = f"❌ <b>API BALANCE CHECK FAILED</b>\n\n{escape_html(str(error))}"
         except Exception as error:
             print(f"Seller API balance check failed: {type(error).__name__}")
             text = "❌ <b>API BALANCE CHECK FAILED</b>\n\nUnexpected Seller API error."
-        await send_inline_from_callback(query, text, seller_api_keyboard())
+        await send_inline_from_callback(query, text, seller_api_provider_keyboard())
         return
 
     if data == "seller_api_products":
+        provider_id = selected_seller_api_provider_id(user_id)
         try:
-            refresh_result = await run_seller_api_refresh(context.bot, source="manual")
+            refresh_result = await run_seller_api_refresh(
+                context.bot, source="manual", provider_id=provider_id
+            )
             if not refresh_result.get("success"):
                 raise BuyerAPIError(refresh_result.get("error") or "Seller API product refresh failed.")
             products, total = refresh_result["products"], refresh_result["total"]
@@ -10970,12 +11369,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as error:
             print(f"Seller API product fetch failed: {type(error).__name__}")
             text = "❌ <b>API PRODUCT FETCH FAILED</b>\n\nUnexpected Seller API error."
-        await send_inline_from_callback(query, text, seller_api_keyboard())
+        await send_inline_from_callback(query, text, seller_api_provider_keyboard())
         return
 
     if data == "seller_api_inspect":
+        provider_id = selected_seller_api_provider_id(user_id)
         try:
-            refresh_result = await run_seller_api_refresh(context.bot, source="manual")
+            refresh_result = await run_seller_api_refresh(
+                context.bot, source="manual", provider_id=provider_id
+            )
             if not refresh_result.get("success"):
                 raise BuyerAPIError(refresh_result.get("error") or "Seller API product refresh failed.")
             products = refresh_result["products"]
@@ -10985,7 +11387,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as error:
             print(f"Seller API product field inspection failed: {type(error).__name__}")
             text = "❌ <b>API PRODUCT FIELD INSPECTION FAILED</b>\n\nUnexpected Seller API error."
-        await send_inline_from_callback(query, text, seller_api_keyboard())
+        await send_inline_from_callback(query, text, seller_api_provider_keyboard())
         return
 
     # ========= DASHBOARD EMOJI ADMIN =========
@@ -11898,7 +12300,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not mapping:
             await send_inline_from_callback(query, "❌ <b>Mapped product not found.</b>", admin_shop_reorder_select_keyboard())
             return
-        move_shop_order_item(api_product_shop_order_item(mapping.get("api_product_id")), -1)
+        move_shop_order_item(
+            api_product_shop_order_item(mapping.get("api_product_id"), mapping_provider_id(mapping)), -1
+        )
         await send_inline_from_callback(query, "✅ <b>Moved up.</b>", admin_api_reorder_selected_keyboard(mapping))
         return
 
@@ -11907,7 +12311,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not mapping:
             await send_inline_from_callback(query, "❌ <b>Mapped product not found.</b>", admin_shop_reorder_select_keyboard())
             return
-        move_shop_order_item(api_product_shop_order_item(mapping.get("api_product_id")), 1)
+        move_shop_order_item(
+            api_product_shop_order_item(mapping.get("api_product_id"), mapping_provider_id(mapping)), 1
+        )
         await send_inline_from_callback(query, "✅ <b>Moved down.</b>", admin_api_reorder_selected_keyboard(mapping))
         return
 
