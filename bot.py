@@ -1703,10 +1703,20 @@ def _warzone_products_from_payload(payload):
     if not isinstance(payload, dict):
         return None
     list_paths = (
-        "products", "data", "data.products", "data.items", "data.list",
-        "data.results", "data.records", "result", "result.products",
-        "result.items", "result.list", "result.results", "result.records",
-        "response", "response.products", "response.items", "items", "list",
+        "products", "services", "services.products", "services.items",
+        "services.list", "services.results", "services.records", "services.data",
+        "data", "data.products", "data.items", "data.list", "data.results",
+        "data.records", "data.services", "data.services.products",
+        "data.services.items", "data.services.list", "data.services.results",
+        "data.services.records", "data.services.data", "result",
+        "result.products", "result.items", "result.list", "result.results",
+        "result.records", "result.services", "result.services.products",
+        "result.services.items", "result.services.list", "result.services.results",
+        "result.services.records", "result.services.data", "response",
+        "response.products", "response.items", "response.services",
+        "response.services.products", "response.services.items",
+        "response.services.list", "response.services.results",
+        "response.services.records", "response.services.data", "items", "list",
         "results", "records", "catalog.products", "inventory.products",
         "store.products", "shop.products",
     )
@@ -1755,10 +1765,15 @@ def _safe_warzone_product_diagnostic(payload, http_status=None, products=None) -
         lines.append("Top-level JSON type: non-object")
         return "\n".join(lines)
     lines.append(f"Top-level keys: {safe_keys(payload)}")
-    for key in ("data", "result", "response", "catalog", "inventory", "store", "shop"):
+    for key in (
+        "services", "data", "result", "response", "catalog", "inventory", "store", "shop"
+    ):
         value = payload.get(key)
         if isinstance(value, dict):
             lines.append(f"{key} keys: {safe_keys(value)}")
+            nested_services = value.get("services")
+            if isinstance(nested_services, dict):
+                lines.append(f"{key}.services keys: {safe_keys(nested_services)}")
     return "\n".join(lines)
 
 
