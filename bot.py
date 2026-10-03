@@ -7788,6 +7788,14 @@ def is_valid_customer_email(value: str) -> bool:
     return bool(re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", str(value or "").strip()))
 
 
+def api_mapping_requires_customer_email(mapping: dict) -> bool:
+    mapping = mapping or {}
+    return any(_buyer_api_bool_value(mapping.get(key)) for key in (
+        "requires_customer_email", "requiresCustomerEmail",
+        "is_slot_product", "isSlotProduct",
+    ))
+
+
 def validate_api_shop_purchase(mapping: dict, quantity: int) -> str:
     if _buyer_api_bool_value((mapping or {}).get("seller_missing")):
         return "This product is currently unavailable."
@@ -7801,6 +7809,8 @@ def validate_api_shop_purchase(mapping: dict, quantity: int) -> str:
         return "This product is currently unavailable."
     if not isinstance(quantity, int) or quantity <= 0:
         return "Quantity must be a whole number greater than 0."
+    if api_mapping_requires_customer_email(mapping) and quantity != 1:
+        return "This activation product currently supports one email per order. Please choose quantity 1."
     stock = api_shop_mapping_stock(mapping)
     if stock is not None and quantity > stock:
         return f"Only {stock} pcs are currently available."
@@ -7989,6 +7999,7 @@ async def notify_admin_api_purchase_failure(
     unit_price: float,
     total: float,
     error,
+    customer_email: str = None,
 ):
     category = api_purchase_failure_category(error)
     category_labels = {
@@ -8029,6 +8040,11 @@ async def notify_admin_api_purchase_failure(
         notes.append("Timeout may be ambiguous because the purchase endpoint has no documented idempotency key.")
     if category == "parse_missing_delivery" and order_code:
         notes.append("Check seller panel order history for this API order ID.")
+    if api_mapping_requires_customer_email(mapping):
+        if order_code:
+            notes.append("Activation order was submitted and may require seller-side completion/manual check.")
+        else:
+            notes.append("Activation purchase requires manual review before delivery.")
     text = (
         "🚨 <b>API ORDER NEEDS SUPPORT</b>\n\n"
         f"<b>Provider:</b> {escape_html(seller_api_provider_name(provider_id))} "
@@ -8039,6 +8055,7 @@ async def notify_admin_api_purchase_failure(
         f"<b>Product:</b> {escape_html(api_mapping_display_name(mapping))}\n"
         f"<b>API product ID:</b> <code>{escape_html(mapping.get('api_product_id') or 'N/A')}</code>\n"
         f"<b>Quantity:</b> {quantity}\n"
+        f"<b>Customer email:</b> {escape_html(customer_email or 'N/A')}\n"
         f"<b>User unit price:</b> {format_money(unit_price)}\n"
         f"<b>Total paid:</b> {format_money(total)}\n"
         f"<b>Failure category:</b> {escape_html(category_labels[category])}\n"
@@ -8076,6 +8093,7 @@ async def notify_admin_api_purchase_success(
     total: float,
     order_code: str,
     delivered_count: int,
+    customer_email: str = None,
 ):
     balance_data = None
     try:
@@ -8133,6 +8151,7 @@ async def notify_admin_api_purchase_success(
         f"• Display name: {escape_html(api_mapping_display_name(mapping))}\n"
         f"• API product ID: <code>{escape_html(mapping.get('api_product_id') or 'N/A')}</code>\n"
         f"• Quantity: {quantity}\n"
+        f"• Customer email: {escape_html(customer_email or 'N/A')}\n"
         f"• Unit selling price: {format_money(unit_price)}\n"
         f"• Total paid: {format_money(total)}\n\n"
         "<b>Seller/API</b>\n"
@@ -8172,6 +8191,7 @@ async def handle_api_purchase_failure(
     unit_price: float,
     total: float,
     error,
+    customer_email: str = None,
 ):
     category = api_purchase_failure_category(error)
     order_code = str(getattr(error, "order_code", "") or "").strip()
@@ -8209,11 +8229,17 @@ async def handle_api_purchase_failure(
         unit_price,
         total,
         error,
+        customer_email,
+    )
+    pending_text = (
+        "⚠️ Your activation request is being processed."
+        if api_mapping_requires_customer_email(mapping)
+        else "⚠️ Your order is now pending manual support review."
     )
     await context.bot.send_message(
         user_id,
         "✅ <b>Payment received</b>\n\n"
-        "⚠️ Your order is now pending manual support review.\n\n"
+        f"{pending_text}\n\n"
         f"<b>Order ID:</b> <code>{order['id']}</code>\n"
         f"<b>Product:</b> {escape_html(api_mapping_display_name(mapping))}\n"
         f"<b>Quantity:</b> {quantity}\n"
@@ -8279,7 +8305,7 @@ async def continue_api_shop_purchase(context, user_id: int, callback_token: str,
             parse_mode="HTML",
         )
         return
-    if _buyer_api_bool_value(mapping.get("requires_customer_email")):
+    if api_mapping_requires_customer_email(mapping):
         user_state[user_id] = {
             "step": "api_shop_customer_email",
             "api_callback_token": callback_token,
@@ -8287,7 +8313,8 @@ async def continue_api_shop_purchase(context, user_id: int, callback_token: str,
         }
         await context.bot.send_message(
             user_id,
-            "📧 <b>CUSTOMER EMAIL</b>\n\nSend the email address required for this product.",
+            "📧 <b>ACTIVATION EMAIL</b>\n\n"
+            "Please enter the email where you want this product activated.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton(
                     "⬅️ Back",
@@ -8324,7 +8351,7 @@ async def process_api_shop_purchase(
     if validation_error:
         await context.bot.send_message(user_id, f"❌ {validation_error}")
         return False
-    if _buyer_api_bool_value(mapping.get("requires_customer_email")) and not is_valid_customer_email(customer_email):
+    if api_mapping_requires_customer_email(mapping) and not is_valid_customer_email(customer_email):
         await context.bot.send_message(user_id, "❌ Please enter a valid email address.")
         return False
 
@@ -8377,6 +8404,7 @@ async def process_api_shop_purchase(
                 unit_price,
                 total,
                 exc,
+                customer_email,
             )
             return False
         except Exception as exc:
@@ -8389,6 +8417,7 @@ async def process_api_shop_purchase(
                 unit_price,
                 total,
                 BuyerAPIError("Unexpected purchase failure.", "unknown"),
+                customer_email,
             )
             return False
 
@@ -8436,6 +8465,7 @@ async def process_api_shop_purchase(
                 total,
                 order_code,
                 len(delivered_items),
+                customer_email,
             ))
         except Exception as exc:
             # Admin reporting must never change an already completed user purchase.
@@ -13745,7 +13775,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 api_shop_product_details_keyboard(mapping, styled=False),
             )
             return
-        if api_shop_mapping_stock(mapping) == 1:
+        if api_mapping_requires_customer_email(mapping) or api_shop_mapping_stock(mapping) == 1:
             await send_shop_inline_with_style_fallback(
                 query,
                 "⏳ <b>Processing your purchase...</b>",
