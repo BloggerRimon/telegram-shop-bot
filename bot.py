@@ -1079,6 +1079,228 @@ USER_TRANSLATIONS = {
     },
 }
 
+# Phase 12B extends the user vocabulary without changing admin-only text.
+USER_TRANSLATIONS["en"].update({
+    "main_menu": "Main Menu", "user_id": "User ID", "username": "Username", "order_completed": "Order Completed",
+    "account_details": "Your Account Details", "unit_price": "Unit Price", "status": "Status", "completed": "Completed",
+    "pending": "Pending", "processing": "Processing", "pending_review": "Your order is now pending manual support review.",
+    "activation_submitted": "Activation email submitted", "order_id": "Order ID", "product": "Product",
+    "slot_email_required": "Slot activation Email required", "stock_available": "Stock available", "units": "units",
+    "invalid_email": "Please enter a valid email address.",
+    "exact_emails": "You selected x{quantity}, please enter exactly {quantity} valid emails.",
+    "invalid_quantity": "Quantity must be a whole number greater than 0.",
+    "product_unavailable": "This product is currently unavailable.",
+    "product_no_longer_available": "This product is no longer available.",
+    "something_wrong": "Something went wrong.", "try_again": "Please try again later.",
+    "please_contact_support": "Please contact support.", "preparing_activation": "Preparing activation information...",
+    "send_custom_quantity": "Send the quantity as a whole number.", "only_stock": "Only {stock} pcs are currently available.",
+    "invalid_price": "This product has an invalid price.", "wallet_not_enough": "Wallet balance is not enough.",
+    "remaining_balance": "Remaining wallet balance", "payment_type": "Payment Type", "date_time": "Date/Time",
+    "back_to_categories": "Back to Categories", "activation_info_button": "Enter Activation Info",
+    "enter_emails": "Please enter {quantity} emails, one per line or separated by commas.",
+    "example": "Example", "after_payment_activation": "After payment, your activation request will be processed.",
+    "select_payment_method": "Select Payment Method", "choose_payment_method": "Choose a payment method below.",
+    "amount_to_deposit": "Amount to deposit", "select_network": "Select Network", "choose_crypto": "Choose a cryptocurrency below.",
+    "amount": "Amount", "method": "Method", "network": "Network", "submitted": "Submitted",
+    "payment_details": "Payment Details", "no_transactions": "No transaction history found.",
+    "transactions_title": "TRANSACTIONS", "profile_title": "PROFILE", "no_username": "No username",
+    "notified_when_available": "You will be notified when {product} is back in stock.",
+})
+USER_TRANSLATIONS["es"].update({
+    "main_menu": "Menú principal", "user_id": "ID de usuario", "username": "Usuario", "order_completed": "Pedido completado",
+    "account_details": "Datos de tu cuenta", "unit_price": "Precio unitario", "status": "Estado", "completed": "Completado",
+    "pending": "Pendiente", "processing": "Procesando", "pending_review": "Tu pedido está pendiente de revisión manual.",
+    "activation_submitted": "Correo de activación enviado", "order_id": "ID del pedido", "product": "Producto",
+    "slot_email_required": "Activación por correo requerida", "stock_available": "Stock disponible", "units": "unidades",
+    "invalid_email": "Introduce una dirección de correo válida.", "exact_emails": "Seleccionaste x{quantity}; introduce exactamente {quantity} correos válidos.",
+    "invalid_quantity": "La cantidad debe ser un número entero mayor que 0.", "product_unavailable": "Este producto no está disponible actualmente.",
+    "product_no_longer_available": "Este producto ya no está disponible.", "something_wrong": "Algo salió mal.",
+    "try_again": "Inténtalo de nuevo más tarde.", "please_contact_support": "Contacta con soporte.",
+    "preparing_activation": "Preparando la información de activación...", "send_custom_quantity": "Envía la cantidad como número entero.",
+    "only_stock": "Solo hay {stock} unidades disponibles.", "invalid_price": "Este producto tiene un precio no válido.",
+    "wallet_not_enough": "El saldo de la cartera no es suficiente.", "remaining_balance": "Saldo restante",
+    "payment_type": "Tipo de pago", "date_time": "Fecha/Hora", "back_to_categories": "Volver a categorías",
+    "activation_info_button": "Introducir datos de activación", "enter_emails": "Introduce {quantity} correos, uno por línea o separados por comas.",
+    "example": "Ejemplo", "after_payment_activation": "Después del pago, se procesará tu solicitud de activación.",
+    "select_payment_method": "Seleccionar método de pago", "choose_payment_method": "Elige un método de pago.",
+    "amount_to_deposit": "Importe a depositar", "select_network": "Seleccionar red", "choose_crypto": "Elige una criptomoneda.",
+    "amount": "Importe", "method": "Método", "network": "Red", "submitted": "Enviado", "payment_details": "Detalles del pago",
+    "no_transactions": "No se encontró historial de transacciones.", "transactions_title": "TRANSACCIONES", "profile_title": "PERFIL",
+    "no_username": "Sin usuario", "notified_when_available": "Te avisaremos cuando {product} vuelva a estar disponible.",
+})
+USER_TRANSLATIONS["ru"].update({
+    "main_menu": "Главное меню", "user_id": "ID пользователя", "username": "Имя пользователя", "order_completed": "Заказ выполнен",
+    "account_details": "Данные вашей учётной записи", "unit_price": "Цена за единицу", "status": "Статус", "completed": "Выполнен",
+    "pending": "Ожидает", "processing": "Обработка", "pending_review": "Ваш заказ ожидает ручной проверки.",
+    "activation_submitted": "Email для активации отправлен", "order_id": "ID заказа", "product": "Товар",
+    "slot_email_required": "Для активации требуется email", "stock_available": "Доступно", "units": "шт.",
+    "invalid_email": "Введите корректный адрес электронной почты.", "exact_emails": "Вы выбрали x{quantity}; введите ровно {quantity} корректных email.",
+    "invalid_quantity": "Количество должно быть целым числом больше 0.", "product_unavailable": "Этот товар сейчас недоступен.",
+    "product_no_longer_available": "Этот товар больше недоступен.", "something_wrong": "Что-то пошло не так.",
+    "try_again": "Попробуйте позже.", "please_contact_support": "Свяжитесь с поддержкой.",
+    "preparing_activation": "Подготовка информации об активации...", "send_custom_quantity": "Отправьте количество целым числом.",
+    "only_stock": "Сейчас доступно только {stock} шт.", "invalid_price": "У товара некорректная цена.",
+    "wallet_not_enough": "Недостаточно средств в кошельке.", "remaining_balance": "Остаток на кошельке",
+    "payment_type": "Тип оплаты", "date_time": "Дата/Время", "back_to_categories": "Назад к категориям",
+    "activation_info_button": "Ввести данные активации", "enter_emails": "Введите {quantity} email: по одному в строке или через запятую.",
+    "example": "Пример", "after_payment_activation": "После оплаты запрос на активацию будет обработан.",
+    "select_payment_method": "Выберите способ оплаты", "choose_payment_method": "Выберите способ оплаты ниже.",
+    "amount_to_deposit": "Сумма пополнения", "select_network": "Выберите сеть", "choose_crypto": "Выберите криптовалюту.",
+    "amount": "Сумма", "method": "Способ", "network": "Сеть", "submitted": "Отправлено", "payment_details": "Детали оплаты",
+    "no_transactions": "История транзакций не найдена.", "transactions_title": "ТРАНЗАКЦИИ", "profile_title": "ПРОФИЛЬ",
+    "no_username": "Нет имени пользователя", "notified_when_available": "Мы сообщим, когда {product} снова появится в наличии.",
+})
+USER_TRANSLATIONS["tr"].update({
+    "main_menu": "Ana Menü", "user_id": "Kullanıcı ID", "username": "Kullanıcı adı", "order_completed": "Sipariş Tamamlandı",
+    "account_details": "Hesap Bilgileriniz", "unit_price": "Birim Fiyat", "status": "Durum", "completed": "Tamamlandı",
+    "pending": "Bekliyor", "processing": "İşleniyor", "pending_review": "Siparişiniz manuel inceleme bekliyor.",
+    "activation_submitted": "Aktivasyon e-postası gönderildi", "order_id": "Sipariş ID", "product": "Ürün",
+    "slot_email_required": "Slot aktivasyonu için e-posta gerekli", "stock_available": "Mevcut stok", "units": "adet",
+    "invalid_email": "Geçerli bir e-posta adresi girin.", "exact_emails": "x{quantity} seçtiniz; tam olarak {quantity} geçerli e-posta girin.",
+    "invalid_quantity": "Miktar 0'dan büyük bir tam sayı olmalıdır.", "product_unavailable": "Bu ürün şu anda kullanılamıyor.",
+    "product_no_longer_available": "Bu ürün artık mevcut değil.", "something_wrong": "Bir şeyler ters gitti.",
+    "try_again": "Lütfen daha sonra tekrar deneyin.", "please_contact_support": "Lütfen destek ile iletişime geçin.",
+    "preparing_activation": "Aktivasyon bilgileri hazırlanıyor...", "send_custom_quantity": "Miktarı tam sayı olarak gönderin.",
+    "only_stock": "Şu anda yalnızca {stock} adet mevcut.", "invalid_price": "Bu ürünün fiyatı geçersiz.",
+    "wallet_not_enough": "Cüzdan bakiyesi yetersiz.", "remaining_balance": "Kalan cüzdan bakiyesi",
+    "payment_type": "Ödeme Türü", "date_time": "Tarih/Saat", "back_to_categories": "Kategorilere dön",
+    "activation_info_button": "Aktivasyon Bilgilerini Gir", "enter_emails": "{quantity} e-postayı satır satır veya virgülle ayırarak girin.",
+    "example": "Örnek", "after_payment_activation": "Ödemeden sonra aktivasyon talebiniz işlenecektir.",
+    "select_payment_method": "Ödeme Yöntemi Seç", "choose_payment_method": "Aşağıdan bir ödeme yöntemi seçin.",
+    "amount_to_deposit": "Yatırılacak tutar", "select_network": "Ağ Seç", "choose_crypto": "Aşağıdan bir kripto para seçin.",
+    "amount": "Tutar", "method": "Yöntem", "network": "Ağ", "submitted": "Gönderildi", "payment_details": "Ödeme Bilgileri",
+    "no_transactions": "İşlem geçmişi bulunamadı.", "transactions_title": "İŞLEMLER", "profile_title": "PROFİL",
+    "no_username": "Kullanıcı adı yok", "notified_when_available": "{product} yeniden stokta olduğunda bilgilendirileceksiniz.",
+})
+USER_TRANSLATIONS["fr"].update({
+    "main_menu": "Menu principal", "user_id": "ID utilisateur", "username": "Nom d'utilisateur", "order_completed": "Commande terminée",
+    "account_details": "Détails de votre compte", "unit_price": "Prix unitaire", "status": "Statut", "completed": "Terminée",
+    "pending": "En attente", "processing": "Traitement", "pending_review": "Votre commande attend une vérification manuelle.",
+    "activation_submitted": "E-mail d'activation envoyé", "order_id": "ID de commande", "product": "Produit",
+    "slot_email_required": "Activation par e-mail requise", "stock_available": "Stock disponible", "units": "unités",
+    "invalid_email": "Saisissez une adresse e-mail valide.", "exact_emails": "Vous avez choisi x{quantity} ; saisissez exactement {quantity} e-mails valides.",
+    "invalid_quantity": "La quantité doit être un nombre entier supérieur à 0.", "product_unavailable": "Ce produit est actuellement indisponible.",
+    "product_no_longer_available": "Ce produit n'est plus disponible.", "something_wrong": "Une erreur s'est produite.",
+    "try_again": "Réessayez plus tard.", "please_contact_support": "Veuillez contacter l'assistance.",
+    "preparing_activation": "Préparation des informations d'activation...", "send_custom_quantity": "Envoyez la quantité sous forme de nombre entier.",
+    "only_stock": "Seulement {stock} unités sont disponibles.", "invalid_price": "Le prix de ce produit est invalide.",
+    "wallet_not_enough": "Le solde du portefeuille est insuffisant.", "remaining_balance": "Solde restant",
+    "payment_type": "Type de paiement", "date_time": "Date/Heure", "back_to_categories": "Retour aux catégories",
+    "activation_info_button": "Saisir les informations d'activation", "enter_emails": "Saisissez {quantity} e-mails, un par ligne ou séparés par des virgules.",
+    "example": "Exemple", "after_payment_activation": "Après le paiement, votre demande d'activation sera traitée.",
+    "select_payment_method": "Choisir le mode de paiement", "choose_payment_method": "Choisissez un mode de paiement ci-dessous.",
+    "amount_to_deposit": "Montant à déposer", "select_network": "Choisir le réseau", "choose_crypto": "Choisissez une cryptomonnaie ci-dessous.",
+    "amount": "Montant", "method": "Méthode", "network": "Réseau", "submitted": "Envoyé", "payment_details": "Détails du paiement",
+    "no_transactions": "Aucun historique de transaction trouvé.", "transactions_title": "TRANSACTIONS", "profile_title": "PROFIL",
+    "no_username": "Aucun nom d'utilisateur", "notified_when_available": "Vous serez averti lorsque {product} sera de nouveau disponible.",
+})
+USER_TRANSLATIONS["de"].update({
+    "main_menu": "Hauptmenü", "user_id": "Benutzer-ID", "username": "Benutzername", "order_completed": "Bestellung abgeschlossen",
+    "account_details": "Deine Kontodaten", "unit_price": "Stückpreis", "status": "Status", "completed": "Abgeschlossen",
+    "pending": "Ausstehend", "processing": "In Bearbeitung", "pending_review": "Deine Bestellung wartet auf manuelle Prüfung.",
+    "activation_submitted": "Aktivierungs-E-Mail gesendet", "order_id": "Bestell-ID", "product": "Produkt",
+    "slot_email_required": "Für die Aktivierung ist eine E-Mail erforderlich", "stock_available": "Verfügbarer Bestand", "units": "Einheiten",
+    "invalid_email": "Gib eine gültige E-Mail-Adresse ein.", "exact_emails": "Du hast x{quantity} gewählt; gib genau {quantity} gültige E-Mails ein.",
+    "invalid_quantity": "Die Menge muss eine ganze Zahl größer als 0 sein.", "product_unavailable": "Dieses Produkt ist derzeit nicht verfügbar.",
+    "product_no_longer_available": "Dieses Produkt ist nicht mehr verfügbar.", "something_wrong": "Etwas ist schiefgelaufen.",
+    "try_again": "Bitte versuche es später erneut.", "please_contact_support": "Bitte kontaktiere den Support.",
+    "preparing_activation": "Aktivierungsinformationen werden vorbereitet...", "send_custom_quantity": "Sende die Menge als ganze Zahl.",
+    "only_stock": "Derzeit sind nur {stock} Stück verfügbar.", "invalid_price": "Dieses Produkt hat einen ungültigen Preis.",
+    "wallet_not_enough": "Das Wallet-Guthaben reicht nicht aus.", "remaining_balance": "Verbleibendes Wallet-Guthaben",
+    "payment_type": "Zahlungsart", "date_time": "Datum/Uhrzeit", "back_to_categories": "Zurück zu Kategorien",
+    "activation_info_button": "Aktivierungsdaten eingeben", "enter_emails": "Gib {quantity} E-Mails ein, je eine pro Zeile oder durch Kommas getrennt.",
+    "example": "Beispiel", "after_payment_activation": "Nach der Zahlung wird deine Aktivierungsanfrage bearbeitet.",
+    "select_payment_method": "Zahlungsart wählen", "choose_payment_method": "Wähle unten eine Zahlungsart.",
+    "amount_to_deposit": "Einzahlungsbetrag", "select_network": "Netzwerk wählen", "choose_crypto": "Wähle unten eine Kryptowährung.",
+    "amount": "Betrag", "method": "Methode", "network": "Netzwerk", "submitted": "Gesendet", "payment_details": "Zahlungsdetails",
+    "no_transactions": "Kein Transaktionsverlauf gefunden.", "transactions_title": "TRANSAKTIONEN", "profile_title": "PROFIL",
+    "no_username": "Kein Benutzername", "notified_when_available": "Du wirst benachrichtigt, wenn {product} wieder verfügbar ist.",
+})
+USER_TRANSLATIONS["en"].update({"amount_deducted": "{amount} deducted from your wallet.", "order_details": "Order Details", "product_details_label": "Product Details"})
+USER_TRANSLATIONS["es"].update({"amount_deducted": "Se descontaron {amount} de tu cartera.", "order_details": "Detalles del pedido", "product_details_label": "Detalles del producto"})
+USER_TRANSLATIONS["ru"].update({"amount_deducted": "С кошелька списано {amount}.", "order_details": "Детали заказа", "product_details_label": "Информация о товаре"})
+USER_TRANSLATIONS["tr"].update({"amount_deducted": "Cüzdanınızdan {amount} düşüldü.", "order_details": "Sipariş Detayları", "product_details_label": "Ürün Detayları"})
+USER_TRANSLATIONS["fr"].update({"amount_deducted": "{amount} ont été déduits de votre portefeuille.", "order_details": "Détails de la commande", "product_details_label": "Détails du produit"})
+USER_TRANSLATIONS["de"].update({"amount_deducted": "{amount} wurden von deinem Wallet abgezogen.", "order_details": "Bestelldetails", "product_details_label": "Produktdetails"})
+USER_TRANSLATIONS["en"].update({"back_in_stock": "{product} is back in stock!", "available_now": "Available now", "duration": "Duration"})
+USER_TRANSLATIONS["es"].update({"back_in_stock": "¡{product} vuelve a estar disponible!", "available_now": "Disponible ahora", "duration": "Duración"})
+USER_TRANSLATIONS["ru"].update({"back_in_stock": "{product} снова в наличии!", "available_now": "Доступно сейчас", "duration": "Срок"})
+USER_TRANSLATIONS["tr"].update({"back_in_stock": "{product} yeniden stokta!", "available_now": "Şimdi mevcut", "duration": "Süre"})
+USER_TRANSLATIONS["fr"].update({"back_in_stock": "{product} est de nouveau disponible !", "available_now": "Disponible maintenant", "duration": "Durée"})
+USER_TRANSLATIONS["de"].update({"back_in_stock": "{product} ist wieder verfügbar!", "available_now": "Jetzt verfügbar", "duration": "Dauer"})
+USER_TRANSLATIONS["en"].update({"order_summary": "Order Summary", "shortage": "Shortage", "enough_balance": "You have enough wallet balance.", "exchange_payment": "Exchange Payment", "send_screenshot": "Send the payment screenshot to Live Support for confirmation.", "send_txid": "After payment, send your TXID in chat."})
+USER_TRANSLATIONS["es"].update({"order_summary": "Resumen del pedido", "shortage": "Faltante", "enough_balance": "Tienes saldo suficiente.", "exchange_payment": "Pago por exchange", "send_screenshot": "Envía la captura del pago al soporte para confirmación.", "send_txid": "Después del pago, envía tu TXID en el chat."})
+USER_TRANSLATIONS["ru"].update({"order_summary": "Сводка заказа", "shortage": "Не хватает", "enough_balance": "На кошельке достаточно средств.", "exchange_payment": "Оплата через биржу", "send_screenshot": "Отправьте скриншот оплаты в поддержку для подтверждения.", "send_txid": "После оплаты отправьте TXID в чат."})
+USER_TRANSLATIONS["tr"].update({"order_summary": "Sipariş Özeti", "shortage": "Eksik", "enough_balance": "Cüzdan bakiyeniz yeterli.", "exchange_payment": "Borsa Ödemesi", "send_screenshot": "Onay için ödeme ekran görüntüsünü desteğe gönderin.", "send_txid": "Ödemeden sonra TXID'nizi sohbete gönderin."})
+USER_TRANSLATIONS["fr"].update({"order_summary": "Résumé de la commande", "shortage": "Montant manquant", "enough_balance": "Votre solde est suffisant.", "exchange_payment": "Paiement par plateforme", "send_screenshot": "Envoyez la capture du paiement à l'assistance pour confirmation.", "send_txid": "Après le paiement, envoyez votre TXID dans le chat."})
+USER_TRANSLATIONS["de"].update({"order_summary": "Bestellübersicht", "shortage": "Fehlbetrag", "enough_balance": "Dein Wallet-Guthaben reicht aus.", "exchange_payment": "Börsenzahlung", "send_screenshot": "Sende den Zahlungsnachweis zur Bestätigung an den Support.", "send_txid": "Sende nach der Zahlung deine TXID im Chat."})
+USER_TRANSLATIONS["en"].update({"payment_verified": "Payment verified!", "amount_added": "{amount} added to your wallet.", "delivery_failed": "Payment received, but delivery needs support assistance.", "payment_failed": "Payment failed or expired.", "verifying_payment": "Checking payment status...", "no_pending_payment": "No pending payment found.", "please_wait": "Please wait."})
+USER_TRANSLATIONS["es"].update({"payment_verified": "¡Pago verificado!", "amount_added": "Se añadieron {amount} a tu cartera.", "delivery_failed": "Pago recibido, pero la entrega necesita asistencia.", "payment_failed": "El pago falló o caducó.", "verifying_payment": "Comprobando el estado del pago...", "no_pending_payment": "No se encontró ningún pago pendiente.", "please_wait": "Espera, por favor."})
+USER_TRANSLATIONS["ru"].update({"payment_verified": "Оплата подтверждена!", "amount_added": "На кошелёк добавлено {amount}.", "delivery_failed": "Оплата получена, но для доставки нужна помощь поддержки.", "payment_failed": "Оплата не прошла или истекла.", "verifying_payment": "Проверяем статус оплаты...", "no_pending_payment": "Ожидающий платёж не найден.", "please_wait": "Пожалуйста, подождите."})
+USER_TRANSLATIONS["tr"].update({"payment_verified": "Ödeme doğrulandı!", "amount_added": "Cüzdanınıza {amount} eklendi.", "delivery_failed": "Ödeme alındı, ancak teslimat için destek gerekiyor.", "payment_failed": "Ödeme başarısız oldu veya süresi doldu.", "verifying_payment": "Ödeme durumu kontrol ediliyor...", "no_pending_payment": "Bekleyen ödeme bulunamadı.", "please_wait": "Lütfen bekleyin."})
+USER_TRANSLATIONS["fr"].update({"payment_verified": "Paiement vérifié !", "amount_added": "{amount} ont été ajoutés à votre portefeuille.", "delivery_failed": "Paiement reçu, mais la livraison nécessite l'assistance du support.", "payment_failed": "Le paiement a échoué ou a expiré.", "verifying_payment": "Vérification du paiement...", "no_pending_payment": "Aucun paiement en attente trouvé.", "please_wait": "Veuillez patienter."})
+USER_TRANSLATIONS["de"].update({"payment_verified": "Zahlung bestätigt!", "amount_added": "{amount} wurden deinem Wallet gutgeschrieben.", "delivery_failed": "Zahlung erhalten, aber die Lieferung benötigt Support.", "payment_failed": "Zahlung fehlgeschlagen oder abgelaufen.", "verifying_payment": "Zahlungsstatus wird geprüft...", "no_pending_payment": "Keine ausstehende Zahlung gefunden.", "please_wait": "Bitte warten."})
+USER_TRANSLATIONS["en"].update({"join_channel": "Join Channel", "joined": "I’ve Joined", "join_channel_first": "Please join our official channel first."})
+USER_TRANSLATIONS["es"].update({"join_channel": "Unirse al canal", "joined": "Ya me uní", "join_channel_first": "Únete primero a nuestro canal oficial."})
+USER_TRANSLATIONS["ru"].update({"join_channel": "Вступить в канал", "joined": "Я вступил", "join_channel_first": "Сначала вступите в наш официальный канал."})
+USER_TRANSLATIONS["tr"].update({"join_channel": "Kanala Katıl", "joined": "Katıldım", "join_channel_first": "Önce resmi kanalımıza katılın."})
+USER_TRANSLATIONS["fr"].update({"join_channel": "Rejoindre le canal", "joined": "J’ai rejoint", "join_channel_first": "Rejoignez d'abord notre canal officiel."})
+USER_TRANSLATIONS["de"].update({"join_channel": "Kanal beitreten", "joined": "Ich bin beigetreten", "join_channel_first": "Tritt zuerst unserem offiziellen Kanal bei."})
+USER_TRANSLATIONS["en"].update({"opening_menu": "Opening menu...", "use_menu": "Please use the Menu button below."})
+USER_TRANSLATIONS["es"].update({"opening_menu": "Abriendo el menú...", "use_menu": "Usa el botón Menú de abajo."})
+USER_TRANSLATIONS["ru"].update({"opening_menu": "Открываем меню...", "use_menu": "Используйте кнопку меню ниже."})
+USER_TRANSLATIONS["tr"].update({"opening_menu": "Menü açılıyor...", "use_menu": "Aşağıdaki Menü düğmesini kullanın."})
+USER_TRANSLATIONS["fr"].update({"opening_menu": "Ouverture du menu...", "use_menu": "Utilisez le bouton Menu ci-dessous."})
+USER_TRANSLATIONS["de"].update({"opening_menu": "Menü wird geöffnet...", "use_menu": "Verwende die Menü-Schaltfläche unten."})
+USER_TRANSLATIONS["en"].update({"flash_deal": "Flash Deal", "regular": "Regular", "deal": "Deal", "ends_in": "Ends in", "grab_it": "Grab it before it’s gone"})
+USER_TRANSLATIONS["es"].update({"flash_deal": "Oferta flash", "regular": "Normal", "deal": "Oferta", "ends_in": "Termina en", "grab_it": "Consíguelo antes de que termine"})
+USER_TRANSLATIONS["ru"].update({"flash_deal": "Флеш-скидка", "regular": "Обычная цена", "deal": "Цена по акции", "ends_in": "До конца", "grab_it": "Успейте купить"})
+USER_TRANSLATIONS["tr"].update({"flash_deal": "Flaş İndirim", "regular": "Normal", "deal": "İndirim", "ends_in": "Bitiş", "grab_it": "Bitmeden alın"})
+USER_TRANSLATIONS["fr"].update({"flash_deal": "Offre flash", "regular": "Normal", "deal": "Offre", "ends_in": "Se termine dans", "grab_it": "Profitez-en avant la fin"})
+USER_TRANSLATIONS["de"].update({"flash_deal": "Blitzangebot", "regular": "Regulär", "deal": "Angebot", "ends_in": "Endet in", "grab_it": "Sichere es dir rechtzeitig"})
+USER_TRANSLATIONS["en"].update({"product_id": "Product ID", "price_type": "Price Type", "payment_reference": "Payment Reference", "date": "Date", "checkout_wallet_note": "This order will be completed directly from your wallet.", "bulk_offers": "Bulk Discount Offers", "buy_qty": "Buy {quantity}+", "each": "each", "contact_admin": "Contact admin", "support_link": "Support link", "support_instruction": "For payment, order, warranty, or delivery issues, contact support with your User ID and order details.", "inventory_unavailable": "Not enough inventory is available right now."})
+USER_TRANSLATIONS["es"].update({"product_id": "ID del producto", "price_type": "Tipo de precio", "payment_reference": "Referencia de pago", "date": "Fecha", "checkout_wallet_note": "Este pedido se completará directamente desde tu cartera.", "bulk_offers": "Ofertas por cantidad", "buy_qty": "Compra {quantity}+", "each": "cada uno", "contact_admin": "Contactar al administrador", "support_link": "Enlace de soporte", "support_instruction": "Para problemas de pago, pedido, garantía o entrega, contacta con soporte e incluye tu ID de usuario y los datos del pedido.", "inventory_unavailable": "No hay suficiente inventario disponible en este momento."})
+USER_TRANSLATIONS["ru"].update({"product_id": "ID товара", "price_type": "Тип цены", "payment_reference": "Платёжная ссылка", "date": "Дата", "checkout_wallet_note": "Заказ будет оплачен прямо из вашего кошелька.", "bulk_offers": "Скидки за количество", "buy_qty": "Купить {quantity}+", "each": "за единицу", "contact_admin": "Связаться с администратором", "support_link": "Ссылка поддержки", "support_instruction": "По вопросам оплаты, заказа, гарантии или доставки обратитесь в поддержку и укажите ID пользователя и данные заказа.", "inventory_unavailable": "Сейчас недостаточно товара в наличии."})
+USER_TRANSLATIONS["tr"].update({"product_id": "Ürün Kimliği", "price_type": "Fiyat Türü", "payment_reference": "Ödeme Referansı", "date": "Tarih", "checkout_wallet_note": "Bu sipariş doğrudan cüzdanınızdan tamamlanacaktır.", "bulk_offers": "Toplu Alım İndirimleri", "buy_qty": "{quantity}+ satın al", "each": "adet", "contact_admin": "Yöneticiyle iletişime geç", "support_link": "Destek bağlantısı", "support_instruction": "Ödeme, sipariş, garanti veya teslimat sorunları için kullanıcı kimliğiniz ve sipariş bilgilerinizle desteğe başvurun.", "inventory_unavailable": "Şu anda yeterli stok bulunmuyor."})
+USER_TRANSLATIONS["fr"].update({"product_id": "ID du produit", "price_type": "Type de prix", "payment_reference": "Référence du paiement", "date": "Date", "checkout_wallet_note": "Cette commande sera réglée directement depuis votre portefeuille.", "bulk_offers": "Offres par quantité", "buy_qty": "Acheter {quantity}+", "each": "l’unité", "contact_admin": "Contacter l’administrateur", "support_link": "Lien d’assistance", "support_instruction": "Pour tout problème de paiement, commande, garantie ou livraison, contactez l’assistance avec votre ID utilisateur et les détails de la commande.", "inventory_unavailable": "Le stock disponible est insuffisant pour le moment."})
+USER_TRANSLATIONS["de"].update({"product_id": "Produkt-ID", "price_type": "Preistyp", "payment_reference": "Zahlungsreferenz", "date": "Datum", "checkout_wallet_note": "Diese Bestellung wird direkt über dein Wallet abgeschlossen.", "bulk_offers": "Mengenrabatte", "buy_qty": "{quantity}+ kaufen", "each": "pro Stück", "contact_admin": "Administrator kontaktieren", "support_link": "Support-Link", "support_instruction": "Kontaktiere bei Zahlungs-, Bestell-, Garantie- oder Lieferproblemen den Support und gib deine Benutzer-ID sowie die Bestelldaten an.", "inventory_unavailable": "Zurzeit ist nicht genügend Bestand verfügbar."})
+USER_TRANSLATIONS["en"].update({"manual_payment_confirmed": "Your manual payment has been confirmed.", "manual_payment_rejected": "Your manual order payment was rejected.", "manual_deposit_confirmed": "Your manual deposit has been confirmed.", "manual_deposit_rejected": "Your manual deposit was rejected."})
+USER_TRANSLATIONS["es"].update({"manual_payment_confirmed": "Tu pago manual ha sido confirmado.", "manual_payment_rejected": "El pago manual de tu pedido fue rechazado.", "manual_deposit_confirmed": "Tu depósito manual ha sido confirmado.", "manual_deposit_rejected": "Tu depósito manual fue rechazado."})
+USER_TRANSLATIONS["ru"].update({"manual_payment_confirmed": "Ваш ручной платёж подтверждён.", "manual_payment_rejected": "Ручной платёж за заказ отклонён.", "manual_deposit_confirmed": "Ваш ручной депозит подтверждён.", "manual_deposit_rejected": "Ваш ручной депозит отклонён."})
+USER_TRANSLATIONS["tr"].update({"manual_payment_confirmed": "Manuel ödemeniz onaylandı.", "manual_payment_rejected": "Manuel sipariş ödemeniz reddedildi.", "manual_deposit_confirmed": "Manuel para yatırma işleminiz onaylandı.", "manual_deposit_rejected": "Manuel para yatırma işleminiz reddedildi."})
+USER_TRANSLATIONS["fr"].update({"manual_payment_confirmed": "Votre paiement manuel a été confirmé.", "manual_payment_rejected": "Le paiement manuel de votre commande a été refusé.", "manual_deposit_confirmed": "Votre dépôt manuel a été confirmé.", "manual_deposit_rejected": "Votre dépôt manuel a été refusé."})
+USER_TRANSLATIONS["de"].update({"manual_payment_confirmed": "Deine manuelle Zahlung wurde bestätigt.", "manual_payment_rejected": "Deine manuelle Bestellzahlung wurde abgelehnt.", "manual_deposit_confirmed": "Deine manuelle Einzahlung wurde bestätigt.", "manual_deposit_rejected": "Deine manuelle Einzahlung wurde abgelehnt."})
+USER_TRANSLATIONS["en"].update({"promo_prompt": "Please send your promo code.", "promo_used": "This promo code has already been used.", "promo_disabled": "This promo code is disabled.", "promo_invalid": "Invalid promo code.", "refer_title": "Refer & Earn", "invite_friends": "Invite friends and get rewarded.", "your_link": "Your Link", "total_invited": "Total Invited", "rewards_earned": "Rewards Earned", "terms_title": "Terms of Use", "terms_body": "By using this bot, you agree to the shop terms. Products are digital goods delivered automatically or manually after payment confirmation. Check product details before purchase. Warranty, replacement, and refund rules depend on the product description and admin decision.", "full_terms": "Full Terms", "privacy_title": "Privacy Policy", "privacy_body": "The bot stores the Telegram user ID, username, wallet balance, orders, transactions, and support data needed to operate the shop. We do not sell user data. Payment data may be processed by third-party payment providers.", "full_privacy": "Full Privacy Policy", "legal_title": "Legal Information", "legal_body": "This bot sells digital products and subscription access items. Users are responsible for following the rules of third-party services. For legal or support requests, contact the shop admin.", "legal_page": "Legal Page"})
+USER_TRANSLATIONS["es"].update({"promo_prompt": "Envía tu código promocional.", "promo_used": "Este código promocional ya fue usado.", "promo_disabled": "Este código promocional está desactivado.", "promo_invalid": "Código promocional no válido.", "refer_title": "Invita y gana", "invite_friends": "Invita a tus amigos y recibe recompensas.", "your_link": "Tu enlace", "total_invited": "Total de invitados", "rewards_earned": "Recompensas obtenidas", "terms_title": "Términos de uso", "terms_body": "Al usar este bot, aceptas los términos de la tienda. Los productos son bienes digitales entregados automática o manualmente tras confirmar el pago. Revisa los detalles antes de comprar. La garantía, sustitución y reembolso dependen de la descripción y la decisión del administrador.", "full_terms": "Términos completos", "privacy_title": "Política de privacidad", "privacy_body": "El bot guarda el ID de Telegram, nombre de usuario, saldo, pedidos, transacciones y datos de soporte necesarios para operar la tienda. No vendemos datos de usuarios. Los proveedores de pago pueden procesar datos del pago.", "full_privacy": "Política de privacidad completa", "legal_title": "Información legal", "legal_body": "Este bot vende productos digitales y accesos de suscripción. Los usuarios deben cumplir las reglas de servicios de terceros. Para solicitudes legales o de soporte, contacta al administrador.", "legal_page": "Página legal"})
+USER_TRANSLATIONS["ru"].update({"promo_prompt": "Отправьте промокод.", "promo_used": "Этот промокод уже использован.", "promo_disabled": "Этот промокод отключён.", "promo_invalid": "Неверный промокод.", "refer_title": "Приглашайте и зарабатывайте", "invite_friends": "Приглашайте друзей и получайте награды.", "your_link": "Ваша ссылка", "total_invited": "Всего приглашено", "rewards_earned": "Получено наград", "terms_title": "Условия использования", "terms_body": "Используя бота, вы соглашаетесь с условиями магазина. Цифровые товары доставляются автоматически или вручную после подтверждения оплаты. Перед покупкой проверьте описание. Гарантия, замена и возврат зависят от описания товара и решения администратора.", "full_terms": "Полные условия", "privacy_title": "Политика конфиденциальности", "privacy_body": "Бот хранит ID Telegram, имя пользователя, баланс, заказы, транзакции и данные поддержки, необходимые для работы магазина. Мы не продаём данные пользователей. Платёжные данные могут обрабатываться сторонними провайдерами.", "full_privacy": "Полная политика конфиденциальности", "legal_title": "Юридическая информация", "legal_body": "Бот продаёт цифровые товары и доступ к подпискам. Пользователи обязаны соблюдать правила сторонних сервисов. По юридическим вопросам и вопросам поддержки обратитесь к администратору.", "legal_page": "Юридическая страница"})
+USER_TRANSLATIONS["tr"].update({"promo_prompt": "Promosyon kodunuzu gönderin.", "promo_used": "Bu promosyon kodu daha önce kullanıldı.", "promo_disabled": "Bu promosyon kodu devre dışı.", "promo_invalid": "Geçersiz promosyon kodu.", "refer_title": "Davet et ve kazan", "invite_friends": "Arkadaşlarınızı davet edin ve ödül kazanın.", "your_link": "Bağlantınız", "total_invited": "Toplam davet", "rewards_earned": "Kazanılan ödüller", "terms_title": "Kullanım Şartları", "terms_body": "Bu botu kullanarak mağaza şartlarını kabul edersiniz. Dijital ürünler ödeme onayından sonra otomatik veya manuel teslim edilir. Satın almadan önce ürün ayrıntılarını kontrol edin. Garanti, değişim ve iade koşulları ürün açıklamasına ve yönetici kararına bağlıdır.", "full_terms": "Tüm Şartlar", "privacy_title": "Gizlilik Politikası", "privacy_body": "Bot; mağazayı işletmek için gerekli Telegram kullanıcı kimliği, kullanıcı adı, cüzdan bakiyesi, sipariş, işlem ve destek verilerini saklar. Kullanıcı verilerini satmayız. Ödeme verileri üçüncü taraf sağlayıcılarca işlenebilir.", "full_privacy": "Tam Gizlilik Politikası", "legal_title": "Yasal Bilgiler", "legal_body": "Bu bot dijital ürünler ve abonelik erişimleri satar. Kullanıcılar üçüncü taraf hizmet kurallarına uymakla sorumludur. Yasal veya destek talepleri için mağaza yöneticisine ulaşın.", "legal_page": "Yasal Sayfa"})
+USER_TRANSLATIONS["fr"].update({"promo_prompt": "Envoyez votre code promotionnel.", "promo_used": "Ce code promotionnel a déjà été utilisé.", "promo_disabled": "Ce code promotionnel est désactivé.", "promo_invalid": "Code promotionnel invalide.", "refer_title": "Parrainer et gagner", "invite_friends": "Invitez des amis et recevez des récompenses.", "your_link": "Votre lien", "total_invited": "Total invité", "rewards_earned": "Récompenses gagnées", "terms_title": "Conditions d’utilisation", "terms_body": "En utilisant ce bot, vous acceptez les conditions de la boutique. Les produits numériques sont livrés automatiquement ou manuellement après confirmation du paiement. Vérifiez les détails avant l’achat. La garantie, le remplacement et le remboursement dépendent de la description et de la décision de l’administrateur.", "full_terms": "Conditions complètes", "privacy_title": "Politique de confidentialité", "privacy_body": "Le bot conserve l’ID Telegram, le nom d’utilisateur, le solde, les commandes, les transactions et les données d’assistance nécessaires au fonctionnement de la boutique. Nous ne vendons pas les données des utilisateurs. Les données de paiement peuvent être traitées par des prestataires tiers.", "full_privacy": "Politique complète", "legal_title": "Informations légales", "legal_body": "Ce bot vend des produits numériques et des accès par abonnement. Les utilisateurs doivent respecter les règles des services tiers. Pour toute demande juridique ou d’assistance, contactez l’administrateur.", "legal_page": "Page légale"})
+USER_TRANSLATIONS["de"].update({"promo_prompt": "Sende deinen Promo-Code.", "promo_used": "Dieser Promo-Code wurde bereits verwendet.", "promo_disabled": "Dieser Promo-Code ist deaktiviert.", "promo_invalid": "Ungültiger Promo-Code.", "refer_title": "Empfehlen & verdienen", "invite_friends": "Lade Freunde ein und erhalte Belohnungen.", "your_link": "Dein Link", "total_invited": "Insgesamt eingeladen", "rewards_earned": "Verdiente Belohnungen", "terms_title": "Nutzungsbedingungen", "terms_body": "Mit der Nutzung dieses Bots akzeptierst du die Shop-Bedingungen. Digitale Produkte werden nach Zahlungsbestätigung automatisch oder manuell geliefert. Prüfe vor dem Kauf die Produktdetails. Garantie, Ersatz und Rückerstattung richten sich nach der Produktbeschreibung und der Entscheidung des Administrators.", "full_terms": "Vollständige Bedingungen", "privacy_title": "Datenschutzrichtlinie", "privacy_body": "Der Bot speichert Telegram-Benutzer-ID, Benutzername, Wallet-Guthaben, Bestellungen, Transaktionen und Supportdaten, die für den Shopbetrieb erforderlich sind. Wir verkaufen keine Benutzerdaten. Zahlungsdaten können von Drittanbietern verarbeitet werden.", "full_privacy": "Vollständige Datenschutzrichtlinie", "legal_title": "Rechtliche Informationen", "legal_body": "Dieser Bot verkauft digitale Produkte und Abonnementzugänge. Benutzer sind für die Einhaltung der Regeln von Drittanbietern verantwortlich. Wende dich bei Rechts- oder Supportanfragen an den Shop-Administrator.", "legal_page": "Rechtsseite"})
+USER_TRANSLATIONS["en"].update({"promo_applied": "Promo applied successfully."})
+USER_TRANSLATIONS["es"].update({"promo_applied": "Promoción aplicada correctamente."})
+USER_TRANSLATIONS["ru"].update({"promo_applied": "Промокод успешно применён."})
+USER_TRANSLATIONS["tr"].update({"promo_applied": "Promosyon başarıyla uygulandı."})
+USER_TRANSLATIONS["fr"].update({"promo_applied": "Code promotionnel appliqué."})
+USER_TRANSLATIONS["de"].update({"promo_applied": "Promo-Code erfolgreich angewendet."})
+USER_TRANSLATIONS["en"].update({"txid_not_required": "TXID is no longer required.", "use_verify_button": "Please use the I Have Paid (Verify) button on the payment request."})
+USER_TRANSLATIONS["es"].update({"txid_not_required": "Ya no se requiere el TXID.", "use_verify_button": "Usa el botón Ya pagué (Verificar) en la solicitud de pago."})
+USER_TRANSLATIONS["ru"].update({"txid_not_required": "TXID больше не требуется.", "use_verify_button": "Используйте кнопку «Я оплатил (Проверить)» в запросе на оплату."})
+USER_TRANSLATIONS["tr"].update({"txid_not_required": "Artık TXID gerekli değildir.", "use_verify_button": "Ödeme talebindeki Ödedim (Doğrula) düğmesini kullanın."})
+USER_TRANSLATIONS["fr"].update({"txid_not_required": "Le TXID n’est plus requis.", "use_verify_button": "Utilisez le bouton J’ai payé (Vérifier) de la demande de paiement."})
+USER_TRANSLATIONS["de"].update({"txid_not_required": "Eine TXID ist nicht mehr erforderlich.", "use_verify_button": "Verwende in der Zahlungsanforderung die Schaltfläche Ich habe bezahlt (Prüfen)."})
+USER_TRANSLATIONS["en"].update({"payment_confirmed": "Payment confirmed.", "payment_confirmed_auto": "Payment confirmed automatically.", "payment_rejected": "Payment rejected."})
+USER_TRANSLATIONS["es"].update({"payment_confirmed": "Pago confirmado.", "payment_confirmed_auto": "Pago confirmado automáticamente.", "payment_rejected": "Pago rechazado."})
+USER_TRANSLATIONS["ru"].update({"payment_confirmed": "Оплата подтверждена.", "payment_confirmed_auto": "Оплата подтверждена автоматически.", "payment_rejected": "Оплата отклонена."})
+USER_TRANSLATIONS["tr"].update({"payment_confirmed": "Ödeme onaylandı.", "payment_confirmed_auto": "Ödeme otomatik olarak onaylandı.", "payment_rejected": "Ödeme reddedildi."})
+USER_TRANSLATIONS["fr"].update({"payment_confirmed": "Paiement confirmé.", "payment_confirmed_auto": "Paiement confirmé automatiquement.", "payment_rejected": "Paiement refusé."})
+USER_TRANSLATIONS["de"].update({"payment_confirmed": "Zahlung bestätigt.", "payment_confirmed_auto": "Zahlung automatisch bestätigt.", "payment_rejected": "Zahlung abgelehnt."})
+USER_TRANSLATIONS["en"].update({"congratulations": "Congratulations!", "gold_vip_welcome": "You are now a Gold VIP member.", "gold_vip_benefit": "You can now see special reseller/VIP prices on selected products.", "open_shop_vip": "Open the shop and enjoy your VIP deals."})
+USER_TRANSLATIONS["es"].update({"congratulations": "¡Felicidades!", "gold_vip_welcome": "Ahora eres miembro Gold VIP.", "gold_vip_benefit": "Ya puedes ver precios especiales de revendedor/VIP en productos seleccionados.", "open_shop_vip": "Abre la tienda y disfruta de tus ofertas VIP."})
+USER_TRANSLATIONS["ru"].update({"congratulations": "Поздравляем!", "gold_vip_welcome": "Теперь вы участник Gold VIP.", "gold_vip_benefit": "Вам доступны специальные оптовые/VIP-цены на выбранные товары.", "open_shop_vip": "Откройте магазин и воспользуйтесь VIP-предложениями."})
+USER_TRANSLATIONS["tr"].update({"congratulations": "Tebrikler!", "gold_vip_welcome": "Artık Gold VIP üyesisiniz.", "gold_vip_benefit": "Seçili ürünlerde özel bayi/VIP fiyatlarını görebilirsiniz.", "open_shop_vip": "Mağazayı açın ve VIP fırsatlarından yararlanın."})
+USER_TRANSLATIONS["fr"].update({"congratulations": "Félicitations !", "gold_vip_welcome": "Vous êtes maintenant membre Gold VIP.", "gold_vip_benefit": "Vous pouvez voir les prix revendeur/VIP sur certains produits.", "open_shop_vip": "Ouvrez la boutique et profitez de vos offres VIP."})
+USER_TRANSLATIONS["de"].update({"congratulations": "Glückwunsch!", "gold_vip_welcome": "Du bist jetzt Gold-VIP-Mitglied.", "gold_vip_benefit": "Du siehst jetzt spezielle Händler-/VIP-Preise für ausgewählte Produkte.", "open_shop_vip": "Öffne den Shop und nutze deine VIP-Angebote."})
+
 
 def normalize_user_language(language) -> str:
     language = str(language or "en").strip().lower()
@@ -1110,6 +1332,67 @@ def tr(language: str, key: str, **kwargs) -> str:
 
 def t(user_id: int, key: str, **kwargs) -> str:
     return tr(get_user_language(user_id), key, **kwargs)
+
+
+PRODUCT_TRANSLATION_LANGUAGES = {
+    "es": "🇪🇸 Spanish",
+    "ru": "🇷🇺 Russian",
+    "tr": "🇹🇷 Turkish",
+    "fr": "🇫🇷 French",
+    "de": "🇩🇪 German",
+}
+
+
+def localized_product_name(product: dict, user_id: int = None, default_name: str = None) -> str:
+    product = product or {}
+    fallback = str(default_name if default_name is not None else product.get("name") or "Product").strip() or "Product"
+    language = get_user_language(user_id)
+    if language == "en":
+        return fallback
+    translations = product.get("name_i18n")
+    translated = translations.get(language) if isinstance(translations, dict) else None
+    return str(translated).strip() if translated is not None and str(translated).strip() else fallback
+
+
+def localized_api_product_name(mapping: dict, user_id: int = None) -> str:
+    return localized_product_name(mapping, user_id, api_mapping_display_name(mapping))
+
+
+def localized_product_details_html(product: dict, user_id: int = None) -> str:
+    product = product or {}
+    language = get_user_language(user_id)
+    translations = product.get("details_i18n")
+    if language != "en" and isinstance(translations, dict):
+        translated = translations.get(language)
+        if isinstance(translated, list):
+            translated = "\n".join(str(line) for line in translated if str(line).strip())
+        if translated is not None and str(translated).strip():
+            return escape_html(str(translated).strip())
+    plain_details = product.get("details")
+    if isinstance(plain_details, list):
+        plain_text = "\n".join(str(line) for line in plain_details if str(line).strip())
+    else:
+        plain_text = str(plain_details or "").strip()
+    rich_details = product.get("details_rich")
+    if isinstance(rich_details, dict):
+        rendered = render_serialized_entities_html(
+            rich_details.get("text", plain_text), rich_details.get("entities")
+        )
+        if rendered:
+            return rendered
+    return escape_html(plain_text) if plain_text else t(user_id, "default_details")
+
+
+def localized_order_product_name(order: dict, user_id: int) -> str:
+    order = order or {}
+    product_id = str(order.get("product_id") or "")
+    if product_id in PRODUCTS:
+        return localized_product_name(PRODUCTS[product_id], user_id)
+    if order.get("product_type") == "api":
+        mapping = api_product_mapping_by_id(order.get("api_product_id") or product_id)
+        if mapping:
+            return localized_api_product_name(mapping, user_id)
+    return str(order.get("product") or order.get("product_name") or "Product")
 
 
 def format_user_link(user_id: int) -> str:
@@ -1345,7 +1628,7 @@ def trongrid_headers():
 
 
 def get_wallet_balance_text(user_id: int) -> str:
-    return f"💰 <b>New wallet balance:</b> {format_money(user_wallet[user_id])}"
+    return f"💰 <b>{t(user_id, 'new_wallet_balance')}:</b> {format_money(user_wallet[user_id])}"
 
 
 def normalize_evm_address(addr: str) -> str:
@@ -2381,10 +2664,10 @@ async def check_required_channel_membership(context: ContextTypes.DEFAULT_TYPE, 
         return False
 
 
-def required_channel_keyboard() -> InlineKeyboardMarkup:
+def required_channel_keyboard(user_id: int = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 Join Channel", url=REQUIRED_CHANNEL_URL)],
-        [InlineKeyboardButton("✅ I’ve Joined", callback_data="required_channel_check")],
+        [InlineKeyboardButton(f"📢 {t(user_id, 'join_channel')}", url=REQUIRED_CHANNEL_URL)],
+        [InlineKeyboardButton(f"✅ {t(user_id, 'joined')}", callback_data="required_channel_check")],
     ])
 
 
@@ -2393,8 +2676,8 @@ async def ensure_channel_access(update: Update, context: ContextTypes.DEFAULT_TY
     if await check_required_channel_membership(context, user_id):
         return True
     await update.effective_message.reply_text(
-        "📢 Join our official channel first.",
-        reply_markup=required_channel_keyboard(),
+        f"📢 {t(user_id, 'join_channel_first')}",
+        reply_markup=required_channel_keyboard(user_id),
     )
     return False
 
@@ -3538,10 +3821,10 @@ def gold_vip_price_confirm_keyboard() -> InlineKeyboardMarkup:
 
 async def send_gold_vip_welcome(bot, target_user_id: int):
     text = (
-        "👑 <b>Congratulations!</b>\n\n"
-        "You are now a <b>Gold VIP</b> member.\n"
-        "You can now see special reseller/VIP prices on selected products.\n\n"
-        "🛍 Open the shop and enjoy your VIP deals."
+        f"👑 <b>{t(target_user_id, 'congratulations')}</b>\n\n"
+        f"{t(target_user_id, 'gold_vip_welcome')}\n"
+        f"{t(target_user_id, 'gold_vip_benefit')}\n\n"
+        f"🛍 {t(target_user_id, 'open_shop_vip')}"
     )
     try:
         await bot.send_message(chat_id=target_user_id, text=text, parse_mode="HTML")
@@ -3608,7 +3891,7 @@ def get_flash_deal_price(product_id: str):
     return None
 
 
-def render_flash_deal_banner() -> str:
+def render_flash_deal_banner(user_id: int = None) -> str:
     if not is_flash_deal_active():
         return ""
     product_id = active_flash_deal.get("product_id")
@@ -3617,12 +3900,12 @@ def render_flash_deal_banner() -> str:
     old_price = get_product_base_price(product_id)
     time_left = format_countdown_seconds(_flash_seconds_left())
     return (
-        "╭━━━━━━━ ⚡ <b>FLASH DEAL</b> ━━━━━━━╮\n\n"
-        f"{product_icon_html(product)} <b>{escape_html(product.get('name', product_id))}</b>\n\n"
-        f"💸 Regular: <s>{format_money(old_price)}</s>\n"
-        f"🔥 Deal: <b>{format_money(deal_price)}</b>\n\n"
-        f"⏳ Ends in: <b>{time_left}</b>\n\n"
-        "╰━━ 🛒 Grab it before it’s gone ━━╯"
+        f"╭━━━━━━━ ⚡ <b>{t(user_id, 'flash_deal').upper()}</b> ━━━━━━━╮\n\n"
+        f"{product_icon_html(product)} <b>{escape_html(localized_product_name(product, user_id, product_id))}</b>\n\n"
+        f"💸 {t(user_id, 'regular')}: <s>{format_money(old_price)}</s>\n"
+        f"🔥 {t(user_id, 'deal')}: <b>{format_money(deal_price)}</b>\n\n"
+        f"⏳ {t(user_id, 'ends_in')}: <b>{time_left}</b>\n\n"
+        f"╰━━ 🛒 {t(user_id, 'grab_it')} ━━╯"
     )
 
 
@@ -5474,6 +5757,7 @@ def api_shop_mapping_manager_keyboard(mapping: dict) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🧹 Clear Icon", callback_data="seller_api_shop_icon_clear")],
         [InlineKeyboardButton("📝 Edit Product Details", callback_data="seller_api_shop_details")],
         [InlineKeyboardButton("🧹 Clear Product Details", callback_data="seller_api_shop_details_clear")],
+        [InlineKeyboardButton("🌐 Edit Translations", callback_data="seller_api_shop_i18n")],
         [InlineKeyboardButton("🗑 Remove From Shop", callback_data="seller_api_shop_remove")],
         [InlineKeyboardButton("⬅️ Back", callback_data="seller_api_shop_return")],
     ])
@@ -5806,25 +6090,25 @@ def deposit_amount_keyboard(back_callback: str = "user_back_to_dashboard", style
     return InlineKeyboardMarkup(rows)
 
 
-def payment_method_keyboard(prefix: str, styled: bool = False) -> InlineKeyboardMarkup:
+def payment_method_keyboard(prefix: str, styled: bool = False, user_id: int = None) -> InlineKeyboardMarkup:
     rows = [
         [
             make_styled_inline_button("🏦 Binance ID", callback_data=f"{prefix}_method_binance", style="success" if styled else None),
             make_styled_inline_button("🏦 Bybit ID", callback_data=f"{prefix}_method_bybit", style="success" if styled else None),
         ],
         [make_styled_inline_button("💸 Crypto Address", callback_data=f"{prefix}_method_crypto", style="primary" if styled else None)],
-        [make_styled_inline_button("⬅️ Back", callback_data=f"{prefix}_back", style="primary" if styled else None)],
+        [make_styled_inline_button(f"⬅️ {t(user_id, 'back')}", callback_data=f"{prefix}_back", style="primary" if styled else None)],
     ]
     if prefix == "dep":
         rows.append([make_styled_inline_button(
-            "🏠 Back to Menu",
+            f"🏠 {t(user_id, 'back_to_menu')}",
             callback_data="user_back_to_dashboard",
             style="danger" if styled else None,
         )])
     return InlineKeyboardMarkup(rows)
 
 
-def network_keyboard(prefix: str, styled: bool = False) -> InlineKeyboardMarkup:
+def network_keyboard(prefix: str, styled: bool = False, user_id: int = None) -> InlineKeyboardMarkup:
     network_style = "primary" if styled else None
     rows = [
         [
@@ -5844,39 +6128,39 @@ def network_keyboard(prefix: str, styled: bool = False) -> InlineKeyboardMarkup:
             make_styled_inline_button("BNB (BEP20)", callback_data=f"{prefix}_net_BNB_BEP20", style=network_style),
         ],
         [make_styled_inline_button("SOL", callback_data=f"{prefix}_net_SOL", style=network_style)],
-        [make_styled_inline_button("⬅️ Back", callback_data=f"{prefix}_back_method", style=network_style)],
+        [make_styled_inline_button(f"⬅️ {t(user_id, 'back')}", callback_data=f"{prefix}_back_method", style=network_style)],
     ]
     if prefix == "dep":
         rows.append([make_styled_inline_button(
-            "🏠 Back to Menu",
+            f"🏠 {t(user_id, 'back_to_menu')}",
             callback_data="user_back_to_dashboard",
             style="danger" if styled else None,
         )])
     return InlineKeyboardMarkup(rows)
 
 
-def deposit_custom_amount_keyboard(styled: bool = True) -> InlineKeyboardMarkup:
+def deposit_custom_amount_keyboard(styled: bool = True, user_id: int = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [make_styled_inline_button("⬅️ Back", callback_data="dep_back", style="primary" if styled else None)],
-        [make_styled_inline_button("🏠 Back to Menu", callback_data="user_back_to_dashboard", style="danger" if styled else None)],
+        [make_styled_inline_button(f"⬅️ {t(user_id, 'back')}", callback_data="dep_back", style="primary" if styled else None)],
+        [make_styled_inline_button(f"🏠 {t(user_id, 'back_to_menu')}", callback_data="user_back_to_dashboard", style="danger" if styled else None)],
     ])
 
 
-def deposit_manual_keyboard(styled: bool = True) -> InlineKeyboardMarkup:
+def deposit_manual_keyboard(styled: bool = True, user_id: int = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [make_styled_inline_button("✅ Submitted", callback_data="depmanual_submitted", style="success" if styled else None)],
-        [make_styled_inline_button("❌ Cancel", callback_data="depmanual_cancel", style="danger" if styled else None)],
-        [make_styled_inline_button("⬅️ Back", callback_data="dep_back_method", style="primary" if styled else None)],
-        [make_styled_inline_button("🏠 Back to Menu", callback_data="user_back_to_dashboard", style="danger" if styled else None)],
+        [make_styled_inline_button(f"✅ {t(user_id, 'submitted')}", callback_data="depmanual_submitted", style="success" if styled else None)],
+        [make_styled_inline_button(f"❌ {t(user_id, 'cancel')}", callback_data="depmanual_cancel", style="danger" if styled else None)],
+        [make_styled_inline_button(f"⬅️ {t(user_id, 'back')}", callback_data="dep_back_method", style="primary" if styled else None)],
+        [make_styled_inline_button(f"🏠 {t(user_id, 'back_to_menu')}", callback_data="user_back_to_dashboard", style="danger" if styled else None)],
     ])
 
 
-def deposit_payment_request_keyboard(styled: bool = True) -> InlineKeyboardMarkup:
+def deposit_payment_request_keyboard(styled: bool = True, user_id: int = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [make_styled_inline_button("✅ I Have Paid (Verify)", callback_data="deppay_verify", style="success" if styled else None)],
         [make_styled_inline_button("🔁 Change Network", callback_data="deppay_change_network", style="primary" if styled else None)],
-        [make_styled_inline_button("⬅️ Back", callback_data="deppay_back_network", style="primary" if styled else None)],
-        [make_styled_inline_button("🏠 Back to Menu", callback_data="user_back_to_dashboard", style="danger" if styled else None)],
+        [make_styled_inline_button(f"⬅️ {t(user_id, 'back')}", callback_data="deppay_back_network", style="primary" if styled else None)],
+        [make_styled_inline_button(f"🏠 {t(user_id, 'back_to_menu')}", callback_data="user_back_to_dashboard", style="danger" if styled else None)],
     ])
 
 
@@ -5944,10 +6228,10 @@ def out_of_stock_product_keyboard(product_id: str, styled: bool = True, user_id:
     return InlineKeyboardMarkup(rows)
 
 
-def final_manual_keyboard(prefix: str) -> InlineKeyboardMarkup:
+def final_manual_keyboard(prefix: str, user_id: int = None) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton("✅ Submitted", callback_data=f"{prefix}_submitted")],
-        [InlineKeyboardButton("❌ Cancel", callback_data=f"{prefix}_cancel")],
+        [InlineKeyboardButton(f"✅ {t(user_id, 'submitted')}", callback_data=f"{prefix}_submitted")],
+        [InlineKeyboardButton(f"❌ {t(user_id, 'cancel')}", callback_data=f"{prefix}_cancel")],
     ]
     return InlineKeyboardMarkup(rows)
 
@@ -5979,6 +6263,7 @@ def admin_products_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("💲 Edit Price", callback_data="admin_edit_price_menu")],
         [InlineKeyboardButton("📅 Edit Month", callback_data="admin_edit_month_menu")],
         [InlineKeyboardButton("📝 Edit Details", callback_data="admin_edit_details_menu")],
+        [InlineKeyboardButton("🌐 Edit Translations", callback_data="admin_product_i18n_menu")],
         [InlineKeyboardButton("📌 Edit Delivery Guide", callback_data="admin_edit_delivery_guide_menu")],
         [InlineKeyboardButton("😀 Edit Icon", callback_data="admin_edit_icon_menu")],
         [InlineKeyboardButton("📦 Edit Display Stock", callback_data="admin_edit_display_stock_menu")],
@@ -6011,6 +6296,62 @@ def bulk_pricing_remove_keyboard(product_id: str) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton("No tiers configured", callback_data="noop")])
     rows.append([InlineKeyboardButton("⬅️ Back", callback_data="admin_bulk_view")])
     return InlineKeyboardMarkup(rows)
+
+
+def product_translation_language_keyboard(back_callback: str) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(label, callback_data=f"product_i18n_lang_{language}")]
+        for language, label in PRODUCT_TRANSLATION_LANGUAGES.items()
+    ]
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data=back_callback)])
+    return InlineKeyboardMarkup(rows)
+
+
+def product_translation_actions_keyboard(back_callback: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✏️ Edit Translated Name", callback_data="product_i18n_name_edit")],
+        [InlineKeyboardButton("📝 Edit Translated Details", callback_data="product_i18n_details_edit")],
+        [InlineKeyboardButton("🧹 Clear Translated Name", callback_data="product_i18n_name_clear")],
+        [InlineKeyboardButton("🧹 Clear Translated Details", callback_data="product_i18n_details_clear")],
+        [InlineKeyboardButton("⬅️ Back", callback_data=back_callback)],
+    ])
+
+
+def selected_product_translation_target(user_id: int):
+    temp = admin_temp.get(user_id, {})
+    target_type = temp.get("product_i18n_target")
+    if target_type == "local":
+        product_id = str(temp.get("selected_product_id") or "")
+        product = PRODUCTS.get(product_id)
+        return target_type, product_id, product
+    if target_type == "api":
+        mapping_key, mapping = selected_saved_api_shop_mapping(user_id)
+        return target_type, mapping_key, mapping
+    return None, None, None
+
+
+def render_product_translation_panel(user_id: int) -> str:
+    target_type, _, product = selected_product_translation_target(user_id)
+    language = str(admin_temp.get(user_id, {}).get("product_i18n_language") or "")
+    if not product or language not in PRODUCT_TRANSLATION_LANGUAGES:
+        return "❌ Translation selection expired."
+    default_name = api_mapping_display_name(product) if target_type == "api" else str(product.get("name") or "Product")
+    name_value = (product.get("name_i18n") or {}).get(language) if isinstance(product.get("name_i18n"), dict) else None
+    details_value = (product.get("details_i18n") or {}).get(language) if isinstance(product.get("details_i18n"), dict) else None
+    return (
+        "🌐 <b>PRODUCT TRANSLATIONS</b>\n\n"
+        f"<b>Product:</b> {escape_html(default_name)}\n"
+        f"<b>Language:</b> {escape_html(PRODUCT_TRANSLATION_LANGUAGES[language])}\n"
+        f"<b>Translated name:</b> {escape_html(name_value) if name_value else 'Not set'}\n"
+        f"<b>Translated details:</b> {'Set' if details_value else 'Not set'}\n\n"
+        "Translated details are stored as plain text. Default rich text remains unchanged."
+    )
+
+
+def cleanup_empty_product_translation_map(product: dict, field: str) -> None:
+    translations = product.get(field)
+    if isinstance(translations, dict) and not translations:
+        product.pop(field, None)
 
 
 def bulk_pricing_clear_confirm_keyboard() -> InlineKeyboardMarkup:
@@ -6419,14 +6760,14 @@ async def send_client_main_text(update: Update, text: str):
 
 
 async def send_user_dashboard(message, menu_notice: str = None):
+    user_id = getattr(getattr(message, "chat", None), "id", 0)
     # Step A: ReplyKeyboardRemove serializes remove_keyboard=True and clears any legacy user/admin keyboard.
     await message.reply_text(
-        menu_notice or "Opening menu...",
+        menu_notice or t(user_id, "opening_menu"),
         reply_markup=ReplyKeyboardRemove(),
         parse_mode="HTML",
     )
     # Step B: send a separate message so the dashboard is a real InlineKeyboardMarkup.
-    user_id = getattr(getattr(message, "chat", None), "id", 0)
     variants = [(True, True, True)]
     if any(dashboard_header_custom_emoji_ids.values()):
         variants.append((False, True, True))
@@ -6580,27 +6921,29 @@ def render_wallet_text(user_id: int) -> str:
 
 
 def render_user_id_text(user_id: int) -> str:
+    profile = user_profiles.get(user_id, {})
+    username = str(profile.get("username") or "").strip()
     return (
-        "🆔 <b>YOUR USER ID</b>\n\n"
-        f"<code>{user_id}</code>\n\n"
-        "Send this User ID to admin when needed."
+        f"🆔 <b>{t(user_id, 'profile_title')}</b>\n\n"
+        f"<b>{t(user_id, 'user_id')}:</b> <code>{user_id}</code>\n"
+        f"<b>{t(user_id, 'username')}:</b> {escape_html('@' + username if username else t(user_id, 'no_username'))}"
     )
 
 
 def render_orders_text(user_id: int) -> str:
     orders = user_orders[user_id]
     if not orders:
-        return "📦 <b>ORDERS</b>\n\nNo orders found."
+        return f"📦 <b>{t(user_id, 'my_orders').upper()}</b>\n\n{t(user_id, 'no_orders')}"
 
-    lines = ["📦 <b>ORDERS</b>\n"]
+    lines = [f"📦 <b>{t(user_id, 'my_orders').upper()}</b>\n"]
     for order in reversed(orders[-25:]):
         lines.append(
-            f"#{order['id']} <b>{order['product']}</b>\n"
-            f"   Quantity: {order['qty']}\n"
-            f"   Total: {format_money(order['total'])}\n"
-            f"   Payment: {order.get('payment_type', 'Unknown')}\n"
-            f"   Status: <b>{order['status']}</b>\n"
-            f"   Date: {format_dt(order.get('created_at'))}\n"
+            f"#{order['id']} <b>{escape_html(localized_order_product_name(order, user_id))}</b>\n"
+            f"   {t(user_id, 'quantity')}: {order['qty']}\n"
+            f"   {t(user_id, 'total')}: {format_money(order['total'])}\n"
+            f"   {t(user_id, 'payment_type')}: {order.get('payment_type', 'Unknown')}\n"
+            f"   {t(user_id, 'status')}: <b>{localized_order_status(user_id, order['status'])}</b>\n"
+            f"   {t(user_id, 'date')}: {format_dt(order.get('created_at'))}\n"
         )
     return "\n".join(lines)
 
@@ -6640,6 +6983,17 @@ def format_order_status(status) -> str:
         "failed": "Failed",
     }
     return labels.get(normalized, raw_status.replace("_", " ").title())
+
+
+def localized_order_status(user_id: int, status) -> str:
+    normalized = str(status or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized == "completed":
+        return t(user_id, "completed")
+    if normalized in {"pending", "pending_manual", "pending_support", "pending_manual_delivery", "pending_auto"}:
+        return t(user_id, "pending")
+    if normalized == "processing":
+        return t(user_id, "processing")
+    return format_order_status(status)
 
 
 def _order_product_name(order: dict) -> str:
@@ -6732,12 +7086,12 @@ def user_orders_keyboard(user_id: int, page: int = 0) -> InlineKeyboardMarkup:
     rows = []
     for order in page_orders:
         order_id = order.get("id")
-        product_name = _order_product_name(order).replace("\n", " ").strip()
+        product_name = localized_order_product_name(order, user_id).replace("\n", " ").strip()
         if len(product_name) > 18:
             product_name = product_name[:17] + "…"
         label = (
             f"{t(user_id, 'order')} #{order_id if order_id not in (None, '') else 'N/A'} • "
-            f"{product_name} • {_order_total_text(order)} • {format_order_status(order.get('status'))}"
+            f"{product_name} • {_order_total_text(order)} • {localized_order_status(user_id, order.get('status'))}"
         )
         if len(label) > 64:
             label = label[:63] + "…"
@@ -6768,24 +7122,15 @@ def render_user_order_details(user_id: int, order_id) -> str:
     product = PRODUCTS.get(product_id) if isinstance(product_id, str) else None
     product_details = ""
     if isinstance(product, dict):
-        plain_details = product.get("details")
-        if isinstance(plain_details, list):
-            product_details = "\n".join(
-                escape_html(detail)
-                for detail in plain_details
-                if detail not in (None, "") and str(detail).strip()
-            )
-        rich_details = product.get("details_rich")
-        if isinstance(rich_details, dict):
-            rich_text = rich_details.get("text")
-            if isinstance(rich_text, str) and rich_text.strip():
-                product_details = render_serialized_entities_html(
-                    rich_text, rich_details.get("entities")
-                ) or product_details
+        product_details = localized_product_details_html(product, user_id)
+    elif order.get("product_type") == "api":
+        mapping = api_product_mapping_by_id(order.get("api_product_id") or product_id)
+        if mapping:
+            product_details = api_shop_mapping_details_html(mapping, user_id)
     details_section = (
-        f"📋 <b>Product Details:</b>\n{product_details}"
+        f"📋 <b>{t(user_id, 'product_details_label')}:</b>\n{product_details}"
         if product_details
-        else "📋 <b>Product Details:</b> N/A"
+        else f"📋 <b>{t(user_id, 'product_details_label')}:</b> N/A"
     )
     delivered_items = order.get("delivered_items")
     delivered_lines = []
@@ -6796,22 +7141,22 @@ def render_user_order_details(user_id: int, order_id) -> str:
             if item not in (None, "") and str(item).strip()
         ]
     delivered_section = (
-        "🔐 <b>Delivered Account Details:</b>\n" + "\n".join(delivered_lines)
+        f"🔐 <b>{t(user_id, 'account_details')}:</b>\n" + "\n".join(delivered_lines)
         if delivered_lines
-        else "🔐 <b>Delivered Account Details:</b> N/A"
+        else f"🔐 <b>{t(user_id, 'account_details')}:</b> N/A"
     )
     return (
-        "📦 <b>ORDER DETAILS</b>\n\n"
-        f"<b>Order ID:</b> #{value(order.get('id'))}\n"
-        f"<b>Product:</b> {value(_order_product_name(order))}\n"
-        f"<b>Product ID:</b> <code>{value(order.get('product_id'))}</code>\n"
-        f"<b>Quantity:</b> {value(order.get('qty'))}\n"
-        f"<b>Total Price:</b> {_order_total_text(order)}\n"
-        f"<b>Payment Type:</b> {value(order.get('payment_type'))}\n"
-        f"<b>Price Type:</b> {value(_order_price_type(order))}\n"
-        f"<b>Status:</b> {value(format_order_status(order.get('status')))}\n"
-        f"<b>Date/Time:</b> {value(_order_date_text(order))}\n"
-        f"<b>Payment Reference:</b> <code>{value(_order_payment_reference(order))}</code>\n\n"
+        f"📦 <b>{t(user_id, 'order_details').upper()}</b>\n\n"
+        f"<b>{t(user_id, 'order_id')}:</b> #{value(order.get('id'))}\n"
+        f"<b>{t(user_id, 'product')}:</b> {value(localized_order_product_name(order, user_id))}\n"
+        f"<b>{t(user_id, 'product_id')}:</b> <code>{value(order.get('product_id'))}</code>\n"
+        f"<b>{t(user_id, 'quantity')}:</b> {value(order.get('qty'))}\n"
+        f"<b>{t(user_id, 'total')}:</b> {_order_total_text(order)}\n"
+        f"<b>{t(user_id, 'payment_type')}:</b> {value(order.get('payment_type'))}\n"
+        f"<b>{t(user_id, 'price_type')}:</b> {value(_order_price_type(order))}\n"
+        f"<b>{t(user_id, 'status')}:</b> {value(localized_order_status(user_id, order.get('status')))}\n"
+        f"<b>{t(user_id, 'date_time')}:</b> {value(_order_date_text(order))}\n"
+        f"<b>{t(user_id, 'payment_reference')}:</b> <code>{value(_order_payment_reference(order))}</code>\n\n"
         f"{delivered_section}\n\n"
         f"{details_section}"
     )
@@ -6839,15 +7184,15 @@ async def edit_user_orders_message(query, text: str, keyboard=None):
 def render_transactions_text(user_id: int) -> str:
     txs = user_transactions[user_id]
     if not txs:
-        return "🧾 <b>TRANSACTIONS</b>\n\nNo transaction history found."
+        return f"🧾 <b>{t(user_id, 'transactions_title')}</b>\n\n{t(user_id, 'no_transactions')}"
 
-    lines = ["🧾 <b>TRANSACTIONS</b>\n"]
+    lines = [f"🧾 <b>{t(user_id, 'transactions_title')}</b>\n"]
     for tx in reversed(txs[-25:]):
         lines.append(
             f"TX#{tx['id']} <b>{tx['type']}</b>\n"
-            f"   Amount: {format_money(tx['amount'])}\n"
-            f"   Status: <b>{tx['status']}</b>\n"
-            f"   Date: {format_dt(tx.get('created_at'))}\n"
+            f"   {t(user_id, 'amount')}: {format_money(tx['amount'])}\n"
+            f"   {t(user_id, 'status')}: <b>{tx['status']}</b>\n"
+            f"   {t(user_id, 'date')}: {format_dt(tx.get('created_at'))}\n"
         )
     return "\n".join(lines)
 
@@ -6855,96 +7200,86 @@ def render_transactions_text(user_id: int) -> str:
 def render_refer_text(user_id: int) -> str:
     ref_link = f"https://t.me/{BOT_USERNAME}?start={user_id}"
     return (
-        "👥 <b>REFER & EARN</b>\n\n"
-        "Invite friends and get rewarded.\n\n"
-        f"🔗 <b>Your Link:</b>\n{ref_link}\n\n"
-        "📊 <b>Total Invited:</b> 0\n"
-        "💵 <b>Rewards Earned:</b> $0"
+        f"👥 <b>{t(user_id, 'refer_title').upper()}</b>\n\n"
+        f"{t(user_id, 'invite_friends')}\n\n"
+        f"🔗 <b>{t(user_id, 'your_link')}:</b>\n{ref_link}\n\n"
+        f"📊 <b>{t(user_id, 'total_invited')}:</b> 0\n"
+        f"💵 <b>{t(user_id, 'rewards_earned')}:</b> $0"
     )
 
 
 def render_support_text(user_id: int = None) -> str:
     return (
         f"💬 <b>{t(user_id, 'support').upper()}</b>\n\n"
-        f"Contact admin: {SUPPORT_USERNAME}\n"
-        f"Support link: {SUPPORT_URL}\n\n"
-        "For payment, order, warranty, or delivery issues, contact support with your User ID and order details."
+        f"{t(user_id, 'contact_admin')}: {SUPPORT_USERNAME}\n"
+        f"{t(user_id, 'support_link')}: {SUPPORT_URL}\n\n"
+        f"{t(user_id, 'support_instruction')}"
     )
 
 
-def render_terms_text() -> str:
+def render_terms_text(user_id: int = None) -> str:
     return (
-        "📜 <b>TERMS OF USE</b>\n\n"
-        "By using this bot, you agree to the shop terms. All products are digital goods delivered automatically or manually after payment confirmation. "
-        "Customers must check product details before purchase. Warranty, replacement, and refund rules depend on the product description and admin decision.\n\n"
-        f"Full Terms: {TERMS_URL}"
+        f"📜 <b>{t(user_id, 'terms_title').upper()}</b>\n\n"
+        f"{t(user_id, 'terms_body')}\n\n"
+        f"{t(user_id, 'full_terms')}: {TERMS_URL}"
     )
 
 
-def render_privacy_text() -> str:
+def render_privacy_text(user_id: int = None) -> str:
     return (
-        "🔐 <b>PRIVACY POLICY</b>\n\n"
-        "The bot stores Telegram user ID, username, wallet balance, orders, transactions, and support-related data needed to operate the shop. "
-        "We do not sell user data. Payment data may be processed by third-party payment providers.\n\n"
-        f"Full Privacy Policy: {PRIVACY_URL}"
+        f"🔐 <b>{t(user_id, 'privacy_title').upper()}</b>\n\n"
+        f"{t(user_id, 'privacy_body')}\n\n"
+        f"{t(user_id, 'full_privacy')}: {PRIVACY_URL}"
     )
 
 
-def render_legal_text() -> str:
+def render_legal_text(user_id: int = None) -> str:
     return (
-        "⚖️ <b>LEGAL INFORMATION</b>\n\n"
-        "This bot sells digital products and subscription access items. Users are responsible for following the rules of any third-party services they use. "
-        "For legal/support requests, contact the shop admin.\n\n"
-        f"Legal Page: {LEGAL_URL}\n"
-        f"Support: {SUPPORT_URL}"
+        f"⚖️ <b>{t(user_id, 'legal_title').upper()}</b>\n\n"
+        f"{t(user_id, 'legal_body')}\n\n"
+        f"{t(user_id, 'legal_page')}: {LEGAL_URL}\n"
+        f"{t(user_id, 'support')}: {SUPPORT_URL}"
     )
 
 
 def render_product_card(product_id: str, user_id: int = None) -> str:
     product = PRODUCTS[product_id]
     stock = get_display_stock(product_id)
-    stock_text = f"{stock} pcs" if stock > 0 else "Stock Out"
+    stock_text = f"{stock} {t(user_id, 'pcs')}" if stock > 0 else t(user_id, "out_of_stock")
     icon = product_icon_html(product)
     duration = format_duration_text(product.get("month", ""))
-    duration_line = f"<b>Duration:</b> {duration}\n" if duration else ""
+    duration_line = f"<b>{t(user_id, 'duration')}:</b> {duration}\n" if duration else ""
     return (
-        f"{icon} <b>{product['name']}</b>\n"
+        f"{icon} <b>{escape_html(localized_product_name(product, user_id))}</b>\n"
         f"{duration_line}"
-        f"<b>Price:</b> {format_product_price_for_user(product_id, user_id)}\n"
-        f"<b>Stock:</b> {stock_text}"
+        f"<b>{t(user_id, 'price')}:</b> {format_product_price_for_user(product_id, user_id)}\n"
+        f"<b>{t(user_id, 'stock')}:</b> {stock_text}"
     )
 
 
-def render_bulk_pricing_offers(product) -> str:
+def render_bulk_pricing_offers(product, user_id: int = None) -> str:
     tiers = get_bulk_pricing_tiers(product)
     if not tiers:
         return ""
-    lines = ["💸 <b>Bulk Discount Offers</b>"]
+    lines = [f"💸 <b>{t(user_id, 'bulk_offers')}</b>"]
     for tier in tiers:
         lines.append(
-            f"✅ Buy {tier['min_qty']}+ → {float(tier['unit_price']):.2f} USDT each"
+            f"✅ {t(user_id, 'buy_qty', quantity=tier['min_qty'])} → {float(tier['unit_price']):.2f} USDT {t(user_id, 'each')}"
         )
     return "\n".join(lines)
 
 
 def render_product_details(product_id: str, user_id: int = None) -> str:
     product = PRODUCTS[product_id]
-    detail_lines = "\n".join(product["details"])
-    rich_details = product.get("details_rich")
-    if isinstance(rich_details, dict):
-        detail_lines = render_serialized_entities_html(
-            rich_details.get("text", detail_lines), rich_details.get("entities")
-        ) or detail_lines
+    detail_lines = localized_product_details_html(product, user_id)
     stock = get_display_stock(product_id)
-    icon = product_icon_html(product)
     duration = format_duration_text(product.get("month", ""))
-    duration_line = f"<b>Duration:</b> {duration}\n" if duration else ""
-    bulk_offers = render_bulk_pricing_offers(product)
+    duration_line = f"<b>{t(user_id, 'duration')}:</b> {duration}\n" if duration else ""
+    bulk_offers = render_bulk_pricing_offers(product, user_id)
     bulk_section = f"{bulk_offers}\n\n" if bulk_offers else ""
     return (
         f"📦 <b>{t(user_id, 'product_details')}</b>\n\n"
-        f"<b>Icon:</b> {icon}\n"
-        f"<b>{t(user_id, 'name')}:</b> {product['name']}\n"
+        f"<b>{t(user_id, 'name')}:</b> {escape_html(localized_product_name(product, user_id))}\n"
         f"{duration_line}"
         f"<b>{t(user_id, 'price')}:</b> {format_product_price_for_user(product_id, user_id)}\n"
         f"<b>{t(user_id, 'stock')}:</b> {stock} {t(user_id, 'pcs')}\n\n"
@@ -6959,28 +7294,28 @@ def render_buy_summary(product_id: str, qty: int, wallet_balance: float, user_id
     remaining = wallet_balance - total
     if wallet_balance >= total:
         return (
-            "🛒 <b>ORDER SUMMARY</b>\n\n"
-            f"<b>Product:</b> {product['name']}\n"
-            f"<b>Unit Price:</b> {format_money(unit_price)}\n"
-            f"<b>Quantity:</b> {qty}\n"
-            f"<b>Total Price:</b> {format_money(total)}\n"
-            f"<b>Wallet Balance:</b> {format_money(wallet_balance)}\n"
-            f"<b>Remaining After Purchase:</b> {format_money(remaining)}\n\n"
-            "✅ <b>You have enough wallet balance.</b>\n"
-            "This order will be completed directly from your wallet."
+            f"🛒 <b>{t(user_id, 'order_summary').upper()}</b>\n\n"
+            f"<b>{t(user_id, 'product')}:</b> {escape_html(localized_product_name(product, user_id))}\n"
+            f"<b>{t(user_id, 'unit_price')}:</b> {format_money(unit_price)}\n"
+            f"<b>{t(user_id, 'quantity')}:</b> {qty}\n"
+            f"<b>{t(user_id, 'total')}:</b> {format_money(total)}\n"
+            f"<b>{t(user_id, 'wallet')}:</b> {format_money(wallet_balance)}\n"
+            f"<b>{t(user_id, 'remaining_balance')}:</b> {format_money(remaining)}\n\n"
+            f"✅ <b>{t(user_id, 'enough_balance')}</b>\n"
+            f"{t(user_id, 'checkout_wallet_note')}"
         )
 
     shortage = total - wallet_balance
     return (
-        "🛒 <b>ORDER SUMMARY</b>\n\n"
-        f"<b>Product:</b> {product['name']}\n"
-        f"<b>Unit Price:</b> {format_money(unit_price)}\n"
-        f"<b>Quantity:</b> {qty}\n"
-        f"<b>Total Price:</b> {format_money(total)}\n"
-        f"<b>Wallet Balance:</b> {format_money(wallet_balance)}\n"
-        f"<b>Shortage:</b> {format_money(shortage)}\n\n"
-        "❌ <b>Wallet balance is not enough.</b>\n"
-        "<b>Please select a payment method:</b>"
+        f"🛒 <b>{t(user_id, 'order_summary').upper()}</b>\n\n"
+        f"<b>{t(user_id, 'product')}:</b> {escape_html(localized_product_name(product, user_id))}\n"
+        f"<b>{t(user_id, 'unit_price')}:</b> {format_money(unit_price)}\n"
+        f"<b>{t(user_id, 'quantity')}:</b> {qty}\n"
+        f"<b>{t(user_id, 'total')}:</b> {format_money(total)}\n"
+        f"<b>{t(user_id, 'wallet')}:</b> {format_money(wallet_balance)}\n"
+        f"<b>{t(user_id, 'shortage')}:</b> {format_money(shortage)}\n\n"
+        f"❌ <b>{t(user_id, 'wallet_not_enough')}</b>\n"
+        f"<b>{t(user_id, 'choose_payment_method')}</b>"
     )
 
 
@@ -6988,59 +7323,59 @@ def render_deposit_text(user_id: int = None) -> str:
     return f"💳 <b>{t(user_id, 'deposit').upper()}</b>\n\n<b>{t(user_id, 'choose_quantity')}:</b>"
 
 
-def render_deposit_method_text(amount: float) -> str:
+def render_deposit_method_text(amount: float, user_id: int = None) -> str:
     return (
-        "💳 <b>SELECT PAYMENT METHOD</b>\n\n"
-        f"<b>Amount to deposit:</b> {format_money(amount)}\n\n"
-        "<b>Choose a payment method below:</b>"
+        f"💳 <b>{t(user_id, 'select_payment_method').upper()}</b>\n\n"
+        f"<b>{t(user_id, 'amount_to_deposit')}:</b> {format_money(amount)}\n\n"
+        f"<b>{t(user_id, 'choose_payment_method')}</b>"
     )
 
 
-def render_manual_payment_text(amount: float, method: str, details: str) -> str:
+def render_manual_payment_text(amount: float, method: str, details: str, user_id: int = None) -> str:
     return (
-        "🏦 <b>Exchange Payment</b>\n\n"
-        f"<b>Amount:</b> {format_money(amount)}\n"
-        f"<b>Method:</b> {method}\n\n"
+        f"🏦 <b>{t(user_id, 'exchange_payment')}</b>\n\n"
+        f"<b>{t(user_id, 'amount')}:</b> {format_money(amount)}\n"
+        f"<b>{t(user_id, 'method')}:</b> {method}\n\n"
         f"{escape_html(details)}\n\n"
-        "<b>Send payment screenshot to Live Support for confirmation.</b>"
+        f"<b>{t(user_id, 'send_screenshot')}</b>"
     )
 
 
-def render_crypto_payment_text(amount: float, network: str, address: str) -> str:
+def render_crypto_payment_text(amount: float, network: str, address: str, user_id: int = None) -> str:
     return (
-        "✅ <b>DEPOSIT PAYMENT DETAILS</b>\n\n"
-        f"<b>Amount:</b> {format_money(amount)}\n"
-        f"<b>Method:</b> Crypto Address\n"
-        f"<b>Network:</b> {network}\n\n"
+        f"✅ <b>{t(user_id, 'payment_details').upper()}</b>\n\n"
+        f"<b>{t(user_id, 'amount')}:</b> {format_money(amount)}\n"
+        f"<b>{t(user_id, 'method')}:</b> Crypto Address\n"
+        f"<b>{t(user_id, 'network')}:</b> {network}\n\n"
         f"{escape_html(address)}\n\n"
-        "<b>After payment, send your TXID in chat.</b>"
+        f"<b>{t(user_id, 'send_txid')}</b>"
     )
 
 
-def render_buy_crypto_payment_text(product_id: str, qty: int, total: float, network: str, address: str) -> str:
+def render_buy_crypto_payment_text(product_id: str, qty: int, total: float, network: str, address: str, user_id: int = None) -> str:
     product = PRODUCTS[product_id]
     return (
-        "✅ <b>ORDER PAYMENT DETAILS</b>\n\n"
-        f"<b>Product:</b> {product['name']}\n"
-        f"<b>Quantity:</b> {qty}\n"
-        f"<b>Total:</b> {format_money(total)}\n"
-        f"<b>Method:</b> Crypto Address\n"
-        f"<b>Network:</b> {network}\n\n"
+        f"✅ <b>{t(user_id, 'payment_details').upper()}</b>\n\n"
+        f"<b>{t(user_id, 'product')}:</b> {escape_html(localized_product_name(product, user_id))}\n"
+        f"<b>{t(user_id, 'quantity')}:</b> {qty}\n"
+        f"<b>{t(user_id, 'total')}:</b> {format_money(total)}\n"
+        f"<b>{t(user_id, 'method')}:</b> Crypto Address\n"
+        f"<b>{t(user_id, 'network')}:</b> {network}\n\n"
         f"{escape_html(address)}\n\n"
-        "<b>After payment, send your TXID in chat.</b>"
+        f"<b>{t(user_id, 'send_txid')}</b>"
     )
 
 
-def render_buy_manual_payment_text(product_id: str, qty: int, total: float, method: str, details: str) -> str:
+def render_buy_manual_payment_text(product_id: str, qty: int, total: float, method: str, details: str, user_id: int = None) -> str:
     product = PRODUCTS[product_id]
     return (
-        "🏦 <b>ORDER PAYMENT DETAILS</b>\n\n"
-        f"<b>Product:</b> {product['name']}\n"
-        f"<b>Quantity:</b> {qty}\n"
-        f"<b>Total:</b> {format_money(total)}\n"
-        f"<b>Method:</b> {method}\n\n"
+        f"🏦 <b>{t(user_id, 'payment_details').upper()}</b>\n\n"
+        f"<b>{t(user_id, 'product')}:</b> {escape_html(localized_product_name(product, user_id))}\n"
+        f"<b>{t(user_id, 'quantity')}:</b> {qty}\n"
+        f"<b>{t(user_id, 'total')}:</b> {format_money(total)}\n"
+        f"<b>{t(user_id, 'method')}:</b> {method}\n\n"
         f"{escape_html(details)}\n\n"
-        "<b>Send payment screenshot to Live Support for confirmation.</b>"
+        f"<b>{t(user_id, 'send_screenshot')}</b>"
     )
 
 
@@ -7798,14 +8133,15 @@ async def notify_waiters_for_product(context: ContextTypes.DEFAULT_TYPE, product
         return
 
     product = PRODUCTS[product_id]
-    text = (
-        f"🔔 {product_icon_html(product)} <b>{escape_html(product['name'])}</b> is back in stock!\n\n"
-        f"<b>Month:</b> {product['month']}\n"
-        f"<b>Price:</b> {format_money(product['price'])}\n"
-        f"<b>Available now:</b> {get_display_stock(product_id)} pcs"
-    )
-    fallback_text = text.replace(product_icon_html(product), escape_html(_normal_icon_text(product)), 1)
     for waiter_id in waiters:
+        product_name = localized_product_name(product, waiter_id)
+        text = (
+            f"🔔 {product_icon_html(product)} <b>{t(waiter_id, 'back_in_stock', product=escape_html(product_name))}</b>\n\n"
+            f"<b>{t(waiter_id, 'duration')}:</b> {product['month']}\n"
+            f"<b>{t(waiter_id, 'price')}:</b> {format_money(product['price'])}\n"
+            f"<b>{t(waiter_id, 'available_now')}:</b> {get_display_stock(product_id)} {t(waiter_id, 'pcs')}"
+        )
+        fallback_text = text.replace(product_icon_html(product), escape_html(_normal_icon_text(product)), 1)
         try:
             await context.bot.send_message(waiter_id, text, parse_mode="HTML")
         except Exception:
@@ -7828,7 +8164,7 @@ def render_shop_menu_text(user_id: int = None) -> str:
         f"──── ⚡ <b>{t(user_id, 'auto_delivery')}</b> ────\n"
         f"{t(user_id, 'tap_product')}"
     )
-    flash_banner = render_flash_deal_banner() if "render_flash_deal_banner" in globals() else ""
+    flash_banner = render_flash_deal_banner(user_id) if "render_flash_deal_banner" in globals() else ""
     return f"{flash_banner}\n\n{base}" if flash_banner else base
 
 
@@ -7882,6 +8218,14 @@ def api_shop_mapping_price(mapping: dict):
 
 
 def api_shop_mapping_details_html(mapping: dict, user_id: int = None) -> str:
+    language = get_user_language(user_id)
+    translated_details = (mapping or {}).get("details_i18n")
+    if language != "en" and isinstance(translated_details, dict):
+        translated = translated_details.get(language)
+        if isinstance(translated, list):
+            translated = "\n".join(str(line) for line in translated if str(line).strip())
+        if translated is not None and str(translated).strip():
+            return escape_html(str(translated).strip())
     plain_details = str((mapping or {}).get("details") or "").strip()
     rich_details = (mapping or {}).get("details_rich")
     if isinstance(rich_details, dict):
@@ -7899,7 +8243,7 @@ def api_shop_product_row(mapping: dict, styled: bool = True, user_id: int = None
     if not is_api_shop_mapping_visible(mapping):
         return []
     api_product_id = str(mapping.get("api_product_id") or "").strip()
-    name = api_mapping_display_name(mapping)
+    name = localized_api_product_name(mapping, user_id)
     selling_price = _buyer_api_numeric_value(mapping.get("selling_price"))
     stock = _buyer_api_numeric_value(mapping.get("last_stock"))
     out_of_stock = stock is not None and stock <= 0
@@ -7946,7 +8290,7 @@ def ordered_category_product_rows(category_id: str, user_id: int = None, styled:
 
 
 def render_api_shop_product_details(mapping: dict, user_id: int = None) -> str:
-    name = api_mapping_display_name(mapping)
+    name = localized_api_product_name(mapping, user_id)
     selling_price = _buyer_api_numeric_value(mapping.get("selling_price"))
     stock = _buyer_api_numeric_value(mapping.get("last_stock"))
     details_text = api_shop_mapping_details_html(mapping, user_id)
@@ -7958,7 +8302,7 @@ def render_api_shop_product_details(mapping: dict, user_id: int = None) -> str:
         stock_text = str(stock)
     availability_line = f"<b>{t(user_id, 'currently_unavailable')}</b>\n" if stock is not None and stock <= 0 else ""
     activation_line = (
-        "📧 <b>Slot activation</b> Email required\n\n"
+        f"📧 <b>{t(user_id, 'slot_email_required')}</b>\n\n"
         if api_mapping_requires_customer_email(mapping)
         else ""
     )
@@ -7983,7 +8327,7 @@ def api_shop_product_details_keyboard(mapping: dict, styled: bool = True, user_i
         token = api_shop_callback_token(mapping.get("api_product_id"), mapping_provider_id(mapping))
         requires_email = api_mapping_requires_customer_email(mapping)
         rows.append([make_styled_inline_button(
-            f"📧 {t(user_id, 'activation_information').title()}" if requires_email else f"🛒 {t(user_id, 'buy_now')}",
+            f"📧 {t(user_id, 'activation_info_button')}" if requires_email else f"🛒 {t(user_id, 'buy_now')}",
             callback_data=f"api_shop_buy_{token}",
             style="success" if styled else None,
         )])
@@ -8056,7 +8400,7 @@ def render_api_shop_quantity_prompt(mapping: dict, user_id: int = None) -> str:
     stock_text = str(stock) if stock is not None else t(user_id, "available")
     return (
         f"🛒 <b>{t(user_id, 'select_quantity')}</b>\n\n"
-        f"<b>Product:</b> {escape_html(api_mapping_display_name(mapping))}\n"
+        f"<b>{t(user_id, 'product')}:</b> {escape_html(localized_api_product_name(mapping, user_id))}\n"
         f"<b>{t(user_id, 'price')}:</b> {format_money(api_shop_mapping_price(mapping))}\n"
         f"<b>{t(user_id, 'stock')}:</b> {escape_html(stock_text)}{' ' + t(user_id, 'pcs') if stock is not None else ''}\n\n"
         f"{t(user_id, 'choose_below')}"
@@ -8083,26 +8427,26 @@ def api_mapping_requires_customer_email(mapping: dict) -> bool:
     ))
 
 
-def validate_api_shop_purchase(mapping: dict, quantity: int) -> str:
+def validate_api_shop_purchase(mapping: dict, quantity: int, user_id: int = None) -> str:
     if _buyer_api_bool_value((mapping or {}).get("seller_missing")):
-        return "This product is currently unavailable."
+        return t(user_id, "product_unavailable")
     if not is_api_shop_mapping_visible(mapping):
-        return "This product is no longer available."
+        return t(user_id, "product_no_longer_available")
     try:
         provider = get_seller_api_provider(mapping_provider_id(mapping))
     except BuyerAPIError:
-        return "This product is currently unavailable."
+        return t(user_id, "product_unavailable")
     if not provider.get("enabled") or not provider.get("configured"):
-        return "This product is currently unavailable."
+        return t(user_id, "product_unavailable")
     if not isinstance(quantity, int) or quantity <= 0:
-        return "Quantity must be a whole number greater than 0."
+        return t(user_id, "invalid_quantity")
     if api_mapping_requires_customer_email(mapping) and quantity not in {1, 2, 3, 5, 10}:
-        return "Please select one of the available activation quantities."
+        return t(user_id, "invalid_quantity")
     stock = api_shop_mapping_stock(mapping)
     if stock is not None and quantity > stock:
-        return f"Only {stock} pcs are currently available."
+        return t(user_id, "only_stock", stock=stock)
     if api_shop_mapping_price(mapping) is None:
-        return "This product does not have a valid price."
+        return t(user_id, "invalid_price")
     return ""
 
 
@@ -8112,6 +8456,7 @@ def shop_product_rows(product_ids: list, user_id: int = None, styled: bool = Tru
         if product_id not in PRODUCTS:
             continue
         product = PRODUCTS[product_id]
+        display_name = localized_product_name(product, user_id)
         stock = get_display_stock(product_id)
         month = format_duration_text(product.get("month", ""))
         month_part = f" {month}" if month else ""
@@ -8120,13 +8465,13 @@ def shop_product_rows(product_ids: list, user_id: int = None, styled: bool = Tru
             rows.append([
                 make_product_inline_button(
                     product,
-                    f"{product['name']}{month_part} - {price_text} | 🔔 {t(user_id, 'notify')}",
+                    f"{display_name}{month_part} - {price_text} | 🔔 {t(user_id, 'notify')}",
                     f"shop_notify_{product_id}",
                     style="danger" if styled else None,
                 )
             ])
             continue
-        core_label = f"{product['name']}{month_part} - {price_text} | 📦 {stock} {t(user_id, 'pcs')}"
+        core_label = f"{display_name}{month_part} - {price_text} | 📦 {stock} {t(user_id, 'pcs')}"
         rows.append([
             make_product_inline_button(
                 product,
@@ -8568,17 +8913,17 @@ async def handle_api_purchase_failure(
     pending_text = (
         f"⚠️ {t(user_id, 'activation_processing')}"
         if api_mapping_requires_customer_email(mapping)
-        else "⚠️ Your order is now pending manual support review."
+        else f"⚠️ {t(user_id, 'pending_review')}"
     )
     await context.bot.send_message(
         user_id,
         f"✅ <b>{t(user_id, 'payment_received')}</b>\n\n"
         f"{pending_text}\n\n"
-        f"<b>Order ID:</b> <code>{order['id']}</code>\n"
-        f"<b>Product:</b> {escape_html(api_mapping_display_name(mapping))}\n"
+        f"<b>{t(user_id, 'order_id')}:</b> <code>{order['id']}</code>\n"
+        f"<b>{t(user_id, 'product')}:</b> {escape_html(localized_api_product_name(mapping, user_id))}\n"
         f"<b>{t(user_id, 'quantity')}:</b> {quantity}\n"
         f"<b>{t(user_id, 'total_paid')}:</b> {format_money(total)}\n\n"
-        "Please contact support to receive your product or further assistance.",
+        f"{t(user_id, 'please_contact_support')}",
         reply_markup=api_purchase_failure_keyboard(user_id),
         parse_mode="HTML",
     )
@@ -8603,15 +8948,15 @@ async def notify_unavailable_api_provider(context, user_id: int, mapping: dict) 
             pass
     await context.bot.send_message(
         user_id,
-        "⚠️ This product is temporarily unavailable. Please contact support or try again later.",
-        reply_markup=api_purchase_failure_keyboard(),
+        f"⚠️ {t(user_id, 'product_unavailable')} {t(user_id, 'try_again')}",
+        reply_markup=api_purchase_failure_keyboard(user_id),
     )
 
 
 async def continue_api_shop_purchase(context, user_id: int, callback_token: str, quantity: int):
     mapping = find_api_shop_mapping(callback_token)
     if mapping is None:
-        await context.bot.send_message(user_id, "❌ This product is no longer available.")
+        await context.bot.send_message(user_id, f"❌ {t(user_id, 'product_no_longer_available')}")
         return
     provider_id = mapping_provider_id(mapping)
     try:
@@ -8621,7 +8966,7 @@ async def continue_api_shop_purchase(context, user_id: int, callback_token: str,
     if not provider or not provider.get("enabled") or not provider.get("configured"):
         await notify_unavailable_api_provider(context, user_id, mapping)
         return False
-    validation_error = validate_api_shop_purchase(mapping, quantity)
+    validation_error = validate_api_shop_purchase(mapping, quantity, user_id)
     if validation_error:
         await context.bot.send_message(user_id, f"❌ {validation_error}")
         return
@@ -8629,12 +8974,12 @@ async def continue_api_shop_purchase(context, user_id: int, callback_token: str,
     if float(user_wallet.get(user_id, 0.0)) < total:
         await context.bot.send_message(
             user_id,
-            "❌ <b>Wallet balance is not enough.</b>\n\n"
-            f"<b>Total:</b> {format_money(total)}\n"
-            f"<b>Wallet:</b> {format_money(user_wallet.get(user_id, 0.0))}",
+            f"❌ <b>{t(user_id, 'wallet_not_enough')}</b>\n\n"
+            f"<b>{t(user_id, 'total')}:</b> {format_money(total)}\n"
+            f"<b>{t(user_id, 'wallet')}:</b> {format_money(user_wallet.get(user_id, 0.0))}",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("💳 Top Up", callback_data="user_dashboard_topup")],
-                [InlineKeyboardButton("🏠 Back to Menu", callback_data="user_back_to_dashboard")],
+                [InlineKeyboardButton(f"💳 {t(user_id, 'top_up')}", callback_data="user_dashboard_topup")],
+                [InlineKeyboardButton(f"🏠 {t(user_id, 'back_to_menu')}", callback_data="user_back_to_dashboard")],
             ]),
             parse_mode="HTML",
         )
@@ -8650,7 +8995,7 @@ async def continue_api_shop_purchase(context, user_id: int, callback_token: str,
             email_example = "<code>buyer1@gmail.com</code>"
         else:
             email_instruction = (
-                f"👉 Please enter {quantity} emails, one per line or separated by commas."
+                f"👉 {t(user_id, 'enter_emails', quantity=quantity)}"
             )
             email_example = "\n".join(
                 f"<code>buyer{index}@gmail.com</code>"
@@ -8661,11 +9006,11 @@ async def continue_api_shop_purchase(context, user_id: int, callback_token: str,
             f"📧 <b>{t(user_id, 'activation_information')}</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n\n"
             f"{email_instruction}\n\n"
-            "<b>Example:</b>\n"
+            f"<b>{t(user_id, 'example')}:</b>\n"
             f"{email_example}\n\n"
             f"{t(user_id, 'each_email_slot')}\n"
             f"<b>{t(user_id, 'total')}:</b> {format_money(total)}\n\n"
-            "📌 After payment, your activation request will be processed.",
+            f"📌 {t(user_id, 'after_payment_activation')}",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton(f"❌ {t(user_id, 'cancel')}", callback_data="user_back_to_dashboard")],
                 [InlineKeyboardButton(
@@ -8688,7 +9033,7 @@ async def process_api_shop_purchase(
 ):
     mapping = find_api_shop_mapping(callback_token)
     if mapping is None:
-        await context.bot.send_message(user_id, "❌ This product is no longer available.")
+        await context.bot.send_message(user_id, f"❌ {t(user_id, 'product_no_longer_available')}")
         return False
     provider_id = mapping_provider_id(mapping)
     try:
@@ -8698,7 +9043,7 @@ async def process_api_shop_purchase(
     if not provider or not provider.get("enabled") or not provider.get("configured"):
         await notify_unavailable_api_provider(context, user_id, mapping)
         return False
-    validation_error = validate_api_shop_purchase(mapping, quantity)
+    validation_error = validate_api_shop_purchase(mapping, quantity, user_id)
     if validation_error:
         await context.bot.send_message(user_id, f"❌ {validation_error}")
         return False
@@ -8713,8 +9058,7 @@ async def process_api_shop_purchase(
         ):
             await context.bot.send_message(
                 user_id,
-                f"❌ You selected x{quantity}, please enter exactly {quantity} valid "
-                f"email{'s' if quantity != 1 else ''}.",
+                f"❌ {t(user_id, 'exact_emails', quantity=quantity)}",
             )
             return False
     else:
@@ -8723,30 +9067,30 @@ async def process_api_shop_purchase(
     unit_price = api_shop_mapping_price(mapping)
     total = round(unit_price * quantity, 2)
     if total <= 0:
-        await context.bot.send_message(user_id, "❌ This product has an invalid price. Please contact support.")
+        await context.bot.send_message(user_id, f"❌ {t(user_id, 'invalid_price')} {t(user_id, 'please_contact_support')}")
         return False
     if float(user_wallet.get(user_id, 0.0)) < total:
         await context.bot.send_message(
             user_id,
-            "❌ <b>Wallet balance is not enough.</b>\n\n"
-            f"<b>Total:</b> {format_money(total)}\n"
-            f"<b>Wallet:</b> {format_money(user_wallet.get(user_id, 0.0))}",
+            f"❌ <b>{t(user_id, 'wallet_not_enough')}</b>\n\n"
+            f"<b>{t(user_id, 'total')}:</b> {format_money(total)}\n"
+            f"<b>{t(user_id, 'wallet')}:</b> {format_money(user_wallet.get(user_id, 0.0))}",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("💳 Top Up", callback_data="user_dashboard_topup")],
-                [InlineKeyboardButton("🏠 Back to Menu", callback_data="user_back_to_dashboard")],
+                [InlineKeyboardButton(f"💳 {t(user_id, 'top_up')}", callback_data="user_dashboard_topup")],
+                [InlineKeyboardButton(f"🏠 {t(user_id, 'back_to_menu')}", callback_data="user_back_to_dashboard")],
             ]),
             parse_mode="HTML",
         )
         return False
     if user_id in api_purchase_in_progress:
-        await context.bot.send_message(user_id, "⏳ Your purchase is already being processed. Please wait.")
+        await context.bot.send_message(user_id, f"⏳ {t(user_id, 'processing_purchase')}")
         return False
 
     api_purchase_in_progress.add(user_id)
     try:
         # Recheck immediately before the irreversible external request.
         if float(user_wallet.get(user_id, 0.0)) < total:
-            await context.bot.send_message(user_id, "❌ Wallet balance is not enough.")
+            await context.bot.send_message(user_id, f"❌ {t(user_id, 'wallet_not_enough')}")
             return False
         activation_results = []
         order_codes = []
@@ -8920,11 +9264,11 @@ async def process_api_shop_purchase(
         user_state[user_id] = {"step": "main"}
 
         lines = [
-            f"✅ <b>Order Completed:</b> {escape_html(api_mapping_display_name(mapping))}",
+            f"✅ <b>{t(user_id, 'order_completed')}:</b> {escape_html(localized_api_product_name(mapping, user_id))}",
             f"<b>{t(user_id, 'quantity')}:</b> {quantity}",
             f"<b>{t(user_id, 'total')}:</b> {format_money(total)}",
             "",
-            "🔐 <b>Your Account Details:</b>",
+            f"🔐 <b>{t(user_id, 'account_details')}:</b>",
             "",
         ]
         for item in delivered_items:
@@ -8933,7 +9277,7 @@ async def process_api_shop_purchase(
         await context.bot.send_message(
             user_id,
             f"✅ <b>{t(user_id, 'purchase_completed')}</b>\n\n"
-            f"<b>{format_money(total)}</b> deducted from your wallet.\n"
+            f"{t(user_id, 'amount_deducted', amount=format_money(total))}\n"
             f"{get_wallet_balance_text(user_id)}",
             reply_markup=user_back_to_menu_keyboard(styled=False, user_id=user_id),
             parse_mode="HTML",
@@ -8949,7 +9293,10 @@ async def deliver_accounts_to_user(bot, user_id: int, product_id: str, qty: int)
     if len(available) < qty:
         await bot.send_message(
             chat_id=user_id,
-            text="❌ <b>Not enough real account inventory available right now.</b>\n\nPlease contact support.",
+            text=(
+                f"❌ <b>{t(user_id, 'inventory_unavailable')}</b>\n\n"
+                f"{t(user_id, 'please_contact_support')}"
+            ),
             parse_mode="HTML",
         )
         return False, []
@@ -8961,10 +9308,10 @@ async def deliver_accounts_to_user(bot, user_id: int, product_id: str, qty: int)
     product["display_stock"] = max(0, current_display - qty)
 
     lines = [
-        f"✅ <b>Order Completed:</b> {escape_html(product['name'])}",
-        f"<b>Quantity:</b> {qty}",
+        f"✅ <b>{t(user_id, 'order_completed')}:</b> {escape_html(localized_product_name(product, user_id))}",
+        f"<b>{t(user_id, 'quantity')}:</b> {qty}",
         "",
-        "🔐 <b>Your Account Details:</b>",
+        f"🔐 <b>{t(user_id, 'account_details')}:</b>",
         "",
     ]
     for acc in delivered:
@@ -9019,8 +9366,8 @@ async def process_wallet_purchase(update_or_query, context: ContextTypes.DEFAULT
     await notify_admin_order(context.bot, user_id, product_id, qty, total, "Wallet")
 
     msg = (
-        f"✅ <b>Order completed successfully.</b>\n\n"
-        f"<b>{format_money(total)}</b> deducted from your wallet.\n"
+        f"✅ <b>{t(user_id, 'purchase_completed')}</b>\n\n"
+        f"{t(user_id, 'amount_deducted', amount=format_money(total))}\n"
         f"{get_wallet_balance_text(user_id)}"
     )
 
@@ -9060,8 +9407,8 @@ async def finalize_verified_deposit(bot, user_id: int, amount: float, txid: str)
     await bot.send_message(
         chat_id=user_id,
         text=(
-            f"✅ <b>Payment confirmed.</b>\n\n"
-            f"<b>{format_money(amount)}</b> added to your wallet.\n"
+            f"✅ <b>{t(user_id, 'payment_confirmed')}</b>\n\n"
+            f"{t(user_id, 'amount_added', amount=format_money(amount))}\n"
             f"{get_wallet_balance_text(user_id)}"
         ),
         parse_mode="HTML",
@@ -9095,10 +9442,10 @@ async def finalize_verified_order(bot, user_id: int, product_id: str, qty: int, 
     await bot.send_message(
         chat_id=user_id,
         text=(
-            f"✅ <b>Payment confirmed.</b>\n\n"
-            f"<b>Order completed</b> for {PRODUCTS[product_id]['name']}.\n"
-            f"<b>Quantity:</b> {qty}\n"
-            f"<b>Total:</b> {format_money(total)}"
+            f"✅ <b>{t(user_id, 'payment_confirmed')}</b>\n\n"
+            f"<b>{t(user_id, 'order_completed')}</b>: {escape_html(localized_product_name(PRODUCTS[product_id], user_id))}.\n"
+            f"<b>{t(user_id, 'quantity')}:</b> {qty}\n"
+            f"<b>{t(user_id, 'total')}:</b> {format_money(total)}"
         ),
         parse_mode="HTML",
     )
@@ -9139,10 +9486,10 @@ async def confirm_manual_order(context: ContextTypes.DEFAULT_TYPE, order_id: int
     await context.bot.send_message(
         chat_id=order["user_id"],
         text=(
-            f"✅ <b>Your manual payment has been confirmed.</b>\n\n"
-            f"<b>Product:</b> {order['product']}\n"
-            f"<b>Quantity:</b> {order['qty']}\n"
-            f"<b>Total:</b> {format_money(order['total'])}"
+            f"✅ <b>{t(order['user_id'], 'manual_payment_confirmed')}</b>\n\n"
+            f"<b>{t(order['user_id'], 'product')}:</b> {escape_html(localized_order_product_name(order, order['user_id']))}\n"
+            f"<b>{t(order['user_id'], 'quantity')}:</b> {order['qty']}\n"
+            f"<b>{t(order['user_id'], 'total')}:</b> {format_money(order['total'])}"
         ),
         parse_mode="HTML",
     )
@@ -9175,10 +9522,10 @@ async def reject_manual_order(context: ContextTypes.DEFAULT_TYPE, order_id: int)
     await context.bot.send_message(
         chat_id=order["user_id"],
         text=(
-            f"❌ <b>Your manual order payment was rejected.</b>\n\n"
-            f"<b>Product:</b> {order['product']}\n"
-            f"<b>Total:</b> {format_money(order['total'])}\n\n"
-            f"Please contact support."
+            f"❌ <b>{t(order['user_id'], 'manual_payment_rejected')}</b>\n\n"
+            f"<b>{t(order['user_id'], 'product')}:</b> {escape_html(localized_order_product_name(order, order['user_id']))}\n"
+            f"<b>{t(order['user_id'], 'total')}:</b> {format_money(order['total'])}\n\n"
+            f"{t(order['user_id'], 'please_contact_support')}"
         ),
         parse_mode="HTML",
     )
@@ -9203,8 +9550,8 @@ async def confirm_manual_deposit(context: ContextTypes.DEFAULT_TYPE, tx_id: int)
     await context.bot.send_message(
         chat_id=tx["user_id"],
         text=(
-            f"✅ <b>Your manual deposit has been confirmed.</b>\n\n"
-            f"<b>Amount:</b> {format_money(tx['amount'])}\n"
+            f"✅ <b>{t(tx['user_id'], 'manual_deposit_confirmed')}</b>\n\n"
+            f"<b>{t(tx['user_id'], 'amount')}:</b> {format_money(tx['amount'])}\n"
             f"{get_wallet_balance_text(tx['user_id'])}"
         ),
         parse_mode="HTML",
@@ -9228,9 +9575,9 @@ async def reject_manual_deposit(context: ContextTypes.DEFAULT_TYPE, tx_id: int):
     await context.bot.send_message(
         chat_id=tx["user_id"],
         text=(
-            f"❌ <b>Your manual deposit was rejected.</b>\n\n"
-            f"<b>Amount:</b> {format_money(tx['amount'])}\n\n"
-            f"Please contact support."
+            f"❌ <b>{t(tx['user_id'], 'manual_deposit_rejected')}</b>\n\n"
+            f"<b>{t(tx['user_id'], 'amount')}:</b> {format_money(tx['amount'])}\n\n"
+            f"{t(tx['user_id'], 'please_contact_support')}"
         ),
         parse_mode="HTML",
     )
@@ -9251,8 +9598,8 @@ async def finalize_auto_deposit_record(record: dict):
     await app_instance.bot.send_message(
         chat_id=user_id,
         text=(
-            f"✅ <b>Payment confirmed automatically.</b>\n\n"
-            f"<b>{format_money(amount)}</b> added to your wallet.\n"
+            f"✅ <b>{t(user_id, 'payment_confirmed_auto')}</b>\n\n"
+            f"{t(user_id, 'amount_added', amount=format_money(amount))}\n"
             f"{get_wallet_balance_text(user_id)}"
         ),
         parse_mode="HTML",
@@ -9275,10 +9622,10 @@ async def finalize_auto_order_record(record: dict):
         await app_instance.bot.send_message(
             chat_id=user_id,
             text=(
-                f"✅ <b>Payment confirmed automatically.</b>\n\n"
-                f"<b>Order completed</b> for {PRODUCTS[record['product_id']]['name']}.\n"
-                f"<b>Quantity:</b> {record['qty']}\n"
-                f"<b>Total:</b> {format_money(record['usd_amount'])}"
+                f"✅ <b>{t(user_id, 'payment_confirmed_auto')}</b>\n\n"
+                f"<b>{t(user_id, 'order_completed')}</b>: {escape_html(localized_product_name(PRODUCTS[record['product_id']], user_id))}.\n"
+                f"<b>{t(user_id, 'quantity')}:</b> {record['qty']}\n"
+                f"<b>{t(user_id, 'total')}:</b> {format_money(record['usd_amount'])}"
             ),
             parse_mode="HTML",
         )
@@ -9291,7 +9638,7 @@ async def send_auto_pending_message(user_id: int, record: dict, result: dict):
 async def send_auto_rejected_message(user_id: int, record: dict, result: dict):
     await app_instance.bot.send_message(
         chat_id=user_id,
-        text=f"❌ <b>Payment rejected.</b>\n\n{escape_html(result.get('message') or result.get('reason') or 'Rejected')}",
+        text=f"❌ <b>{t(user_id, 'payment_rejected')}</b>\n\n{t(user_id, 'try_again')}",
         parse_mode="HTML",
     )
 
@@ -9501,8 +9848,8 @@ async def finalize_cryptomus_record(record: dict, payload: dict = None):
         await app_instance.bot.send_message(
             chat_id=user_id,
             text=(
-                "🎉 <b>PAYMENT VERIFIED!</b>\n\n"
-                f"<b>{format_money(amount)}</b> added to your wallet.\n"
+                f"🎉 <b>{t(user_id, 'payment_verified')}</b>\n\n"
+                f"{t(user_id, 'amount_added', amount=format_money(amount))}\n"
                 f"{get_wallet_balance_text(user_id)}"
             ),
             parse_mode="HTML",
@@ -9527,17 +9874,17 @@ async def finalize_cryptomus_record(record: dict, payload: dict = None):
             await app_instance.bot.send_message(
                 chat_id=user_id,
                 text=(
-                    "🎉 <b>PAYMENT VERIFIED!</b>\n\n"
-                    f"<b>Order completed</b> for {PRODUCTS[product_id]['name']}.\n"
-                    f"<b>Quantity:</b> {qty}\n"
-                    f"<b>Total:</b> {format_money(amount)}"
+                    f"🎉 <b>{t(user_id, 'payment_verified')}</b>\n\n"
+                    f"<b>{t(user_id, 'order_completed')}</b>: {escape_html(localized_product_name(PRODUCTS[product_id], user_id))}.\n"
+                    f"<b>{t(user_id, 'quantity')}:</b> {qty}\n"
+                    f"<b>{t(user_id, 'total')}:</b> {format_money(amount)}"
                 ),
                 parse_mode="HTML",
             )
         else:
             await app_instance.bot.send_message(
                 chat_id=user_id,
-                text="✅ Payment received, but stock delivery failed. Please contact live support.",
+                text=f"✅ {t(user_id, 'delivery_failed')} {t(user_id, 'please_contact_support')}",
                 parse_mode="HTML",
             )
 
@@ -9574,7 +9921,7 @@ async def handle_cryptomus_webhook(payload: dict):
         user_id = int(record.get("user_id", 0))
         await app_instance.bot.send_message(
             chat_id=user_id,
-            text=f"❌ <b>Payment failed/cancelled.</b>\n\nStatus: <code>{escape_html(status)}</code>",
+            text=f"❌ <b>{t(user_id, 'payment_failed')}</b>\n\n{t(user_id, 'status')}: <code>{escape_html(status)}</code>",
             parse_mode="HTML",
         )
 
@@ -9582,17 +9929,17 @@ async def handle_cryptomus_webhook(payload: dict):
 async def run_cryptomus_manual_verify(query, user_id: int, kind: str):
     state = user_state.setdefault(user_id, {})
     if state.get("verify_in_progress"):
-        await query.answer("⏳ Verification already in progress. Please wait.", show_alert=False)
+        await query.answer(f"⏳ {t(user_id, 'processing_purchase')} {t(user_id, 'please_wait')}", show_alert=False)
         return
 
     record = find_latest_cryptomus_record(user_id, kind)
     if not record:
-        await query.message.reply_text("❌ No pending payment found.")
+        await query.message.reply_text(f"❌ {t(user_id, 'no_pending_payment')}")
         return
 
     state["verify_in_progress"] = True
     try:
-        await query.message.reply_text("⏳ Checking payment status...")
+        await query.message.reply_text(f"⏳ {t(user_id, 'verifying_payment')}")
         status_payload = get_cryptomus_status(record)
         result = status_payload.get("result") or status_payload
         status = str(result.get("payment_status") or result.get("status") or "").lower()
@@ -9917,8 +10264,8 @@ async def finalize_nowpayments_record(record: dict, payload: dict = None):
         await app_instance.bot.send_message(
             chat_id=user_id,
             text=(
-                "🎉 <b>PAYMENT VERIFIED!</b>\n\n"
-                f"<b>{format_money(amount)}</b> added to your wallet.\n"
+                f"🎉 <b>{t(user_id, 'payment_verified')}</b>\n\n"
+                f"{t(user_id, 'amount_added', amount=format_money(amount))}\n"
                 f"{get_wallet_balance_text(user_id)}"
             ),
             parse_mode="HTML",
@@ -9943,17 +10290,17 @@ async def finalize_nowpayments_record(record: dict, payload: dict = None):
             await app_instance.bot.send_message(
                 chat_id=user_id,
                 text=(
-                    "🎉 <b>PAYMENT VERIFIED!</b>\n\n"
-                    f"<b>Order completed</b> for {PRODUCTS[product_id]['name']}.\n"
-                    f"<b>Quantity:</b> {qty}\n"
-                    f"<b>Total:</b> {format_money(amount)}"
+                    f"🎉 <b>{t(user_id, 'payment_verified')}</b>\n\n"
+                    f"<b>{t(user_id, 'order_completed')}</b>: {escape_html(localized_product_name(PRODUCTS[product_id], user_id))}.\n"
+                    f"<b>{t(user_id, 'quantity')}:</b> {qty}\n"
+                    f"<b>{t(user_id, 'total')}:</b> {format_money(amount)}"
                 ),
                 parse_mode="HTML",
             )
         else:
             await app_instance.bot.send_message(
                 chat_id=user_id,
-                text="✅ Payment received, but stock delivery failed. Please contact live support.",
+                text=f"✅ {t(user_id, 'delivery_failed')} {t(user_id, 'please_contact_support')}",
                 parse_mode="HTML",
             )
 
@@ -9990,7 +10337,7 @@ async def handle_nowpayments_ipn(payload: dict):
         user_id = int(record.get("user_id", 0))
         await app_instance.bot.send_message(
             chat_id=user_id,
-            text=f"❌ <b>Payment failed or expired.</b>\n\nStatus: <code>{escape_html(status)}</code>",
+            text=f"❌ <b>{t(user_id, 'payment_failed')}</b>\n\n{t(user_id, 'status')}: <code>{escape_html(status)}</code>",
             parse_mode="HTML",
         )
 
@@ -9998,12 +10345,12 @@ async def handle_nowpayments_ipn(payload: dict):
 async def run_nowpayments_manual_verify(query, user_id: int, kind: str):
     state = user_state.setdefault(user_id, {})
     if state.get("verify_in_progress"):
-        await query.answer("⏳ Verification already in progress. Please wait.", show_alert=False)
+        await query.answer(f"⏳ {t(user_id, 'processing_purchase')} {t(user_id, 'please_wait')}", show_alert=False)
         return
 
     record = find_latest_nowpayments_record(user_id, kind)
     if not record:
-        await query.message.reply_text("❌ No pending NOWPayments payment found.")
+        await query.message.reply_text(f"❌ {t(user_id, 'no_pending_payment')}")
         return
 
     state["verify_in_progress"] = True
@@ -10560,9 +10907,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             quantity = int(text)
         except ValueError:
             quantity = 0
-        validation_error = validate_api_shop_purchase(mapping, quantity) if mapping else "This product is no longer available."
+        validation_error = validate_api_shop_purchase(mapping, quantity, user_id) if mapping else t(user_id, "product_no_longer_available")
         if validation_error:
-            await update.message.reply_text(f"❌ {validation_error}\n\nPlease send a valid whole-number quantity.")
+            await update.message.reply_text(f"❌ {validation_error}\n\n{t(user_id, 'invalid_quantity')}")
             return
         await continue_api_shop_purchase(context, user_id, callback_token, quantity)
         return
@@ -10579,9 +10926,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ):
             expected_quantity = quantity if quantity > 0 else 1
             await update.message.reply_text(
-                f"❌ You selected x{expected_quantity}, please enter exactly "
-                f"{expected_quantity} valid email{'s' if expected_quantity != 1 else ''}.\n\n"
-                "Use one email per line or separate them with commas."
+                f"❌ {t(user_id, 'exact_emails', quantity=expected_quantity)}\n\n"
+                f"{t(user_id, 'enter_emails', quantity=expected_quantity)}"
             )
             return
         await process_api_shop_purchase(
@@ -10746,6 +11092,36 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "❌ <b>API PRODUCT SEARCH FAILED</b>\n\nUnexpected Seller API error.",
                 seller_api_keyboard(),
             )
+        return
+
+    if step in {"product_i18n_name_input", "product_i18n_details_input"} and is_admin(user_id):
+        _, _, product = selected_product_translation_target(user_id)
+        language = admin_temp.get(user_id, {}).get("product_i18n_language")
+        if not product or language not in PRODUCT_TRANSLATION_LANGUAGES:
+            await update.message.reply_text("❌ Translation selection expired.")
+            return
+        translated_text = (update.message.text or "").strip()
+        if not translated_text:
+            await update.message.reply_text("❌ Translation cannot be empty.")
+            return
+        is_name = step == "product_i18n_name_input"
+        max_length = 80 if is_name else 2500
+        if len(translated_text) > max_length:
+            await update.message.reply_text(f"❌ Translation must be {max_length} characters or fewer.")
+            return
+        field = "name_i18n" if is_name else "details_i18n"
+        translations = product.setdefault(field, {})
+        if not isinstance(translations, dict):
+            translations = {}
+            product[field] = translations
+        translations[language] = translated_text
+        user_state[user_id] = {"step": "product_i18n_admin"}
+        save_bot_state()
+        await update.message.reply_text(
+            "✅ <b>Translation saved.</b>\n\n" + render_product_translation_panel(user_id),
+            reply_markup=product_translation_actions_keyboard("product_i18n_languages"),
+            parse_mode="HTML",
+        )
         return
 
     if step == "seller_api_shop_name_input" and is_admin(user_id):
@@ -11347,7 +11723,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if promo in used_promo_codes[user_id]:
             user_state[user_id] = {"step": "main"}
-            await send_client_main_text(update, "❌ <b>This promo code has already been used.</b>")
+            await send_client_main_text(update, f"❌ <b>{t(user_id, 'promo_used')}</b>")
             return
 
         if promo in PROMO_CODES:
@@ -11355,7 +11731,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if not info.get("enabled", True):
                 user_state[user_id] = {"step": "main"}
-                await send_client_main_text(update, "❌ <b>This promo code is disabled.</b>")
+                await send_client_main_text(update, f"❌ <b>{t(user_id, 'promo_disabled')}</b>")
                 return
 
             amount = float(info["amount"])
@@ -11370,11 +11746,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 PROMO_CODES.pop(promo, None)
 
             user_state[user_id] = {"step": "main"}
-            await send_client_main_text(update, f"✅ <b>Promo applied successfully.</b>\n\n{format_money(amount)} added to your wallet.\n{get_wallet_balance_text(user_id)}")
+            await send_client_main_text(
+                update,
+                f"✅ <b>{t(user_id, 'promo_applied')}</b>\n\n"
+                f"{t(user_id, 'amount_added', amount=format_money(amount))}\n"
+                f"{get_wallet_balance_text(user_id)}",
+            )
             return
 
         user_state[user_id] = {"step": "main"}
-        await send_client_main_text(update, "❌ <b>Invalid promo code.</b>")
+        await send_client_main_text(update, f"❌ <b>{t(user_id, 'promo_invalid')}</b>")
         return
 
     # ========= ADMIN SEARCH INPUTS =========
@@ -11594,17 +11975,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if qty <= 0:
                 raise ValueError
         except ValueError:
-            await update.message.reply_text("❌ <b>Invalid quantity.</b> Please send a valid number.", parse_mode="HTML")
+            await update.message.reply_text(f"❌ <b>{t(user_id, 'invalid_quantity')}</b>", parse_mode="HTML")
             return
         if qty > stock:
-            await update.message.reply_text(f"❌ <b>Only {stock} pcs available.</b>", parse_mode="HTML")
+            await update.message.reply_text(f"❌ <b>{t(user_id, 'only_stock', stock=stock)}</b>", parse_mode="HTML")
             return
 
         try:
             _, total = calculate_order_total(product_id, qty, user_id)
         except ValueError:
             await update.message.reply_text(
-                "❌ <b>This product has an invalid price.</b> Please contact support.",
+                f"❌ <b>{t(user_id, 'invalid_price')}</b> {t(user_id, 'please_contact_support')}",
                 parse_mode="HTML",
             )
             return
@@ -11614,7 +11995,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         user_state[user_id] = {"step": "buy_payment_method", "product_id": product_id, "qty": qty, "total": total}
-        await update.message.reply_text(render_buy_summary(product_id, qty, user_wallet[user_id], user_id), reply_markup=payment_method_keyboard("buy"), parse_mode="HTML")
+        await update.message.reply_text(render_buy_summary(product_id, qty, user_wallet[user_id], user_id), reply_markup=payment_method_keyboard("buy", user_id=user_id), parse_mode="HTML")
         return
 
     if step == "deposit_custom_amount":
@@ -11626,27 +12007,27 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_user_inline_from_text_with_style_fallback(
                 update,
                 "❌ <b>Invalid amount.</b> Please send a valid number.",
-                deposit_custom_amount_keyboard(),
-                deposit_custom_amount_keyboard(styled=False),
+                deposit_custom_amount_keyboard(user_id=user_id),
+                deposit_custom_amount_keyboard(styled=False, user_id=user_id),
             )
             return
         user_state[user_id] = {"step": "deposit_payment_method", "amount": amount}
         await send_user_inline_from_text_with_style_fallback(
             update,
-            render_deposit_method_text(amount),
-            payment_method_keyboard("dep", styled=True),
-            payment_method_keyboard("dep", styled=False),
+            render_deposit_method_text(amount, user_id),
+            payment_method_keyboard("dep", styled=True, user_id=user_id),
+            payment_method_keyboard("dep", styled=False, user_id=user_id),
         )
         return
 
     if step == "awaiting_crypto_txid_deposit":
         user_state[user_id] = {"step": "main"}
-        await send_client_main_text(update, "ℹ️ <b>TXID is no longer required.</b>\n\nPlease use the <b>I Have Paid (Verify)</b> button on the payment request.")
+        await send_client_main_text(update, f"ℹ️ <b>{t(user_id, 'txid_not_required')}</b>\n\n{t(user_id, 'use_verify_button')}")
         return
 
     if step == "awaiting_crypto_txid_buy":
         user_state[user_id] = {"step": "main"}
-        await send_client_main_text(update, "ℹ️ <b>TXID is no longer required.</b>\n\nPlease use the <b>I Have Paid (Verify)</b> button on the payment request.")
+        await send_client_main_text(update, f"ℹ️ <b>{t(user_id, 'txid_not_required')}</b>\n\n{t(user_id, 'use_verify_button')}")
         return
 
     # ========= NORMAL CLIENT MENUS =========
@@ -11689,7 +12070,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "🎟 Promo":
         user_state[user_id] = {"step": "awaiting_promo"}
-        await send_client_main_text(update, "🎟 <b>PROMO</b>\n\nPlease send your promo code.")
+        await send_client_main_text(update, f"🎟 <b>{t(user_id, 'promo').upper()}</b>\n\n{t(user_id, 'promo_prompt')}")
         return
 
     if text == "👥 Refer & Earn":
@@ -11709,21 +12090,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "📜 Terms":
         user_state[user_id] = {"step": "main"}
-        await send_client_main_text(update, render_terms_text())
+        await send_client_main_text(update, render_terms_text(user_id))
         return
 
     if text == "🔐 Privacy":
         user_state[user_id] = {"step": "main"}
-        await send_client_main_text(update, render_privacy_text())
+        await send_client_main_text(update, render_privacy_text(user_id))
         return
 
     if text == "⚖️ Legal":
         user_state[user_id] = {"step": "main"}
-        await send_client_main_text(update, render_legal_text())
+        await send_client_main_text(update, render_legal_text(user_id))
         return
 
     await update.message.reply_text(
-        "Please use the Menu button below.",
+        t(user_id, "use_menu"),
         reply_markup=admin_menu() if user_mode[user_id] == "admin" else main_menu()
     )
 # =========================
@@ -11751,12 +12132,12 @@ def build_verify_status_text(network: str, seconds_left: int) -> str:
 async def run_simple_verify_flow(query, context, user_id: int, record_kind: str):
     state = user_state.setdefault(user_id, {})
     if state.get("verify_in_progress"):
-        await query.answer("⏳ Verification already in progress. Please wait.", show_alert=False)
+        await query.answer(f"⏳ {t(user_id, 'processing_purchase')} {t(user_id, 'please_wait')}", show_alert=False)
         return
 
     state["verify_in_progress"] = True
     try:
-        await query.message.reply_text("⏳ Checking blockchain network records...")
+        await query.message.reply_text(f"⏳ {t(user_id, 'verifying_payment')}")
     except Exception:
         pass
 
@@ -11769,17 +12150,17 @@ async def run_simple_verify_flow(query, context, user_id: int, record_kind: str)
                 if record:
                     await finalize_auto_order_record(record)
                 total = user_state.get(user_id, {}).get("total", 0)
-                await query.message.reply_text(f"🎉 PAYMENT VERIFIED! Amount added: ${float(total):.2f}")
+                await query.message.reply_text(f"🎉 {t(user_id, 'payment_verified')} {t(user_id, 'amount_added', amount=format_money(total))}")
             else:
                 record = wc.get_user_pending_deposit(user_id)
                 if record:
                     await finalize_auto_deposit_record(record)
                 amount = user_state.get(user_id, {}).get("amount", 0)
-                await query.message.reply_text(f"🎉 PAYMENT VERIFIED! Amount added: ${float(amount):.2f}")
+                await query.message.reply_text(f"🎉 {t(user_id, 'payment_verified')} {t(user_id, 'amount_added', amount=format_money(amount))}")
         else:
             await query.message.reply_text(
-                "⌛ Transaction not found on the network yet. Please wait 1–2 minutes and click Verify again.\n\n"
-                "If it still fails after 10–15 minutes, please contact live support: @serpstacking"
+                f"⌛ {t(user_id, 'no_pending_payment')} {t(user_id, 'try_again')}\n\n"
+                f"{t(user_id, 'please_contact_support')}"
             )
     finally:
         state["verify_in_progress"] = False
@@ -11798,8 +12179,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_user_dashboard(query.message)
         else:
             await query.message.reply_text(
-                "📢 Please join our official channel first.",
-                reply_markup=required_channel_keyboard(),
+                f"📢 {t(user_id, 'join_channel_first')}",
+                reply_markup=required_channel_keyboard(user_id),
             )
         return
 
@@ -12294,6 +12675,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_id,
             "✅ <b>Custom product details cleared.</b>\n\n" + render_api_shop_mapping_detail(mapping_key, mapping),
             api_shop_mapping_manager_keyboard(mapping),
+        )
+        return
+
+    if data == "seller_api_shop_i18n":
+        mapping_key, mapping = selected_saved_api_shop_mapping(user_id)
+        if not is_admin(user_id) or not mapping:
+            await send_api_shop_manager(query, user_id, 0)
+            return
+        admin_temp[user_id]["product_i18n_target"] = "api"
+        admin_temp[user_id].pop("product_i18n_language", None)
+        await edit_seller_api_callback_message(
+            query,
+            user_id,
+            "🌐 <b>EDIT PRODUCT TRANSLATIONS</b>\n\nSelect a language.",
+            product_translation_language_keyboard("seller_api_shop_detail"),
         )
         return
 
@@ -13080,6 +13476,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_inline_from_callback(query, "📦 <b>Edit Display Stock</b>\n\nSelect a product below.", admin_product_select_keyboard("admin_pick_display_stock"))
         return
 
+    if data == "admin_product_i18n_menu":
+        if not is_admin(user_id):
+            return
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "admin_product_i18n_pick"}
+        await send_inline_from_callback(
+            query,
+            "🌐 <b>EDIT PRODUCT TRANSLATIONS</b>\n\nSelect a local product.",
+            admin_product_select_keyboard("admin_pick_i18n"),
+        )
+        return
+
     if data == "admin_bulk_pricing_menu":
         reset_admin_temp(user_id)
         user_state[user_id] = {"step": "admin_bulk_product_pick"}
@@ -13498,6 +13906,89 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         admin_temp[user_id]["selected_product_id"] = product_id
         user_state[user_id] = {"step": "admin_edit_name_input"}
         await send_inline_from_callback(query, f"✏️ <b>Edit Name</b>\n\nCurrent: <b>{PRODUCTS[product_id]['name']}</b>\n\nNow send new name.", admin_cancel_keyboard())
+        return
+
+    if data.startswith("admin_pick_i18n_"):
+        if not is_admin(user_id):
+            return
+        product_id = data.replace("admin_pick_i18n_", "", 1)
+        if product_id not in PRODUCTS:
+            return
+        admin_temp[user_id]["selected_product_id"] = product_id
+        admin_temp[user_id]["product_i18n_target"] = "local"
+        admin_temp[user_id].pop("product_i18n_language", None)
+        await send_inline_from_callback(
+            query,
+            "🌐 <b>EDIT PRODUCT TRANSLATIONS</b>\n\nSelect a language.",
+            product_translation_language_keyboard("admin_products_back"),
+        )
+        return
+
+    if data == "product_i18n_languages":
+        if not is_admin(user_id):
+            return
+        target_type, _, product = selected_product_translation_target(user_id)
+        if not product:
+            return
+        back_callback = "seller_api_shop_detail" if target_type == "api" else "admin_products_back"
+        await send_inline_from_callback(
+            query,
+            "🌐 <b>EDIT PRODUCT TRANSLATIONS</b>\n\nSelect a language.",
+            product_translation_language_keyboard(back_callback),
+        )
+        return
+
+    if data.startswith("product_i18n_lang_"):
+        if not is_admin(user_id):
+            return
+        language = data.replace("product_i18n_lang_", "", 1)
+        target_type, _, product = selected_product_translation_target(user_id)
+        if language not in PRODUCT_TRANSLATION_LANGUAGES or not product:
+            return
+        admin_temp[user_id]["product_i18n_language"] = language
+        await send_inline_from_callback(
+            query,
+            render_product_translation_panel(user_id),
+            product_translation_actions_keyboard("product_i18n_languages"),
+        )
+        return
+
+    if data in {"product_i18n_name_edit", "product_i18n_details_edit"}:
+        if not is_admin(user_id):
+            return
+        _, _, product = selected_product_translation_target(user_id)
+        language = admin_temp.get(user_id, {}).get("product_i18n_language")
+        if not product or language not in PRODUCT_TRANSLATION_LANGUAGES:
+            return
+        editing_name = data == "product_i18n_name_edit"
+        user_state[user_id] = {"step": "product_i18n_name_input" if editing_name else "product_i18n_details_input"}
+        limit_text = "80 characters" if editing_name else "2500 characters"
+        field_text = "translated product name" if editing_name else "translated product details"
+        await send_inline_from_callback(
+            query,
+            f"🌐 <b>EDIT {field_text.upper()}</b>\n\nSend the {field_text} (maximum {limit_text}).",
+            InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data=f"product_i18n_lang_{language}")]]),
+        )
+        return
+
+    if data in {"product_i18n_name_clear", "product_i18n_details_clear"}:
+        if not is_admin(user_id):
+            return
+        _, _, product = selected_product_translation_target(user_id)
+        language = admin_temp.get(user_id, {}).get("product_i18n_language")
+        if not product or language not in PRODUCT_TRANSLATION_LANGUAGES:
+            return
+        field = "name_i18n" if data == "product_i18n_name_clear" else "details_i18n"
+        translations = product.get(field)
+        if isinstance(translations, dict):
+            translations.pop(language, None)
+            cleanup_empty_product_translation_map(product, field)
+        save_bot_state()
+        await send_inline_from_callback(
+            query,
+            "✅ <b>Translation cleared.</b>\n\n" + render_product_translation_panel(user_id),
+            product_translation_actions_keyboard("product_i18n_languages"),
+        )
         return
 
     if data.startswith("admin_pick_price_"):
@@ -14163,7 +14654,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_state[user_id] = {"step": "awaiting_promo"}
             await edit_user_dashboard_panel(
                 query,
-                "🎟 <b>PROMO</b>\n\nPlease send your promo code.",
+                f"🎟 <b>{t(user_id, 'promo').upper()}</b>\n\n{t(user_id, 'promo_prompt')}",
                 user_dashboard_back_keyboard(user_id),
             )
             return
@@ -14242,12 +14733,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if mapping is None:
             await send_shop_inline_with_style_fallback(
                 query,
-                "❌ <b>This product is no longer available.</b>",
+                f"❌ <b>{t(user_id, 'product_no_longer_available')}</b>",
                 shop_return_keyboard(user_id=user_id),
                 shop_return_keyboard(styled=False, user_id=user_id),
             )
             return
-        validation_error = validate_api_shop_purchase(mapping, 1)
+        validation_error = validate_api_shop_purchase(mapping, 1, user_id)
         if validation_error:
             await send_shop_inline_with_style_fallback(
                 query,
@@ -14259,9 +14750,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if api_mapping_requires_customer_email(mapping) or api_shop_mapping_stock(mapping) == 1:
             await send_shop_inline_with_style_fallback(
                 query,
-                "⏳ <b>Processing your purchase...</b>",
-                user_back_to_menu_keyboard(),
-                user_back_to_menu_keyboard(styled=False),
+                f"⏳ <b>{t(user_id, 'processing_purchase')}</b>",
+                user_back_to_menu_keyboard(user_id=user_id),
+                user_back_to_menu_keyboard(styled=False, user_id=user_id),
             )
             await continue_api_shop_purchase(context, user_id, callback_token, 1)
             return
@@ -14282,7 +14773,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             quantity = 0
         mapping = find_api_shop_mapping(callback_token)
-        validation_error = validate_api_shop_purchase(mapping, quantity) if mapping else "This product is no longer available."
+        validation_error = validate_api_shop_purchase(mapping, quantity, user_id) if mapping else t(user_id, "product_no_longer_available")
         if not mapping or not api_mapping_requires_customer_email(mapping):
             validation_error = "This activation option is no longer available."
         if validation_error:
@@ -14295,9 +14786,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await send_shop_inline_with_style_fallback(
             query,
-            "⏳ <b>Preparing activation information...</b>",
-            user_back_to_menu_keyboard(),
-            user_back_to_menu_keyboard(styled=False),
+            f"⏳ <b>{t(user_id, 'preparing_activation')}</b>",
+            user_back_to_menu_keyboard(user_id=user_id),
+            user_back_to_menu_keyboard(styled=False, user_id=user_id),
         )
         await continue_api_shop_purchase(context, user_id, callback_token, quantity)
         return
@@ -14310,20 +14801,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             quantity = 0
         mapping = find_api_shop_mapping(callback_token)
-        validation_error = validate_api_shop_purchase(mapping, quantity) if mapping else "This product is no longer available."
+        validation_error = validate_api_shop_purchase(mapping, quantity, user_id) if mapping else t(user_id, "product_no_longer_available")
         if validation_error:
             await send_shop_inline_with_style_fallback(
                 query,
                 f"❌ <b>{escape_html(validation_error)}</b>",
-                api_shop_quantity_keyboard(mapping) if mapping else shop_return_keyboard(),
-                api_shop_quantity_keyboard(mapping, styled=False) if mapping else shop_return_keyboard(styled=False),
+                api_shop_quantity_keyboard(mapping, user_id=user_id) if mapping else shop_return_keyboard(user_id=user_id),
+                api_shop_quantity_keyboard(mapping, styled=False, user_id=user_id) if mapping else shop_return_keyboard(styled=False, user_id=user_id),
             )
             return
         await send_shop_inline_with_style_fallback(
             query,
-            "⏳ <b>Processing your purchase...</b>",
-            user_back_to_menu_keyboard(),
-            user_back_to_menu_keyboard(styled=False),
+            f"⏳ <b>{t(user_id, 'processing_purchase')}</b>",
+            user_back_to_menu_keyboard(user_id=user_id),
+            user_back_to_menu_keyboard(styled=False, user_id=user_id),
         )
         await continue_api_shop_purchase(context, user_id, callback_token, quantity)
         return
@@ -14334,7 +14825,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if mapping is None:
             await send_shop_inline_with_style_fallback(
                 query,
-                "❌ <b>This product is no longer available.</b>",
+                f"❌ <b>{t(user_id, 'product_no_longer_available')}</b>",
                 shop_return_keyboard(user_id=user_id),
                 shop_return_keyboard(styled=False, user_id=user_id),
             )
@@ -14342,14 +14833,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[user_id] = {"step": "api_shop_custom_quantity", "api_callback_token": callback_token}
         await send_shop_inline_with_style_fallback(
             query,
-            "✏️ <b>CUSTOM QUANTITY</b>\n\nSend the quantity as a whole number.",
+            f"✏️ <b>{t(user_id, 'custom_quantity').upper()}</b>\n\n{t(user_id, 'send_custom_quantity')}",
             InlineKeyboardMarkup([[make_styled_inline_button(
-                "⬅️ Back",
+                f"⬅️ {t(user_id, 'back')}",
                 callback_data=f"api_shop_buy_{callback_token}",
                 style="primary",
             )]]),
             InlineKeyboardMarkup([[InlineKeyboardButton(
-                "⬅️ Back",
+                f"⬅️ {t(user_id, 'back')}",
                 callback_data=f"api_shop_buy_{callback_token}",
             )]]),
         )
@@ -14361,7 +14852,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if mapping is None:
             await send_shop_inline_with_style_fallback(
                 query,
-                "❌ <b>This product is no longer available.</b>",
+                f"❌ <b>{t(user_id, 'product_no_longer_available')}</b>",
                 shop_return_keyboard(user_id=user_id),
                 shop_return_keyboard(styled=False, user_id=user_id),
             )
@@ -14406,7 +14897,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         product = PRODUCTS[product_id]
         await send_shop_inline_with_style_fallback(
             query,
-            f"🔔 You will be notified when <b>{product['name']}</b> is back in stock.",
+            f"🔔 {t(user_id, 'notified_when_available', product='<b>' + escape_html(localized_product_name(product, user_id)) + '</b>')}",
             shop_return_keyboard(user_id=user_id),
             shop_return_keyboard(styled=False, user_id=user_id),
         )
@@ -14419,7 +14910,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if qty > stock:
             await send_shop_inline_with_style_fallback(
                 query,
-                f"❌ <b>Only {stock} pcs available.</b>",
+                f"❌ <b>{t(user_id, 'only_stock', stock=stock)}</b>",
                 buy_qty_keyboard(product_id, user_id=user_id),
                 buy_qty_keyboard(product_id, styled=False, user_id=user_id),
             )
@@ -14429,7 +14920,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await send_shop_inline_with_style_fallback(
                 query,
-                "❌ <b>This product has an invalid price.</b> Please contact support.",
+                f"❌ <b>{t(user_id, 'invalid_price')}</b> {t(user_id, 'please_contact_support')}",
                 buy_qty_keyboard(product_id, user_id=user_id),
                 buy_qty_keyboard(product_id, styled=False, user_id=user_id),
             )
@@ -14439,33 +14930,33 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_state[user_id] = {"step": "main"}
             return
         user_state[user_id] = {"step": "buy_payment_method", "product_id": product_id, "qty": qty, "total": total}
-        await send_inline_from_callback(query, render_buy_summary(product_id, qty, user_wallet[user_id], user_id), payment_method_keyboard("buy"))
+        await send_inline_from_callback(query, render_buy_summary(product_id, qty, user_wallet[user_id], user_id), payment_method_keyboard("buy", user_id=user_id))
         return
 
     if data.startswith("buy_custom_"):
         product_id = data.replace("buy_custom_", "")
         user_state[user_id] = {"step": "buy_custom_qty", "product_id": product_id}
-        await query.message.reply_text("✏️ Send custom quantity as a number.\nExample: 2")
+        await query.message.reply_text(f"✏️ {t(user_id, 'send_custom_quantity')}\n{t(user_id, 'example')}: 2")
         return
 
     if data == "buy_method_binance":
         state = user_state[user_id]
-        await send_inline_from_callback(query, render_buy_manual_payment_text(state["product_id"], state["qty"], state["total"], "Binance ID", BINANCE_ID), final_manual_keyboard("buymanual"))
+        await send_inline_from_callback(query, render_buy_manual_payment_text(state["product_id"], state["qty"], state["total"], "Binance ID", BINANCE_ID, user_id), final_manual_keyboard("buymanual", user_id))
         return
 
     if data == "buy_method_bybit":
         state = user_state[user_id]
-        await send_inline_from_callback(query, render_buy_manual_payment_text(state["product_id"], state["qty"], state["total"], "Bybit ID", BYBIT_ID), final_manual_keyboard("buymanual"))
+        await send_inline_from_callback(query, render_buy_manual_payment_text(state["product_id"], state["qty"], state["total"], "Bybit ID", BYBIT_ID, user_id), final_manual_keyboard("buymanual", user_id))
         return
 
     if data == "buy_method_crypto":
         user_state[user_id]["step"] = "buy_network"
-        await send_inline_from_callback(query, "🌐 <b>SELECT NETWORK</b>\n\nChoose a cryptocurrency below:", network_keyboard("buy"))
+        await send_inline_from_callback(query, f"🌐 <b>{t(user_id, 'select_network').upper()}</b>\n\n{t(user_id, 'choose_crypto')}", network_keyboard("buy", user_id=user_id))
         return
 
     if data == "buy_back_method":
         state = user_state[user_id]
-        await send_inline_from_callback(query, render_buy_summary(state["product_id"], state["qty"], user_wallet[user_id], user_id), payment_method_keyboard("buy"))
+        await send_inline_from_callback(query, render_buy_summary(state["product_id"], state["qty"], user_wallet[user_id], user_id), payment_method_keyboard("buy", user_id=user_id))
         return
 
     if data.startswith("buy_net_"):
@@ -14509,7 +15000,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "buypay_change_network":
         user_state[user_id]["step"] = "buy_network"
-        await send_inline_from_callback(query, "🌐 <b>SELECT NETWORK</b>\n\nChoose a cryptocurrency below:", paymod.network_keyboard("buy"))
+        await send_inline_from_callback(query, f"🌐 <b>{t(user_id, 'select_network').upper()}</b>\n\n{t(user_id, 'choose_crypto')}", paymod.network_keyboard("buy"))
         return
 
     if data == "buypay_verify":
@@ -14527,9 +15018,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[user_id] = {"step": "main"}
         await send_user_inline_with_style_fallback(
             query,
-            "✅ <b>Submitted.</b>\n\nSend payment screenshot to Live Support for confirmation.",
-            user_back_to_menu_keyboard(),
-            user_back_to_menu_keyboard(styled=False),
+            f"✅ <b>{t(user_id, 'submitted')}.</b>\n\n{t(user_id, 'send_screenshot')}",
+            user_back_to_menu_keyboard(user_id=user_id),
+            user_back_to_menu_keyboard(styled=False, user_id=user_id),
         )
         return
 
@@ -14537,9 +15028,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[user_id] = {"step": "main"}
         await send_user_inline_with_style_fallback(
             query,
-            "❌ <b>Order cancelled.</b>",
-            user_back_to_menu_keyboard(),
-            user_back_to_menu_keyboard(styled=False),
+            f"❌ <b>{t(user_id, 'cancel')}</b>",
+            user_back_to_menu_keyboard(user_id=user_id),
+            user_back_to_menu_keyboard(styled=False, user_id=user_id),
         )
         return
 
@@ -14548,9 +15039,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[user_id] = {"step": "deposit_payment_method", "amount": amount}
         await send_user_inline_with_style_fallback(
             query,
-            render_deposit_method_text(amount),
-            payment_method_keyboard("dep", styled=True),
-            payment_method_keyboard("dep", styled=False),
+            render_deposit_method_text(amount, user_id),
+            payment_method_keyboard("dep", styled=True, user_id=user_id),
+            payment_method_keyboard("dep", styled=False, user_id=user_id),
         )
         return
 
@@ -14558,9 +15049,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[user_id] = {"step": "deposit_custom_amount"}
         await send_user_inline_with_style_fallback(
             query,
-            "✏️ Send custom deposit amount.\nExample: 25",
-            deposit_custom_amount_keyboard(),
-            deposit_custom_amount_keyboard(styled=False),
+            f"✏️ {t(user_id, 'custom_amount')}\n{t(user_id, 'example')}: 25",
+            deposit_custom_amount_keyboard(user_id=user_id),
+            deposit_custom_amount_keyboard(styled=False, user_id=user_id),
         )
         return
 
@@ -14581,9 +15072,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await send_user_inline_with_style_fallback(
             query,
-            render_manual_payment_text(amount, "Binance ID", BINANCE_ID),
-            deposit_manual_keyboard(),
-            deposit_manual_keyboard(styled=False),
+            render_manual_payment_text(amount, "Binance ID", BINANCE_ID, user_id),
+            deposit_manual_keyboard(user_id=user_id),
+            deposit_manual_keyboard(styled=False, user_id=user_id),
         )
         return
 
@@ -14594,9 +15085,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await send_user_inline_with_style_fallback(
             query,
-            render_manual_payment_text(amount, "Bybit ID", BYBIT_ID),
-            deposit_manual_keyboard(),
-            deposit_manual_keyboard(styled=False),
+            render_manual_payment_text(amount, "Bybit ID", BYBIT_ID, user_id),
+            deposit_manual_keyboard(user_id=user_id),
+            deposit_manual_keyboard(styled=False, user_id=user_id),
         )
         return
 
@@ -14604,9 +15095,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[user_id]["step"] = "deposit_network"
         await send_user_inline_with_style_fallback(
             query,
-            "🌐 <b>SELECT NETWORK</b>\n\nChoose a cryptocurrency below:",
-            network_keyboard("dep", styled=True),
-            network_keyboard("dep", styled=False),
+            f"🌐 <b>{t(user_id, 'select_network').upper()}</b>\n\n{t(user_id, 'choose_crypto')}",
+            network_keyboard("dep", styled=True, user_id=user_id),
+            network_keyboard("dep", styled=False, user_id=user_id),
         )
         return
 
@@ -14618,9 +15109,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[user_id]["step"] = "deposit_payment_method"
         await send_user_inline_with_style_fallback(
             query,
-            render_deposit_method_text(amount),
-            payment_method_keyboard("dep", styled=True),
-            payment_method_keyboard("dep", styled=False),
+            render_deposit_method_text(amount, user_id),
+            payment_method_keyboard("dep", styled=True, user_id=user_id),
+            payment_method_keyboard("dep", styled=False, user_id=user_id),
         )
         return
 
@@ -14643,9 +15134,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print("Crypto deposit create error:", e)
             await send_user_inline_with_style_fallback(
                 query,
-                f"❌ <b>Could not create crypto payment.</b>\n\nPlease try again or contact live support: {SUPPORT_USERNAME}",
-                network_keyboard("dep", styled=True),
-                network_keyboard("dep", styled=False),
+                f"❌ <b>{t(user_id, 'something_wrong')}</b>\n\n{t(user_id, 'try_again')} {t(user_id, 'please_contact_support')}",
+                network_keyboard("dep", styled=True, user_id=user_id),
+                network_keyboard("dep", styled=False, user_id=user_id),
             )
             return
 
@@ -14659,8 +15150,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_user_inline_with_style_fallback(
             query,
             render_gateway_payment_text(np_record),
-            deposit_payment_request_keyboard(),
-            deposit_payment_request_keyboard(styled=False),
+            deposit_payment_request_keyboard(user_id=user_id),
+            deposit_payment_request_keyboard(styled=False, user_id=user_id),
         )
         return
 
@@ -14676,9 +15167,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[user_id]["step"] = "deposit_network"
         await send_user_inline_with_style_fallback(
             query,
-            "🌐 <b>SELECT NETWORK</b>\n\nChoose a cryptocurrency below:",
-            network_keyboard("dep", styled=True),
-            network_keyboard("dep", styled=False),
+            f"🌐 <b>{t(user_id, 'select_network').upper()}</b>\n\n{t(user_id, 'choose_crypto')}",
+            network_keyboard("dep", styled=True, user_id=user_id),
+            network_keyboard("dep", styled=False, user_id=user_id),
         )
         return
 
@@ -14686,9 +15177,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[user_id]["step"] = "deposit_network"
         await send_user_inline_with_style_fallback(
             query,
-            "🌐 <b>SELECT NETWORK</b>\n\nChoose a cryptocurrency below:",
-            network_keyboard("dep", styled=True),
-            network_keyboard("dep", styled=False),
+            f"🌐 <b>{t(user_id, 'select_network').upper()}</b>\n\n{t(user_id, 'choose_crypto')}",
+            network_keyboard("dep", styled=True, user_id=user_id),
+            network_keyboard("dep", styled=False, user_id=user_id),
         )
         return
 
@@ -14702,9 +15193,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[user_id] = {"step": "main"}
         await send_user_inline_with_style_fallback(
             query,
-            "✅ <b>Submitted.</b>\n\nSend payment screenshot to Live Support for confirmation.",
-            user_back_to_menu_keyboard(),
-            user_back_to_menu_keyboard(styled=False),
+            f"✅ <b>{t(user_id, 'submitted')}.</b>\n\n{t(user_id, 'send_screenshot')}",
+            user_back_to_menu_keyboard(user_id=user_id),
+            user_back_to_menu_keyboard(styled=False, user_id=user_id),
         )
         return
 
@@ -14712,9 +15203,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[user_id] = {"step": "main"}
         await send_user_inline_with_style_fallback(
             query,
-            "❌ <b>Deposit cancelled.</b>",
-            user_back_to_menu_keyboard(),
-            user_back_to_menu_keyboard(styled=False),
+            f"❌ <b>{t(user_id, 'cancel')}</b>",
+            user_back_to_menu_keyboard(user_id=user_id),
+            user_back_to_menu_keyboard(styled=False, user_id=user_id),
         )
         return
 
