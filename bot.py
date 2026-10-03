@@ -1359,7 +1359,12 @@ def _validate_buyer_api_config(provider_id: str = "default") -> dict:
     return provider
 
 
-def _buyer_api_get(path: str, params: dict = None, provider_id: str = "default"):
+def _buyer_api_get(
+    path: str,
+    params: dict = None,
+    provider_id: str = "default",
+    include_status: bool = False,
+):
     provider = _validate_buyer_api_config(provider_id)
     request_params = dict(params or {})
     headers = None
@@ -1404,6 +1409,8 @@ def _buyer_api_get(path: str, params: dict = None, provider_id: str = "default")
         raise BuyerAPIError("Seller API returned an unexpected response format.")
     if isinstance(payload, dict) and payload.get("success") is False:
         raise BuyerAPIError("Seller API reported that the request failed.")
+    if include_status:
+        return payload, response.status_code
     return payload
 
 
@@ -1615,25 +1622,77 @@ def _seller_api_nested_value(payload, *paths):
     return None
 
 
-def normalize_warzone_balance(payload) -> dict:
+def _safe_warzone_balance_diagnostic(payload, http_status=None) -> str:
+    def safe_keys(value) -> str:
+        if not isinstance(value, dict):
+            return "N/A"
+        keys = [str(key)[:64] for key in value.keys()]
+        return ", ".join(keys[:30]) if keys else "None"
+
+    lines = ["Balance field not found."]
+    if http_status is not None:
+        lines.append(f"HTTP status: {http_status}")
     if not isinstance(payload, dict):
-        raise BuyerAPIError("Seller API balance response is missing balance data.")
+        lines.append("Top-level JSON type: non-object")
+        return "\n".join(lines)
+
+    lines.append(f"Top-level keys: {safe_keys(payload)}")
+    data = payload.get("data")
+    if isinstance(data, dict):
+        lines.append(f"data keys: {safe_keys(data)}")
+    for label, value in (
+        ("user", payload.get("user")),
+        ("account", payload.get("account")),
+        ("data.user", data.get("user") if isinstance(data, dict) else None),
+        ("data.account", data.get("account") if isinstance(data, dict) else None),
+    ):
+        if isinstance(value, dict):
+            lines.append(f"{label} keys: {safe_keys(value)}")
+    lines.append("Please update the balance parser for one of these fields.")
+    return "\n".join(lines)
+
+
+def normalize_warzone_balance(payload, http_status=None) -> dict:
+    if not isinstance(payload, dict):
+        raise BuyerAPIError(
+            _safe_warzone_balance_diagnostic(payload, http_status),
+            "balance_unrecognized",
+        )
     balance = _seller_api_nested_value(
         payload,
-        "balance", "wallet", "credit", "credits",
-        "account.balance", "data.balance", "data.wallet", "data.credit",
-        "user.balance", "result.balance",
+        "balance", "wallet", "credit", "credits", "funds", "amount",
+        "available_balance", "availableBalance", "wallet_balance", "walletBalance",
+        "balance_usd", "balanceUSDT", "usdt_balance",
+        "data.balance", "data.wallet", "data.credit", "data.credits",
+        "data.available_balance", "data.availableBalance",
+        "data.wallet_balance", "data.walletBalance", "data.balance_usd",
+        "data.user.balance", "data.user.wallet",
+        "data.account.balance", "data.account.wallet",
+        "user.balance", "user.wallet", "account.balance", "account.wallet",
+        "result.balance", "result.wallet", "result.account.balance",
     )
     if isinstance(balance, dict):
-        balance = _seller_api_nested_value(balance, "balance", "amount", "value", "credit", "credits")
-    if balance in (None, ""):
-        raise BuyerAPIError("Seller API balance response is missing balance data.")
+        balance = _seller_api_nested_value(
+            balance,
+            "balance", "amount", "value", "credit", "credits", "funds",
+            "available_balance", "availableBalance", "wallet_balance", "walletBalance",
+            "balance_usd", "balanceUSDT", "usdt_balance",
+        )
+    parsed_balance = _buyer_api_numeric_value(balance)
+    if parsed_balance is None:
+        raise BuyerAPIError(
+            _safe_warzone_balance_diagnostic(payload, http_status),
+            "balance_unrecognized",
+        )
     currency = _seller_api_nested_value(
-        payload, "walletCurrency", "currency", "account.currency", "data.currency", "user.currency"
+        payload,
+        "walletCurrency", "currency", "account.currency", "data.currency",
+        "data.walletCurrency", "data.user.currency", "user.currency",
     ) or "USDT"
+    balance_text = f"{parsed_balance:g} {currency}"
     return {
-        "balance": balance,
-        "balanceText": f"{balance} {currency}",
+        "balance": parsed_balance,
+        "balanceText": balance_text,
         "walletCurrency": str(currency),
     }
 
@@ -1728,9 +1787,12 @@ def _normalize_warzone_delivery_items(response_payload: dict) -> list:
 
 def fetch_buyer_api_balance(provider_id: str = "default") -> dict:
     if seller_api_provider_type(provider_id) == "warzone_v1":
-        return normalize_warzone_balance(
-            _buyer_api_get(seller_api_balance_path(provider_id), provider_id=provider_id)
+        payload, http_status = _buyer_api_get(
+            seller_api_balance_path(provider_id),
+            provider_id=provider_id,
+            include_status=True,
         )
+        return normalize_warzone_balance(payload, http_status)
     payload = _buyer_api_data(_buyer_api_get(seller_api_balance_path(provider_id), provider_id=provider_id))
     if not isinstance(payload, dict):
         raise BuyerAPIError("Seller API balance response is missing balance data.")
@@ -3795,6 +3857,20 @@ def render_seller_api_provider_panel(provider_id: str = "default") -> str:
 
 def render_seller_api_debug_config(provider_id: str = "default") -> str:
     provider = get_seller_api_provider(provider_id)
+    if provider.get("type") == "warzone_v1":
+        return "\n".join([
+            "🔎 <b>SELLER API DEBUG CONFIG</b>",
+            "",
+            f"<b>Provider:</b> {escape_html(provider.get('name'))} (<code>{escape_html(provider_id)}</code>)",
+            "<b>Provider type:</b> <code>warzone_v1</code>",
+            f"<b>Enabled:</b> {'true' if provider.get('enabled') else 'false'}",
+            f"<b>Base URL:</b> <code>{escape_html(provider.get('base_url') or 'Not configured')}</code>",
+            f"<b>Masked key:</b> <code>{escape_html(provider.get('masked_key'))}</code>",
+            "<b>Balance endpoint:</b> <code>GET /api/v1/me</code>",
+            "<b>Products endpoint:</b> <code>GET /api/v1/products</code>",
+            "<b>Purchase endpoint:</b> <code>POST /api/v1/order</code>",
+            "<b>Auth:</b> <code>X-API-Key</code>",
+        ])
     api_key = str(provider.get("api_key") or "")
     lines = [
         "🔎 <b>SELLER API DEBUG CONFIG</b>",
@@ -11566,7 +11642,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 + render_buyer_api_balance(balance_data, "BALANCE ENDPOINT RESPONSE")
             )
         except BuyerAPIError as error:
-            text = f"❌ <b>SELLER API CONNECTION FAILED</b>\n\n{escape_html(str(error))}"
+            if error.category == "balance_unrecognized":
+                text = (
+                    "✅ <b>API reachable</b>\n"
+                    "⚠️ <b>Balance field not recognized</b>\n\n"
+                    f"{escape_html(str(error))}"
+                )
+            else:
+                text = f"❌ <b>SELLER API CONNECTION FAILED</b>\n\n{escape_html(str(error))}"
         except Exception as error:
             print(f"Seller API connection test failed: {type(error).__name__}")
             text = "❌ <b>SELLER API CONNECTION FAILED</b>\n\nUnexpected Seller API error."
@@ -11579,7 +11662,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             balance_data = await asyncio.to_thread(fetch_buyer_api_balance, provider_id)
             text = render_buyer_api_balance(balance_data)
         except BuyerAPIError as error:
-            text = f"❌ <b>API BALANCE CHECK FAILED</b>\n\n{escape_html(str(error))}"
+            if error.category == "balance_unrecognized":
+                text = f"⚠️ <b>BALANCE FIELD NOT RECOGNIZED</b>\n\n{escape_html(str(error))}"
+            else:
+                text = f"❌ <b>API BALANCE CHECK FAILED</b>\n\n{escape_html(str(error))}"
         except Exception as error:
             print(f"Seller API balance check failed: {type(error).__name__}")
             text = "❌ <b>API BALANCE CHECK FAILED</b>\n\nUnexpected Seller API error."
