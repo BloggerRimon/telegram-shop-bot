@@ -903,6 +903,7 @@ def update_user_profile(user_id: int, tg_user=None):
     profile["last_seen_at"] = now
     profile["user_id"] = user_id
     profile["wallet_balance"] = float(user_wallet.get(user_id, 0.0))
+    profile["language"] = normalize_user_language(profile.get("language")) if "normalize_user_language" in globals() else "en"
 
     if tg_user is not None:
         profile["username"] = getattr(tg_user, "username", None) or profile.get("username")
@@ -919,6 +920,196 @@ def get_user_profile(user_id: int) -> dict:
     profile = user_profiles.get(user_id, {})
     profile["wallet_balance"] = float(user_wallet.get(user_id, 0.0))
     return profile
+
+
+SUPPORTED_USER_LANGUAGES = {
+    "en": "🇬🇧 English",
+    "es": "🇪🇸 Español",
+    "ru": "🇷🇺 Русский",
+    "tr": "🇹🇷 Türkçe",
+    "fr": "🇫🇷 Français",
+    "de": "🇩🇪 Deutsch",
+}
+
+USER_TRANSLATIONS = {
+    "en": {
+        "welcome_back": "Welcome back, Supreme Leader", "premium_subscriptions": "Premium digital subscriptions",
+        "instant_delivery": "Instant delivery", "secure_orders": "Secure orders", "support": "Support",
+        "wallet": "Wallet", "choose_option": "Choose an option below", "shop": "Shop", "my_orders": "My Orders",
+        "top_up": "Top Up", "promo": "Promo", "refer_earn": "Refer & Earn", "profile": "Profile",
+        "transactions": "Transactions", "language": "Language", "back_to_menu": "Back to Menu", "back": "Back",
+        "cancel": "Cancel", "select_language": "🌐 <b>Select your language:</b>",
+        "language_updated": "✅ Language updated to English.", "store_menu": "STORE MENU",
+        "auto_delivery": "AUTO DELIVERY", "tap_product": "Tap any product below to continue.",
+        "product_details": "PRODUCT DETAILS", "name": "Name", "price": "Price", "stock": "Stock",
+        "delivery": "Delivery", "details": "Details", "buy_now": "Buy Now", "back_to_shop": "Back to Shop",
+        "notify": "Notify", "notify_me": "Notify Me", "notify_soon": "Notify Soon", "out_of_stock": "Out of stock",
+        "choose_quantity": "Choose quantity", "select_quantity": "SELECT QUANTITY", "custom_quantity": "Custom Quantity", "custom_amount": "Custom Amount",
+        "available": "Available", "pcs": "Pcs", "currently_unavailable": "Currently unavailable",
+        "instant_after_purchase": "Instant delivery after purchase", "default_details": "Please check product information before purchase.",
+        "current_balance": "Current Balance", "deposit": "Deposit", "new_wallet_balance": "New wallet balance",
+        "insufficient_balance": "Insufficient balance", "no_orders": "No orders found.",
+        "tap_order": "Tap an order below to view its full details.", "showing": "Showing", "page": "Page", "of": "of",
+        "order": "Order", "previous": "Previous", "next": "Next", "contact_support": "Contact Support",
+        "back_to_orders": "Back to Orders", "quantity": "Quantity", "total": "Total", "total_paid": "Total Paid",
+        "payment_received": "Payment received", "processing_purchase": "Processing your purchase...",
+        "activation_information": "ACTIVATION INFORMATION",
+        "enter_activation_email": "Please enter your email where you want this product activated.",
+        "each_email_slot": "Each email corresponds to 1 slot.", "purchase_completed": "Purchase completed successfully.",
+        "activation_processing": "Your activation request is being processed.", "choose_below": "Choose a quantity below.",
+    },
+    "es": {
+        "welcome_back": "Bienvenido de nuevo, Supreme Leader", "premium_subscriptions": "Suscripciones digitales premium",
+        "instant_delivery": "Entrega instantánea", "secure_orders": "Pedidos seguros", "support": "Soporte",
+        "wallet": "Cartera", "choose_option": "Elige una opción abajo", "shop": "Tienda", "my_orders": "Mis pedidos",
+        "top_up": "Recargar", "promo": "Promoción", "refer_earn": "Invita y gana", "profile": "Perfil",
+        "transactions": "Transacciones", "language": "Idioma", "back_to_menu": "Volver al menú", "back": "Atrás",
+        "cancel": "Cancelar", "select_language": "🌐 <b>Selecciona tu idioma:</b>",
+        "language_updated": "✅ Idioma cambiado a Español.", "store_menu": "MENÚ DE TIENDA", "auto_delivery": "ENTREGA AUTOMÁTICA",
+        "tap_product": "Toca un producto para continuar.", "product_details": "DETALLES DEL PRODUCTO", "name": "Nombre",
+        "price": "Precio", "stock": "Stock", "delivery": "Entrega", "details": "Detalles", "buy_now": "Comprar ahora",
+        "back_to_shop": "Volver a la tienda", "notify": "Avisar", "notify_me": "Avísame", "notify_soon": "Avisar pronto",
+        "out_of_stock": "Agotado", "choose_quantity": "Elegir cantidad", "select_quantity": "SELECCIONAR CANTIDAD",
+        "custom_quantity": "Cantidad personalizada", "custom_amount": "Importe personalizado", "available": "Disponible", "pcs": "Uds.",
+        "currently_unavailable": "No disponible actualmente", "instant_after_purchase": "Entrega instantánea después de la compra",
+        "default_details": "Revisa la información del producto antes de comprar.", "current_balance": "Saldo actual",
+        "deposit": "Depositar", "new_wallet_balance": "Nuevo saldo", "insufficient_balance": "Saldo insuficiente",
+        "no_orders": "No se encontraron pedidos.", "tap_order": "Toca un pedido para ver todos sus detalles.",
+        "showing": "Mostrando", "page": "Página", "of": "de", "order": "Pedido", "previous": "Anterior", "next": "Siguiente",
+        "contact_support": "Contactar soporte", "back_to_orders": "Volver a pedidos", "quantity": "Cantidad", "total": "Total",
+        "total_paid": "Total pagado", "payment_received": "Pago recibido", "processing_purchase": "Procesando tu compra...",
+        "activation_information": "INFORMACIÓN DE ACTIVACIÓN", "enter_activation_email": "Introduce el correo donde quieres activar este producto.",
+        "each_email_slot": "Cada correo corresponde a 1 espacio.", "purchase_completed": "Compra completada correctamente.",
+        "activation_processing": "Tu solicitud de activación está siendo procesada.", "choose_below": "Elige una cantidad abajo.",
+    },
+    "ru": {
+        "welcome_back": "С возвращением, Supreme Leader", "premium_subscriptions": "Премиальные цифровые подписки",
+        "instant_delivery": "Мгновенная доставка", "secure_orders": "Безопасные заказы", "support": "Поддержка",
+        "wallet": "Кошелёк", "choose_option": "Выберите вариант ниже", "shop": "Магазин", "my_orders": "Мои заказы",
+        "top_up": "Пополнить", "promo": "Промокод", "refer_earn": "Пригласить", "profile": "Профиль",
+        "transactions": "Транзакции", "language": "Язык", "back_to_menu": "В главное меню", "back": "Назад",
+        "cancel": "Отмена", "select_language": "🌐 <b>Выберите язык:</b>", "language_updated": "✅ Язык изменён на Русский.",
+        "store_menu": "МЕНЮ МАГАЗИНА", "auto_delivery": "АВТОДОСТАВКА", "tap_product": "Нажмите на товар, чтобы продолжить.",
+        "product_details": "ИНФОРМАЦИЯ О ТОВАРЕ", "name": "Название", "price": "Цена", "stock": "В наличии",
+        "delivery": "Доставка", "details": "Описание", "buy_now": "Купить", "back_to_shop": "Назад в магазин",
+        "notify": "Уведомить", "notify_me": "Уведомить меня", "notify_soon": "Сообщить позже", "out_of_stock": "Нет в наличии",
+        "choose_quantity": "Выбрать количество", "select_quantity": "ВЫБЕРИТЕ КОЛИЧЕСТВО", "custom_quantity": "Другое количество", "custom_amount": "Другая сумма",
+        "available": "Доступно", "pcs": "шт.", "currently_unavailable": "Сейчас недоступно",
+        "instant_after_purchase": "Мгновенная доставка после покупки", "default_details": "Проверьте информацию о товаре перед покупкой.",
+        "current_balance": "Текущий баланс", "deposit": "Пополнить", "new_wallet_balance": "Новый баланс",
+        "insufficient_balance": "Недостаточно средств", "no_orders": "Заказы не найдены.",
+        "tap_order": "Нажмите на заказ, чтобы посмотреть детали.", "showing": "Показано", "page": "Страница", "of": "из",
+        "order": "Заказ", "previous": "Назад", "next": "Далее", "contact_support": "Связаться с поддержкой",
+        "back_to_orders": "Назад к заказам", "quantity": "Количество", "total": "Итого", "total_paid": "Оплачено",
+        "payment_received": "Оплата получена", "processing_purchase": "Обрабатываем покупку...",
+        "activation_information": "ИНФОРМАЦИЯ ОБ АКТИВАЦИИ", "enter_activation_email": "Введите email для активации продукта.",
+        "each_email_slot": "Каждый email соответствует 1 месту.", "purchase_completed": "Покупка успешно завершена.",
+        "activation_processing": "Ваш запрос на активацию обрабатывается.", "choose_below": "Выберите количество ниже.",
+    },
+    "tr": {
+        "welcome_back": "Tekrar hoş geldiniz, Supreme Leader", "premium_subscriptions": "Premium dijital abonelikler",
+        "instant_delivery": "Anında teslimat", "secure_orders": "Güvenli siparişler", "support": "Destek", "wallet": "Cüzdan",
+        "choose_option": "Aşağıdan bir seçenek seçin", "shop": "Mağaza", "my_orders": "Siparişlerim", "top_up": "Bakiye yükle",
+        "promo": "Promosyon", "refer_earn": "Davet et ve kazan", "profile": "Profil", "transactions": "İşlemler",
+        "language": "Dil", "back_to_menu": "Ana menüye dön", "back": "Geri", "cancel": "İptal",
+        "select_language": "🌐 <b>Dilinizi seçin:</b>", "language_updated": "✅ Dil Türkçe olarak güncellendi.",
+        "store_menu": "MAĞAZA MENÜSÜ", "auto_delivery": "OTOMATİK TESLİMAT", "tap_product": "Devam etmek için bir ürüne dokunun.",
+        "product_details": "ÜRÜN DETAYLARI", "name": "Ad", "price": "Fiyat", "stock": "Stok", "delivery": "Teslimat",
+        "details": "Detaylar", "buy_now": "Şimdi Al", "back_to_shop": "Mağazaya dön", "notify": "Bildirim",
+        "notify_me": "Bana bildir", "notify_soon": "Yakında bildir", "out_of_stock": "Stokta yok",
+        "choose_quantity": "Miktar seç", "select_quantity": "MİKTAR SEÇ", "custom_quantity": "Özel miktar", "custom_amount": "Özel tutar", "available": "Mevcut",
+        "pcs": "Adet", "currently_unavailable": "Şu anda mevcut değil", "instant_after_purchase": "Satın alımdan sonra anında teslimat",
+        "default_details": "Satın almadan önce ürün bilgilerini kontrol edin.", "current_balance": "Mevcut bakiye", "deposit": "Para yatır",
+        "new_wallet_balance": "Yeni cüzdan bakiyesi", "insufficient_balance": "Yetersiz bakiye", "no_orders": "Sipariş bulunamadı.",
+        "tap_order": "Tüm detayları görmek için bir siparişe dokunun.", "showing": "Gösterilen", "page": "Sayfa", "of": "/",
+        "order": "Sipariş", "previous": "Önceki", "next": "Sonraki", "contact_support": "Destekle iletişim",
+        "back_to_orders": "Siparişlere dön", "quantity": "Miktar", "total": "Toplam", "total_paid": "Ödenen toplam",
+        "payment_received": "Ödeme alındı", "processing_purchase": "Satın alımınız işleniyor...",
+        "activation_information": "AKTİVASYON BİLGİLERİ", "enter_activation_email": "Ürünün etkinleştirilmesini istediğiniz e-postayı girin.",
+        "each_email_slot": "Her e-posta 1 slota karşılık gelir.", "purchase_completed": "Satın alma başarıyla tamamlandı.",
+        "activation_processing": "Aktivasyon talebiniz işleniyor.", "choose_below": "Aşağıdan bir miktar seçin.",
+    },
+    "fr": {
+        "welcome_back": "Bon retour, Supreme Leader", "premium_subscriptions": "Abonnements numériques premium",
+        "instant_delivery": "Livraison instantanée", "secure_orders": "Commandes sécurisées", "support": "Assistance",
+        "wallet": "Portefeuille", "choose_option": "Choisissez une option ci-dessous", "shop": "Boutique", "my_orders": "Mes commandes",
+        "top_up": "Recharger", "promo": "Promo", "refer_earn": "Parrainer et gagner", "profile": "Profil",
+        "transactions": "Transactions", "language": "Langue", "back_to_menu": "Retour au menu", "back": "Retour", "cancel": "Annuler",
+        "select_language": "🌐 <b>Choisissez votre langue :</b>", "language_updated": "✅ Langue changée en Français.",
+        "store_menu": "MENU DE LA BOUTIQUE", "auto_delivery": "LIVRAISON AUTOMATIQUE", "tap_product": "Touchez un produit pour continuer.",
+        "product_details": "DÉTAILS DU PRODUIT", "name": "Nom", "price": "Prix", "stock": "Stock", "delivery": "Livraison",
+        "details": "Détails", "buy_now": "Acheter", "back_to_shop": "Retour à la boutique", "notify": "Alerter",
+        "notify_me": "Me prévenir", "notify_soon": "Prévenir bientôt", "out_of_stock": "Rupture de stock",
+        "choose_quantity": "Choisir la quantité", "select_quantity": "CHOISIR LA QUANTITÉ", "custom_quantity": "Quantité personnalisée", "custom_amount": "Montant personnalisé",
+        "available": "Disponible", "pcs": "Pcs", "currently_unavailable": "Indisponible actuellement",
+        "instant_after_purchase": "Livraison instantanée après achat", "default_details": "Vérifiez les informations du produit avant l'achat.",
+        "current_balance": "Solde actuel", "deposit": "Dépôt", "new_wallet_balance": "Nouveau solde",
+        "insufficient_balance": "Solde insuffisant", "no_orders": "Aucune commande trouvée.",
+        "tap_order": "Touchez une commande pour voir tous ses détails.", "showing": "Affichage", "page": "Page", "of": "sur",
+        "order": "Commande", "previous": "Précédent", "next": "Suivant", "contact_support": "Contacter l'assistance",
+        "back_to_orders": "Retour aux commandes", "quantity": "Quantité", "total": "Total", "total_paid": "Total payé",
+        "payment_received": "Paiement reçu", "processing_purchase": "Traitement de votre achat...",
+        "activation_information": "INFORMATIONS D'ACTIVATION", "enter_activation_email": "Saisissez l'e-mail où vous souhaitez activer ce produit.",
+        "each_email_slot": "Chaque e-mail correspond à 1 place.", "purchase_completed": "Achat effectué avec succès.",
+        "activation_processing": "Votre demande d'activation est en cours de traitement.", "choose_below": "Choisissez une quantité ci-dessous.",
+    },
+    "de": {
+        "welcome_back": "Willkommen zurück, Supreme Leader", "premium_subscriptions": "Premium-Digitalabonnements",
+        "instant_delivery": "Sofortige Lieferung", "secure_orders": "Sichere Bestellungen", "support": "Support",
+        "wallet": "Wallet", "choose_option": "Wähle unten eine Option", "shop": "Shop", "my_orders": "Meine Bestellungen",
+        "top_up": "Aufladen", "promo": "Promo", "refer_earn": "Empfehlen & verdienen", "profile": "Profil",
+        "transactions": "Transaktionen", "language": "Sprache", "back_to_menu": "Zurück zum Menü", "back": "Zurück", "cancel": "Abbrechen",
+        "select_language": "🌐 <b>Wähle deine Sprache:</b>", "language_updated": "✅ Sprache auf Deutsch geändert.",
+        "store_menu": "SHOP-MENÜ", "auto_delivery": "AUTOMATISCHE LIEFERUNG", "tap_product": "Tippe auf ein Produkt, um fortzufahren.",
+        "product_details": "PRODUKTDETAILS", "name": "Name", "price": "Preis", "stock": "Bestand", "delivery": "Lieferung",
+        "details": "Details", "buy_now": "Jetzt kaufen", "back_to_shop": "Zurück zum Shop", "notify": "Benachrichtigen",
+        "notify_me": "Benachrichtige mich", "notify_soon": "Später benachrichtigen", "out_of_stock": "Nicht auf Lager",
+        "choose_quantity": "Menge wählen", "select_quantity": "MENGE WÄHLEN", "custom_quantity": "Benutzerdefinierte Menge", "custom_amount": "Benutzerdefinierter Betrag",
+        "available": "Verfügbar", "pcs": "Stk.", "currently_unavailable": "Derzeit nicht verfügbar",
+        "instant_after_purchase": "Sofortige Lieferung nach dem Kauf", "default_details": "Bitte prüfe vor dem Kauf die Produktinformationen.",
+        "current_balance": "Aktueller Kontostand", "deposit": "Einzahlen", "new_wallet_balance": "Neuer Wallet-Kontostand",
+        "insufficient_balance": "Unzureichendes Guthaben", "no_orders": "Keine Bestellungen gefunden.",
+        "tap_order": "Tippe auf eine Bestellung, um alle Details anzuzeigen.", "showing": "Anzeige", "page": "Seite", "of": "von",
+        "order": "Bestellung", "previous": "Zurück", "next": "Weiter", "contact_support": "Support kontaktieren",
+        "back_to_orders": "Zurück zu Bestellungen", "quantity": "Menge", "total": "Gesamt", "total_paid": "Gesamt bezahlt",
+        "payment_received": "Zahlung erhalten", "processing_purchase": "Dein Kauf wird verarbeitet...",
+        "activation_information": "AKTIVIERUNGSINFORMATIONEN", "enter_activation_email": "Gib die E-Mail ein, für die das Produkt aktiviert werden soll.",
+        "each_email_slot": "Jede E-Mail entspricht 1 Platz.", "purchase_completed": "Kauf erfolgreich abgeschlossen.",
+        "activation_processing": "Deine Aktivierungsanfrage wird bearbeitet.", "choose_below": "Wähle unten eine Menge.",
+    },
+}
+
+
+def normalize_user_language(language) -> str:
+    language = str(language or "en").strip().lower()
+    return language if language in SUPPORTED_USER_LANGUAGES else "en"
+
+
+def get_user_language(user_id: int) -> str:
+    profile = user_profiles.get(user_id, {}) if user_id is not None else {}
+    return normalize_user_language(profile.get("language"))
+
+
+def set_user_language(user_id: int, language: str) -> str:
+    language = normalize_user_language(language)
+    profile = user_profiles.get(user_id, {})
+    profile["language"] = language
+    user_profiles[user_id] = profile
+    update_user_profile(user_id)
+    return language
+
+
+def tr(language: str, key: str, **kwargs) -> str:
+    language = normalize_user_language(language)
+    template = USER_TRANSLATIONS.get(language, {}).get(key, USER_TRANSLATIONS["en"].get(key, key))
+    try:
+        return template.format(**kwargs)
+    except (KeyError, ValueError):
+        return USER_TRANSLATIONS["en"].get(key, key)
+
+
+def t(user_id: int, key: str, **kwargs) -> str:
+    return tr(get_user_language(user_id), key, **kwargs)
 
 
 def format_user_link(user_id: int) -> str:
@@ -3916,22 +4107,23 @@ def make_user_dashboard_button(text: str, callback_data: str) -> InlineKeyboardB
 
 
 DASHBOARD_BUTTONS = {
-    "shop": {"text": "Shop", "emoji": "🛍", "callback": "user_dashboard_shop", "style": "primary"},
-    "orders": {"text": "My Orders", "emoji": "📦", "callback": "user_dashboard_orders", "style": "primary"},
-    "wallet": {"text": "Wallet", "emoji": "💰", "callback": "user_dashboard_wallet", "style": "success"},
-    "topup": {"text": "Top Up", "emoji": "💳", "callback": "user_dashboard_topup", "style": "success"},
-    "promo": {"text": "Promo", "emoji": "🎁", "callback": "user_dashboard_promo", "style": "success"},
-    "refer": {"text": "Refer & Earn", "emoji": "👥", "callback": "user_dashboard_refer", "style": "success"},
-    "profile": {"text": "Profile", "emoji": "🆔", "callback": "user_dashboard_profile", "style": "primary"},
-    "transactions": {"text": "Transactions", "emoji": "🧾", "callback": "user_dashboard_transactions", "style": "primary"},
-    "support": {"text": "Support", "emoji": "🎧", "callback": "user_dashboard_support", "style": "danger"},
+    "shop": {"text": "Shop", "text_key": "shop", "emoji": "🛍", "callback": "user_dashboard_shop", "style": "primary"},
+    "orders": {"text": "My Orders", "text_key": "my_orders", "emoji": "📦", "callback": "user_dashboard_orders", "style": "primary"},
+    "wallet": {"text": "Wallet", "text_key": "wallet", "emoji": "💰", "callback": "user_dashboard_wallet", "style": "success"},
+    "topup": {"text": "Top Up", "text_key": "top_up", "emoji": "💳", "callback": "user_dashboard_topup", "style": "success"},
+    "promo": {"text": "Promo", "text_key": "promo", "emoji": "🎁", "callback": "user_dashboard_promo", "style": "success"},
+    "refer": {"text": "Refer & Earn", "text_key": "refer_earn", "emoji": "👥", "callback": "user_dashboard_refer", "style": "success"},
+    "profile": {"text": "Profile", "text_key": "profile", "emoji": "🆔", "callback": "user_dashboard_profile", "style": "primary"},
+    "transactions": {"text": "Transactions", "text_key": "transactions", "emoji": "🧾", "callback": "user_dashboard_transactions", "style": "primary"},
+    "support": {"text": "Support", "text_key": "support", "emoji": "🎧", "callback": "user_dashboard_support", "style": "danger"},
+    "language": {"text": "Language", "text_key": "language", "emoji": "🌐", "callback": "user_dashboard_language", "style": "primary"},
 }
 DASHBOARD_BUTTON_LAYOUT = (
     ("shop", "orders"),
     ("wallet", "topup"),
     ("promo", "refer"),
     ("profile", "transactions"),
-    ("support",),
+    ("support", "language"),
 )
 
 
@@ -3965,14 +4157,15 @@ def make_styled_inline_button(
     return InlineKeyboardButton(text, **button_kwargs)
 
 
-def user_dashboard_keyboard(styled: bool = True, custom_icons: bool = True) -> InlineKeyboardMarkup:
+def user_dashboard_keyboard(styled: bool = True, custom_icons: bool = True, user_id: int = None) -> InlineKeyboardMarkup:
     rows = []
     for row_keys in DASHBOARD_BUTTON_LAYOUT:
         row = []
         for key in row_keys:
             config = DASHBOARD_BUTTONS[key]
             custom_emoji_id = dashboard_custom_emoji_ids.get(key, "") if custom_icons else ""
-            button_text = config["text"] if custom_emoji_id else f"{config['emoji']} {config['text']}"
+            translated_text = t(user_id, config.get("text_key", "")) if user_id is not None else config["text"]
+            button_text = translated_text if custom_emoji_id else f"{config['emoji']} {translated_text}"
             row.append(make_styled_inline_button(
                 button_text,
                 callback_data=config["callback"],
@@ -3983,20 +4176,32 @@ def user_dashboard_keyboard(styled: bool = True, custom_icons: bool = True) -> I
     return InlineKeyboardMarkup(rows)
 
 
-def user_dashboard_back_keyboard() -> InlineKeyboardMarkup:
+def user_dashboard_back_keyboard(user_id: int = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [make_user_dashboard_button("⬅️ Back to Menu", "user_dashboard")],
+        [make_user_dashboard_button(f"⬅️ {t(user_id, 'back_to_menu')}", "user_dashboard")],
     ])
 
 
-def user_back_to_menu_keyboard(styled: bool = True) -> InlineKeyboardMarkup:
+def user_back_to_menu_keyboard(styled: bool = True, user_id: int = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
         make_styled_inline_button(
-            "🏠 Back to Menu",
+            f"🏠 {t(user_id, 'back_to_menu')}",
             callback_data="user_back_to_dashboard",
             style="danger" if styled else None,
         )
     ]])
+
+
+def user_language_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    rows = []
+    language_items = list(SUPPORTED_USER_LANGUAGES.items())
+    for index in range(0, len(language_items), 2):
+        rows.append([
+            InlineKeyboardButton(label, callback_data=f"user_language_{code}")
+            for code, label in language_items[index:index + 2]
+        ])
+    rows.append([InlineKeyboardButton(f"⬅️ {t(user_id, 'back_to_menu')}", callback_data="user_dashboard")])
+    return InlineKeyboardMarkup(rows)
 
 def admin_menu() -> ReplyKeyboardMarkup:
     keyboard = [
@@ -5580,7 +5785,7 @@ def dashboard_emoji_input_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
-def deposit_amount_keyboard(back_callback: str = "user_back_to_dashboard", styled: bool = True) -> InlineKeyboardMarkup:
+def deposit_amount_keyboard(back_callback: str = "user_back_to_dashboard", styled: bool = True, user_id: int = None) -> InlineKeyboardMarkup:
     amount_style = "primary" if styled else None
     rows = [
         [
@@ -5591,9 +5796,9 @@ def deposit_amount_keyboard(back_callback: str = "user_back_to_dashboard", style
             make_styled_inline_button("$15", callback_data="dep_amt_15", style=amount_style),
             make_styled_inline_button("$20", callback_data="dep_amt_20", style=amount_style),
         ],
-        [make_styled_inline_button("✏️ Custom Amount", callback_data="dep_custom", style="success" if styled else None)],
+        [make_styled_inline_button(f"✏️ {t(user_id, 'custom_amount')}", callback_data="dep_custom", style="success" if styled else None)],
         [make_styled_inline_button(
-            "🏠 Back to Menu" if back_callback in {"user_dashboard", "user_back_to_dashboard"} else "⬅️ Back",
+            f"🏠 {t(user_id, 'back_to_menu')}" if back_callback in {"user_dashboard", "user_back_to_dashboard"} else f"⬅️ {t(user_id, 'back')}",
             callback_data=back_callback,
             style=("danger" if back_callback in {"user_dashboard", "user_back_to_dashboard"} else "primary") if styled else None,
         )],
@@ -5675,7 +5880,7 @@ def deposit_payment_request_keyboard(styled: bool = True) -> InlineKeyboardMarku
     ])
 
 
-def buy_qty_keyboard(product_id: str, styled: bool = True) -> InlineKeyboardMarkup:
+def buy_qty_keyboard(product_id: str, styled: bool = True, user_id: int = None) -> InlineKeyboardMarkup:
     action_style = "primary" if styled else None
     back_style = "primary" if styled else None
     menu_style = "danger" if styled else None
@@ -5695,7 +5900,7 @@ def buy_qty_keyboard(product_id: str, styled: bool = True) -> InlineKeyboardMark
             for quantity in quick_quantities
         ]
         rows = [quick_buttons[index:index + 2] for index in range(0, len(quick_buttons), 2)]
-        rows.append([make_styled_inline_button("✏️ Custom Qty", callback_data=f"buy_custom_{product_id}", style=action_style)])
+        rows.append([make_styled_inline_button(f"✏️ {t(user_id, 'custom_quantity')}", callback_data=f"buy_custom_{product_id}", style=action_style)])
     else:
         rows = [
             [
@@ -5704,38 +5909,38 @@ def buy_qty_keyboard(product_id: str, styled: bool = True) -> InlineKeyboardMark
             ],
             [
                 make_styled_inline_button("🛒 Buy 10x", callback_data=f"buy_qty_{product_id}_10", style=action_style),
-                make_styled_inline_button("✏️ Custom Qty", callback_data=f"buy_custom_{product_id}", style=action_style),
+                make_styled_inline_button(f"✏️ {t(user_id, 'custom_quantity')}", callback_data=f"buy_custom_{product_id}", style=action_style),
             ],
         ]
     rows.extend([
-        [make_styled_inline_button("⬅️ Back to Shop", callback_data="back_shop_cards", style=back_style)],
-        [make_styled_inline_button("🏠 Back to Menu", callback_data="user_back_to_dashboard", style=menu_style)],
+        [make_styled_inline_button(f"⬅️ {t(user_id, 'back_to_shop')}", callback_data="back_shop_cards", style=back_style)],
+        [make_styled_inline_button(f"🏠 {t(user_id, 'back_to_menu')}", callback_data="user_back_to_dashboard", style=menu_style)],
     ])
     return InlineKeyboardMarkup(rows)
 
 
-def shop_return_keyboard(styled: bool = True) -> InlineKeyboardMarkup:
+def shop_return_keyboard(styled: bool = True, user_id: int = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [make_styled_inline_button(
-            "⬅️ Back to Shop",
+            f"⬅️ {t(user_id, 'back_to_shop')}",
             callback_data="back_shop_cards",
             style="primary" if styled else None,
         )],
         [make_styled_inline_button(
-            "🏠 Back to Menu",
+            f"🏠 {t(user_id, 'back_to_menu')}",
             callback_data="user_back_to_dashboard",
             style="danger" if styled else None,
         )],
     ])
 
 
-def out_of_stock_product_keyboard(product_id: str, styled: bool = True) -> InlineKeyboardMarkup:
+def out_of_stock_product_keyboard(product_id: str, styled: bool = True, user_id: int = None) -> InlineKeyboardMarkup:
     rows = [[make_styled_inline_button(
-        "🔔 Notify Me",
+        f"🔔 {t(user_id, 'notify_me')}",
         callback_data=f"shop_notify_{product_id}",
         style="danger" if styled else None,
     )]]
-    rows.extend(shop_return_keyboard(styled=styled).inline_keyboard)
+    rows.extend(shop_return_keyboard(styled=styled, user_id=user_id).inline_keyboard)
     return InlineKeyboardMarkup(rows)
 
 
@@ -6231,7 +6436,7 @@ async def send_user_dashboard(message, menu_notice: str = None):
         try:
             await message.reply_text(
                 render_home_text(user_id, custom_icons=header_icons),
-                reply_markup=user_dashboard_keyboard(styled=styled, custom_icons=button_icons),
+                reply_markup=user_dashboard_keyboard(styled=styled, custom_icons=button_icons, user_id=user_id),
                 parse_mode="HTML",
             )
             return
@@ -6357,20 +6562,20 @@ def dashboard_header_icon_html(key: str, custom_icons: bool = True) -> str:
 def render_home_text(user_id: int, custom_icons: bool = True) -> str:
     wallet_balance = float(user_wallet.get(user_id, 0.0))
     return (
-        f"{dashboard_header_icon_html('welcome', custom_icons)} <b>Welcome back, Supreme Leader</b>\n\n"
-        f"{dashboard_header_icon_html('premium', custom_icons)} Premium digital subscriptions\n"
-        f"{dashboard_header_icon_html('delivery', custom_icons)} Instant delivery • "
-        f"{dashboard_header_icon_html('secure', custom_icons)} Secure orders • "
-        f"{dashboard_header_icon_html('support', custom_icons)} Support\n\n"
-        f"{dashboard_header_icon_html('wallet', custom_icons)} <b>Wallet:</b> {wallet_balance:.2f} USDT\n\n"
-        f"Choose an option below {dashboard_header_icon_html('choose', custom_icons)}"
+        f"{dashboard_header_icon_html('welcome', custom_icons)} <b>{t(user_id, 'welcome_back')}</b>\n\n"
+        f"{dashboard_header_icon_html('premium', custom_icons)} {t(user_id, 'premium_subscriptions')}\n"
+        f"{dashboard_header_icon_html('delivery', custom_icons)} {t(user_id, 'instant_delivery')} • "
+        f"{dashboard_header_icon_html('secure', custom_icons)} {t(user_id, 'secure_orders')} • "
+        f"{dashboard_header_icon_html('support', custom_icons)} {t(user_id, 'support')}\n\n"
+        f"{dashboard_header_icon_html('wallet', custom_icons)} <b>{t(user_id, 'wallet')}:</b> {wallet_balance:.2f} USDT\n\n"
+        f"{t(user_id, 'choose_option')} {dashboard_header_icon_html('choose', custom_icons)}"
     )
 
 
 def render_wallet_text(user_id: int) -> str:
     return (
-        "💰 <b>WALLET</b>\n\n"
-        f"<b>Current Balance:</b> {format_money(user_wallet[user_id])}"
+        f"💰 <b>{t(user_id, 'wallet').upper()}</b>\n\n"
+        f"<b>{t(user_id, 'current_balance')}:</b> {format_money(user_wallet[user_id])}"
     )
 
 
@@ -6506,14 +6711,14 @@ def render_user_orders_page(user_id: int, page: int = 0):
     total_pages = max(1, (total_orders + USER_ORDERS_PAGE_SIZE - 1) // USER_ORDERS_PAGE_SIZE)
     page = max(0, min(page, total_pages - 1))
     if not orders:
-        return "📦 <b>MY ORDERS</b>\n\nNo orders found.", page, total_pages
+        return f"📦 <b>{t(user_id, 'my_orders').upper()}</b>\n\n{t(user_id, 'no_orders')}", page, total_pages
     start = page * USER_ORDERS_PAGE_SIZE
     end = min(start + USER_ORDERS_PAGE_SIZE, total_orders)
     text = (
-        "📦 <b>MY ORDERS</b>\n\n"
-        "Tap an order below to view its full details.\n\n"
-        f"Showing <b>{start + 1}-{end}</b> of <b>{total_orders}</b>\n"
-        f"Page <b>{page + 1}</b> of <b>{total_pages}</b>"
+        f"📦 <b>{t(user_id, 'my_orders').upper()}</b>\n\n"
+        f"{t(user_id, 'tap_order')}\n\n"
+        f"{t(user_id, 'showing')} <b>{start + 1}-{end}</b> {t(user_id, 'of')} <b>{total_orders}</b>\n"
+        f"{t(user_id, 'page')} <b>{page + 1}</b> {t(user_id, 'of')} <b>{total_pages}</b>"
     )
     return text, page, total_pages
 
@@ -6531,7 +6736,7 @@ def user_orders_keyboard(user_id: int, page: int = 0) -> InlineKeyboardMarkup:
         if len(product_name) > 18:
             product_name = product_name[:17] + "…"
         label = (
-            f"Order #{order_id if order_id not in (None, '') else 'N/A'} • "
+            f"{t(user_id, 'order')} #{order_id if order_id not in (None, '') else 'N/A'} • "
             f"{product_name} • {_order_total_text(order)} • {format_order_status(order.get('status'))}"
         )
         if len(label) > 64:
@@ -6545,12 +6750,12 @@ def user_orders_keyboard(user_id: int, page: int = 0) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(label, callback_data=callback_data)])
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"user_orders_page_{page - 1}"))
+        nav.append(InlineKeyboardButton(f"⬅️ {t(user_id, 'previous')}", callback_data=f"user_orders_page_{page - 1}"))
     if page + 1 < total_pages:
-        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"user_orders_page_{page + 1}"))
+        nav.append(InlineKeyboardButton(f"{t(user_id, 'next')} ➡️", callback_data=f"user_orders_page_{page + 1}"))
     if nav:
         rows.append(nav)
-    rows.append([InlineKeyboardButton("🏠 Back to Menu", callback_data="user_back_to_dashboard")])
+    rows.append([InlineKeyboardButton(f"🏠 {t(user_id, 'back_to_menu')}", callback_data="user_back_to_dashboard")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -6612,12 +6817,12 @@ def render_user_order_details(user_id: int, order_id) -> str:
     )
 
 
-def user_order_details_keyboard(page: int = 0) -> InlineKeyboardMarkup:
+def user_order_details_keyboard(page: int = 0, user_id: int = None) -> InlineKeyboardMarkup:
     page = max(0, page)
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💬 Contact Support", url=SUPPORT_URL)],
-        [InlineKeyboardButton("⬅️ Back to Orders", callback_data=f"user_orders_page_{page}")],
-        [InlineKeyboardButton("🏠 Back to Menu", callback_data="user_back_to_dashboard")],
+        [InlineKeyboardButton(f"💬 {t(user_id, 'contact_support')}", url=SUPPORT_URL)],
+        [InlineKeyboardButton(f"⬅️ {t(user_id, 'back_to_orders')}", callback_data=f"user_orders_page_{page}")],
+        [InlineKeyboardButton(f"🏠 {t(user_id, 'back_to_menu')}", callback_data="user_back_to_dashboard")],
     ])
 
 
@@ -6658,9 +6863,9 @@ def render_refer_text(user_id: int) -> str:
     )
 
 
-def render_support_text() -> str:
+def render_support_text(user_id: int = None) -> str:
     return (
-        "💬 <b>SUPPORT</b>\n\n"
+        f"💬 <b>{t(user_id, 'support').upper()}</b>\n\n"
         f"Contact admin: {SUPPORT_USERNAME}\n"
         f"Support link: {SUPPORT_URL}\n\n"
         "For payment, order, warranty, or delivery issues, contact support with your User ID and order details."
@@ -6737,15 +6942,15 @@ def render_product_details(product_id: str, user_id: int = None) -> str:
     bulk_offers = render_bulk_pricing_offers(product)
     bulk_section = f"{bulk_offers}\n\n" if bulk_offers else ""
     return (
-        "📦 <b>PRODUCT DETAILS</b>\n\n"
+        f"📦 <b>{t(user_id, 'product_details')}</b>\n\n"
         f"<b>Icon:</b> {icon}\n"
-        f"<b>Name:</b> {product['name']}\n"
+        f"<b>{t(user_id, 'name')}:</b> {product['name']}\n"
         f"{duration_line}"
-        f"<b>Price:</b> {format_product_price_for_user(product_id, user_id)}\n"
-        f"<b>Stock:</b> {stock} pcs\n\n"
+        f"<b>{t(user_id, 'price')}:</b> {format_product_price_for_user(product_id, user_id)}\n"
+        f"<b>{t(user_id, 'stock')}:</b> {stock} {t(user_id, 'pcs')}\n\n"
         f"{detail_lines}\n\n"
         f"{bulk_section}"
-        "<b>Select quantity below:</b>"
+        f"<b>{t(user_id, 'choose_quantity')}:</b>"
     )
 
 def render_buy_summary(product_id: str, qty: int, wallet_balance: float, user_id: int = None) -> str:
@@ -6779,8 +6984,8 @@ def render_buy_summary(product_id: str, qty: int, wallet_balance: float, user_id
     )
 
 
-def render_deposit_text() -> str:
-    return "💳 <b>CRYPTO DEPOSIT</b>\n\n<b>Please select an amount below:</b>"
+def render_deposit_text(user_id: int = None) -> str:
+    return f"💳 <b>{t(user_id, 'deposit').upper()}</b>\n\n<b>{t(user_id, 'choose_quantity')}:</b>"
 
 
 def render_deposit_method_text(amount: float) -> str:
@@ -7617,11 +7822,11 @@ def _short_button_text(text: str, max_len: int = 60) -> str:
     return text if len(text) <= max_len else text[: max_len - 1] + "…"
 
 
-def render_shop_menu_text() -> str:
+def render_shop_menu_text(user_id: int = None) -> str:
     base = (
-        "🛒🛒 <b>STORE MENU</b>\n\n"
-        "──── ⚡ <b>AUTO DELIVERY</b> ────\n"
-        "Tap any product below to continue."
+        f"🛒🛒 <b>{t(user_id, 'store_menu')}</b>\n\n"
+        f"──── ⚡ <b>{t(user_id, 'auto_delivery')}</b> ────\n"
+        f"{t(user_id, 'tap_product')}"
     )
     flash_banner = render_flash_deal_banner() if "render_flash_deal_banner" in globals() else ""
     return f"{flash_banner}\n\n{base}" if flash_banner else base
@@ -7676,7 +7881,7 @@ def api_shop_mapping_price(mapping: dict):
     return float(price) if price is not None and price > 0 else None
 
 
-def api_shop_mapping_details_html(mapping: dict) -> str:
+def api_shop_mapping_details_html(mapping: dict, user_id: int = None) -> str:
     plain_details = str((mapping or {}).get("details") or "").strip()
     rich_details = (mapping or {}).get("details_rich")
     if isinstance(rich_details, dict):
@@ -7687,10 +7892,10 @@ def api_shop_mapping_details_html(mapping: dict) -> str:
                 return rendered
     if plain_details:
         return escape_html(plain_details)
-    return "Please check product information before purchase."
+    return t(user_id, "default_details")
 
 
-def api_shop_product_row(mapping: dict, styled: bool = True) -> list:
+def api_shop_product_row(mapping: dict, styled: bool = True, user_id: int = None) -> list:
     if not is_api_shop_mapping_visible(mapping):
         return []
     api_product_id = str(mapping.get("api_product_id") or "").strip()
@@ -7699,12 +7904,12 @@ def api_shop_product_row(mapping: dict, styled: bool = True) -> list:
     stock = _buyer_api_numeric_value(mapping.get("last_stock"))
     out_of_stock = stock is not None and stock <= 0
     if out_of_stock:
-        stock_label = "🔔 Notify Soon"
+        stock_label = f"🔔 {t(user_id, 'notify_soon')}"
     elif stock is None:
-        stock_label = "📦 Stock"
+        stock_label = f"📦 {t(user_id, 'stock')}"
     else:
         stock_text = str(int(stock)) if float(stock).is_integer() else str(stock)
-        stock_label = f"📦 {stock_text} Pcs"
+        stock_label = f"📦 {stock_text} {t(user_id, 'pcs')}"
     suffix = f" - {format_money(selling_price)} | {stock_label}"
     label_prefix = product_label_prefix(mapping)
     prefix_length = len(label_prefix) + 1 if label_prefix else 0
@@ -7736,40 +7941,40 @@ def ordered_category_product_rows(category_id: str, user_id: int = None, styled:
         elif item.startswith("api_product:"):
             mapping = api_product_mapping_by_id(item.split(":", 1)[1])
             if mapping and mapping.get("category_id") == category_id:
-                rows.extend(api_shop_product_row(mapping, styled=styled))
+                rows.extend(api_shop_product_row(mapping, styled=styled, user_id=user_id))
     return rows
 
 
-def render_api_shop_product_details(mapping: dict) -> str:
+def render_api_shop_product_details(mapping: dict, user_id: int = None) -> str:
     name = api_mapping_display_name(mapping)
     selling_price = _buyer_api_numeric_value(mapping.get("selling_price"))
     stock = _buyer_api_numeric_value(mapping.get("last_stock"))
-    details_text = api_shop_mapping_details_html(mapping)
+    details_text = api_shop_mapping_details_html(mapping, user_id)
     if stock is None:
         stock_text = "N/A"
     elif float(stock).is_integer():
         stock_text = str(int(stock))
     else:
         stock_text = str(stock)
-    availability_line = "<b>Availability:</b> Currently unavailable\n" if stock is not None and stock <= 0 else ""
+    availability_line = f"<b>{t(user_id, 'currently_unavailable')}</b>\n" if stock is not None and stock <= 0 else ""
     activation_line = (
         "📧 <b>Slot activation</b> Email required\n\n"
         if api_mapping_requires_customer_email(mapping)
         else ""
     )
     return (
-        f"{product_icon_html(mapping)} <b>PRODUCT DETAILS</b>\n\n"
-        f"<b>Name:</b> {escape_html(name)}\n"
-        f"<b>Price:</b> {format_money(selling_price)}\n"
-        f"<b>Stock:</b> {escape_html(stock_text)}{' pcs' if stock is not None else ''}\n"
+        f"{product_icon_html(mapping)} <b>{t(user_id, 'product_details')}</b>\n\n"
+        f"<b>{t(user_id, 'name')}:</b> {escape_html(name)}\n"
+        f"<b>{t(user_id, 'price')}:</b> {format_money(selling_price)}\n"
+        f"<b>{t(user_id, 'stock')}:</b> {escape_html(stock_text)}{' ' + t(user_id, 'pcs') if stock is not None else ''}\n"
         f"{availability_line}"
         f"{activation_line}"
-        "<b>Delivery:</b> Instant delivery after purchase\n\n"
-        f"<b>Details:</b>\n{details_text}"
+        f"<b>{t(user_id, 'delivery')}:</b> {t(user_id, 'instant_after_purchase')}\n\n"
+        f"<b>{t(user_id, 'details')}:</b>\n{details_text}"
     )
 
 
-def api_shop_product_details_keyboard(mapping: dict, styled: bool = True) -> InlineKeyboardMarkup:
+def api_shop_product_details_keyboard(mapping: dict, styled: bool = True, user_id: int = None) -> InlineKeyboardMarkup:
     category_id = str(mapping.get("category_id") or "")
     back_callback = f"shop_category_{category_id}" if category_id != DEFAULT_CATEGORY_ID else "back_shop_cards"
     rows = []
@@ -7778,7 +7983,7 @@ def api_shop_product_details_keyboard(mapping: dict, styled: bool = True) -> Inl
         token = api_shop_callback_token(mapping.get("api_product_id"), mapping_provider_id(mapping))
         requires_email = api_mapping_requires_customer_email(mapping)
         rows.append([make_styled_inline_button(
-            "📧 Enter Activation Info" if requires_email else "🛒 Buy Now",
+            f"📧 {t(user_id, 'activation_information').title()}" if requires_email else f"🛒 {t(user_id, 'buy_now')}",
             callback_data=f"api_shop_buy_{token}",
             style="success" if styled else None,
         )])
@@ -7799,12 +8004,12 @@ def api_shop_product_details_keyboard(mapping: dict, styled: bool = True) -> Inl
             )
     rows.extend([
         [make_styled_inline_button(
-            "⬅️ Back to Shop",
+            f"⬅️ {t(user_id, 'back_to_shop')}",
             callback_data=back_callback,
             style="primary" if styled else None,
         )],
         [make_styled_inline_button(
-            "🏠 Back to Menu",
+            f"🏠 {t(user_id, 'back_to_menu')}",
             callback_data="user_back_to_dashboard",
             style="danger" if styled else None,
         )],
@@ -7812,7 +8017,7 @@ def api_shop_product_details_keyboard(mapping: dict, styled: bool = True) -> Inl
     return InlineKeyboardMarkup(rows)
 
 
-def api_shop_quantity_keyboard(mapping: dict, styled: bool = True) -> InlineKeyboardMarkup:
+def api_shop_quantity_keyboard(mapping: dict, styled: bool = True, user_id: int = None) -> InlineKeyboardMarkup:
     token = api_shop_callback_token(mapping.get("api_product_id"), mapping_provider_id(mapping))
     stock = api_shop_mapping_stock(mapping)
     quantities = [1]
@@ -7829,32 +8034,32 @@ def api_shop_quantity_keyboard(mapping: dict, styled: bool = True) -> InlineKeyb
         for qty in quantities
     ]]
     rows.append([make_styled_inline_button(
-        "✏️ Custom Quantity",
+        f"✏️ {t(user_id, 'custom_quantity')}",
         callback_data=f"api_shop_custom_{token}",
         style="primary" if styled else None,
     )])
     rows.append([make_styled_inline_button(
-        "⬅️ Back",
+        f"⬅️ {t(user_id, 'back')}",
         callback_data=f"api_shop_view_{token}",
         style="primary" if styled else None,
     )])
     rows.append([make_styled_inline_button(
-        "🏠 Back to Menu",
+        f"🏠 {t(user_id, 'back_to_menu')}",
         callback_data="user_back_to_dashboard",
         style="danger" if styled else None,
     )])
     return InlineKeyboardMarkup(rows)
 
 
-def render_api_shop_quantity_prompt(mapping: dict) -> str:
+def render_api_shop_quantity_prompt(mapping: dict, user_id: int = None) -> str:
     stock = api_shop_mapping_stock(mapping)
-    stock_text = str(stock) if stock is not None else "Available"
+    stock_text = str(stock) if stock is not None else t(user_id, "available")
     return (
-        "🛒 <b>SELECT QUANTITY</b>\n\n"
+        f"🛒 <b>{t(user_id, 'select_quantity')}</b>\n\n"
         f"<b>Product:</b> {escape_html(api_mapping_display_name(mapping))}\n"
-        f"<b>Unit Price:</b> {format_money(api_shop_mapping_price(mapping))}\n"
-        f"<b>Stock:</b> {escape_html(stock_text)}{' pcs' if stock is not None else ''}\n\n"
-        "Choose a quantity below."
+        f"<b>{t(user_id, 'price')}:</b> {format_money(api_shop_mapping_price(mapping))}\n"
+        f"<b>{t(user_id, 'stock')}:</b> {escape_html(stock_text)}{' ' + t(user_id, 'pcs') if stock is not None else ''}\n\n"
+        f"{t(user_id, 'choose_below')}"
     )
 
 
@@ -7915,13 +8120,13 @@ def shop_product_rows(product_ids: list, user_id: int = None, styled: bool = Tru
             rows.append([
                 make_product_inline_button(
                     product,
-                    f"{product['name']}{month_part} - {price_text} | 🔔 Notify",
+                    f"{product['name']}{month_part} - {price_text} | 🔔 {t(user_id, 'notify')}",
                     f"shop_notify_{product_id}",
                     style="danger" if styled else None,
                 )
             ])
             continue
-        core_label = f"{product['name']}{month_part} - {price_text} | 📦 {stock} Pcs"
+        core_label = f"{product['name']}{month_part} - {price_text} | 📦 {stock} {t(user_id, 'pcs')}"
         rows.append([
             make_product_inline_button(
                 product,
@@ -7946,7 +8151,7 @@ def shop_categories_keyboard(user_id: int = None, styled: bool = True) -> Inline
         if item_type == "api_product":
             mapping = api_product_mapping_by_id(item_id)
             if mapping and mapping.get("category_id") == DEFAULT_CATEGORY_ID:
-                rows.extend(api_shop_product_row(mapping, styled=styled))
+                rows.extend(api_shop_product_row(mapping, styled=styled, user_id=user_id))
             continue
         category = CATEGORIES.get(item_id, {})
         if not category or item_id == DEFAULT_CATEGORY_ID:
@@ -7962,7 +8167,7 @@ def shop_categories_keyboard(user_id: int = None, styled: bool = True) -> Inline
         ])
     rows.append([
         make_styled_inline_button(
-            "🏠 Back to Menu",
+            f"🏠 {t(user_id, 'back_to_menu')}",
             callback_data="user_back_to_dashboard",
             style="danger" if styled else None,
         )
@@ -7977,14 +8182,14 @@ def shop_menu_keyboard(user_id: int = None, category_id: str = None, styled: boo
     if category_id and category_id != DEFAULT_CATEGORY_ID:
         rows.append([
             make_styled_inline_button(
-                "⬅️ Back to Categories",
+                f"⬅️ {t(user_id, 'back')}",
                 callback_data="back_shop_cards",
                 style="primary" if styled else None,
             )
         ])
     rows.append([
         make_styled_inline_button(
-            "🏠 Back to Menu",
+            f"🏠 {t(user_id, 'back_to_menu')}",
             callback_data="user_back_to_dashboard",
             style="danger" if styled else None,
         )
@@ -7997,7 +8202,7 @@ async def send_shop_cards_message(source, from_callback: bool = False, category_
     normalize_categories()
     viewer_id = getattr(getattr(source, "from_user", None), "id", None)
     if category_id is None or category_id == DEFAULT_CATEGORY_ID:
-        text = render_shop_menu_text()
+        text = render_shop_menu_text(viewer_id)
         keyboard = shop_categories_keyboard(viewer_id)
         fallback_keyboard = shop_categories_keyboard(viewer_id, styled=False)
     else:
@@ -8005,7 +8210,7 @@ async def send_shop_cards_message(source, from_callback: bool = False, category_
         text = (
             f"{category_icon_html(category)} "
             f"<b>{escape_html(category.get('name', category_id))}</b>\n\n"
-            f"{render_shop_menu_text()}"
+            f"{render_shop_menu_text(viewer_id)}"
         )
         keyboard = shop_menu_keyboard(viewer_id, category_id)
         fallback_keyboard = shop_menu_keyboard(viewer_id, category_id, styled=False)
@@ -8065,10 +8270,10 @@ def api_purchase_failure_category(error) -> str:
     return category if category in allowed else "unknown"
 
 
-def api_purchase_failure_keyboard() -> InlineKeyboardMarkup:
+def api_purchase_failure_keyboard(user_id: int = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎧 Contact Support", url=SUPPORT_URL)],
-        [InlineKeyboardButton("🏠 Back to Menu", callback_data="user_back_to_dashboard")],
+        [InlineKeyboardButton(f"🎧 {t(user_id, 'contact_support')}", url=SUPPORT_URL)],
+        [InlineKeyboardButton(f"🏠 {t(user_id, 'back_to_menu')}", callback_data="user_back_to_dashboard")],
     ])
 
 
@@ -8361,20 +8566,20 @@ async def handle_api_purchase_failure(
         activation_results,
     )
     pending_text = (
-        "⚠️ Your activation request is being processed."
+        f"⚠️ {t(user_id, 'activation_processing')}"
         if api_mapping_requires_customer_email(mapping)
         else "⚠️ Your order is now pending manual support review."
     )
     await context.bot.send_message(
         user_id,
-        "✅ <b>Payment received</b>\n\n"
+        f"✅ <b>{t(user_id, 'payment_received')}</b>\n\n"
         f"{pending_text}\n\n"
         f"<b>Order ID:</b> <code>{order['id']}</code>\n"
         f"<b>Product:</b> {escape_html(api_mapping_display_name(mapping))}\n"
-        f"<b>Quantity:</b> {quantity}\n"
-        f"<b>Total Paid:</b> {format_money(total)}\n\n"
+        f"<b>{t(user_id, 'quantity')}:</b> {quantity}\n"
+        f"<b>{t(user_id, 'total_paid')}:</b> {format_money(total)}\n\n"
         "Please contact support to receive your product or further assistance.",
-        reply_markup=api_purchase_failure_keyboard(),
+        reply_markup=api_purchase_failure_keyboard(user_id),
         parse_mode="HTML",
     )
     return order
@@ -8441,7 +8646,7 @@ async def continue_api_shop_purchase(context, user_id: int, callback_token: str,
             "qty": quantity,
         }
         if quantity == 1:
-            email_instruction = "👉 Please enter your email where you want this product activated."
+            email_instruction = f"👉 {t(user_id, 'enter_activation_email')}"
             email_example = "<code>buyer1@gmail.com</code>"
         else:
             email_instruction = (
@@ -8453,18 +8658,18 @@ async def continue_api_shop_purchase(context, user_id: int, callback_token: str,
             )
         await context.bot.send_message(
             user_id,
-            "📧 <b>ACTIVATION INFORMATION</b>\n"
+            f"📧 <b>{t(user_id, 'activation_information')}</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n\n"
             f"{email_instruction}\n\n"
             "<b>Example:</b>\n"
             f"{email_example}\n\n"
-            "Each email corresponds to 1 slot.\n"
-            f"<b>Total:</b> {format_money(total)}\n\n"
+            f"{t(user_id, 'each_email_slot')}\n"
+            f"<b>{t(user_id, 'total')}:</b> {format_money(total)}\n\n"
             "📌 After payment, your activation request will be processed.",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("❌ Cancel", callback_data="user_back_to_dashboard")],
+                [InlineKeyboardButton(f"❌ {t(user_id, 'cancel')}", callback_data="user_back_to_dashboard")],
                 [InlineKeyboardButton(
-                    "⬅️ Back",
+                    f"⬅️ {t(user_id, 'back')}",
                     callback_data=f"api_shop_view_{callback_token}",
                 )],
             ]),
@@ -8716,8 +8921,8 @@ async def process_api_shop_purchase(
 
         lines = [
             f"✅ <b>Order Completed:</b> {escape_html(api_mapping_display_name(mapping))}",
-            f"<b>Quantity:</b> {quantity}",
-            f"<b>Total:</b> {format_money(total)}",
+            f"<b>{t(user_id, 'quantity')}:</b> {quantity}",
+            f"<b>{t(user_id, 'total')}:</b> {format_money(total)}",
             "",
             "🔐 <b>Your Account Details:</b>",
             "",
@@ -8727,10 +8932,10 @@ async def process_api_shop_purchase(
         await send_html_lines(context.bot, user_id, lines)
         await context.bot.send_message(
             user_id,
-            "✅ <b>Purchase completed successfully.</b>\n\n"
+            f"✅ <b>{t(user_id, 'purchase_completed')}</b>\n\n"
             f"<b>{format_money(total)}</b> deducted from your wallet.\n"
             f"{get_wallet_balance_text(user_id)}",
-            reply_markup=user_back_to_menu_keyboard(styled=False),
+            reply_markup=user_back_to_menu_keyboard(styled=False, user_id=user_id),
             parse_mode="HTML",
         )
         return True
@@ -10085,15 +10290,15 @@ async def client_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         user_state[user_id] = {"step": "deposit_amount"}
         await send_user_inline_from_text_with_style_fallback(
             update,
-            render_deposit_text(),
-            deposit_amount_keyboard(),
-            deposit_amount_keyboard(styled=False),
+            render_deposit_text(user_id),
+            deposit_amount_keyboard(user_id=user_id),
+            deposit_amount_keyboard(styled=False, user_id=user_id),
         )
     elif command == "/orders":
         text, page, _ = render_user_orders_page(user_id)
         await send_inline_from_text(update, text, user_orders_keyboard(user_id, page))
     elif command == "/support":
-        await send_client_main_text(update, render_support_text())
+        await send_client_main_text(update, render_support_text(user_id))
 
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -11470,9 +11675,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[user_id] = {"step": "deposit_amount"}
         await send_user_inline_from_text_with_style_fallback(
             update,
-            render_deposit_text(),
-            deposit_amount_keyboard(),
-            deposit_amount_keyboard(styled=False),
+            render_deposit_text(user_id),
+            deposit_amount_keyboard(user_id=user_id),
+            deposit_amount_keyboard(styled=False, user_id=user_id),
         )
         return
 
@@ -11499,7 +11704,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "💬 Support":
         user_state[user_id] = {"step": "main"}
-        await send_client_main_text(update, render_support_text())
+        await send_client_main_text(update, render_support_text(user_id))
         return
 
     if text == "📜 Terms":
@@ -13704,11 +13909,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_user_dashboard_panel(
             query,
             render_home_text(user_id),
-            user_dashboard_keyboard(),
+            user_dashboard_keyboard(user_id=user_id),
             fallback_keyboards=[
-                user_dashboard_keyboard(),
-                user_dashboard_keyboard(custom_icons=False),
-                user_dashboard_keyboard(styled=False, custom_icons=False),
+                user_dashboard_keyboard(user_id=user_id),
+                user_dashboard_keyboard(custom_icons=False, user_id=user_id),
+                user_dashboard_keyboard(styled=False, custom_icons=False, user_id=user_id),
             ],
             fallback_text=render_home_text(user_id, custom_icons=False),
         )
@@ -13718,7 +13923,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_user_orders_message(
             query,
             "📦 <b>ORDER DETAILS</b>\n\nThis order has no usable order ID.",
-            user_order_details_keyboard(0),
+            user_order_details_keyboard(0, user_id),
         )
         return
 
@@ -13742,13 +13947,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await edit_user_orders_message(
                 query,
                 "📦 <b>ORDER DETAILS</b>\n\nOrder not found.",
-                user_order_details_keyboard(page),
+                user_order_details_keyboard(page, user_id),
             )
             return
         await edit_user_orders_message(
             query,
             render_user_order_details(user_id, order_id),
-            user_order_details_keyboard(page),
+            user_order_details_keyboard(page, user_id),
         )
         return
 
@@ -13883,11 +14088,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_user_dashboard_panel(
             query,
             render_home_text(user_id),
-            user_dashboard_keyboard(),
+            user_dashboard_keyboard(user_id=user_id),
             fallback_keyboards=[
-                user_dashboard_keyboard(),
-                user_dashboard_keyboard(custom_icons=False),
-                user_dashboard_keyboard(styled=False, custom_icons=False),
+                user_dashboard_keyboard(user_id=user_id),
+                user_dashboard_keyboard(custom_icons=False, user_id=user_id),
+                user_dashboard_keyboard(styled=False, custom_icons=False, user_id=user_id),
             ],
             fallback_text=render_home_text(user_id, custom_icons=False),
         )
@@ -13900,11 +14105,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await edit_user_dashboard_panel(
                 query,
                 render_home_text(user_id),
-                user_dashboard_keyboard(),
+                user_dashboard_keyboard(user_id=user_id),
                 fallback_keyboards=[
-                    user_dashboard_keyboard(),
-                    user_dashboard_keyboard(custom_icons=False),
-                    user_dashboard_keyboard(styled=False, custom_icons=False),
+                    user_dashboard_keyboard(user_id=user_id),
+                    user_dashboard_keyboard(custom_icons=False, user_id=user_id),
+                    user_dashboard_keyboard(styled=False, custom_icons=False, user_id=user_id),
                 ],
                 fallback_text=render_home_text(user_id, custom_icons=False),
             )
@@ -13921,7 +14126,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not await ensure_channel_access(update, context):
                 return
             await edit_user_dashboard_panel(
-                query, render_wallet_text(user_id), user_dashboard_back_keyboard()
+                query, render_wallet_text(user_id), user_dashboard_back_keyboard(user_id)
             )
             return
 
@@ -13931,9 +14136,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_state[user_id] = {"step": "deposit_amount"}
             await edit_user_dashboard_panel(
                 query,
-                render_deposit_text(),
-                deposit_amount_keyboard(),
-                fallback_keyboards=[deposit_amount_keyboard(styled=False)],
+                render_deposit_text(user_id),
+                deposit_amount_keyboard(user_id=user_id),
+                fallback_keyboards=[deposit_amount_keyboard(styled=False, user_id=user_id)],
             )
             return
 
@@ -13944,13 +14149,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if data == "user_dashboard_transactions":
             await edit_user_dashboard_panel(
-                query, render_transactions_text(user_id), user_dashboard_back_keyboard()
+                query, render_transactions_text(user_id), user_dashboard_back_keyboard(user_id)
             )
             return
 
         if data == "user_dashboard_profile":
             await edit_user_dashboard_panel(
-                query, render_user_id_text(user_id), user_dashboard_back_keyboard()
+                query, render_user_id_text(user_id), user_dashboard_back_keyboard(user_id)
             )
             return
 
@@ -13959,21 +14164,45 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await edit_user_dashboard_panel(
                 query,
                 "🎟 <b>PROMO</b>\n\nPlease send your promo code.",
-                user_dashboard_back_keyboard(),
+                user_dashboard_back_keyboard(user_id),
             )
             return
 
         if data == "user_dashboard_refer":
             await edit_user_dashboard_panel(
-                query, render_refer_text(user_id), user_dashboard_back_keyboard()
+                query, render_refer_text(user_id), user_dashboard_back_keyboard(user_id)
             )
             return
 
         if data == "user_dashboard_support":
             await edit_user_dashboard_panel(
-                query, render_support_text(), user_dashboard_back_keyboard()
+                query, render_support_text(user_id), user_dashboard_back_keyboard(user_id)
             )
             return
+
+        if data == "user_dashboard_language":
+            await edit_user_dashboard_panel(
+                query, t(user_id, "select_language"), user_language_keyboard(user_id)
+            )
+            return
+
+    if data.startswith("user_language_"):
+        language = data.replace("user_language_", "", 1)
+        if language not in SUPPORTED_USER_LANGUAGES:
+            return
+        set_user_language(user_id, language)
+        save_bot_state()
+        await edit_user_dashboard_panel(
+            query,
+            f"{t(user_id, 'language_updated')}\n\n{render_home_text(user_id)}",
+            user_dashboard_keyboard(user_id=user_id),
+            fallback_keyboards=[
+                user_dashboard_keyboard(custom_icons=False, user_id=user_id),
+                user_dashboard_keyboard(styled=False, custom_icons=False, user_id=user_id),
+            ],
+            fallback_text=f"{t(user_id, 'language_updated')}\n\n{render_home_text(user_id, custom_icons=False)}",
+        )
+        return
 
     if data == "close_inline":
         if user_mode.get(user_id) != "admin":
@@ -13981,11 +14210,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await edit_user_dashboard_panel(
                 query,
                 render_home_text(user_id),
-                user_dashboard_keyboard(),
+                user_dashboard_keyboard(user_id=user_id),
                 fallback_keyboards=[
-                    user_dashboard_keyboard(),
-                    user_dashboard_keyboard(custom_icons=False),
-                    user_dashboard_keyboard(styled=False, custom_icons=False),
+                    user_dashboard_keyboard(user_id=user_id),
+                    user_dashboard_keyboard(custom_icons=False, user_id=user_id),
+                    user_dashboard_keyboard(styled=False, custom_icons=False, user_id=user_id),
                 ],
                 fallback_text=render_home_text(user_id, custom_icons=False),
             )
@@ -14014,8 +14243,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_shop_inline_with_style_fallback(
                 query,
                 "❌ <b>This product is no longer available.</b>",
-                shop_return_keyboard(),
-                shop_return_keyboard(styled=False),
+                shop_return_keyboard(user_id=user_id),
+                shop_return_keyboard(styled=False, user_id=user_id),
             )
             return
         validation_error = validate_api_shop_purchase(mapping, 1)
@@ -14023,8 +14252,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_shop_inline_with_style_fallback(
                 query,
                 f"❌ <b>{escape_html(validation_error)}</b>",
-                api_shop_product_details_keyboard(mapping),
-                api_shop_product_details_keyboard(mapping, styled=False),
+                api_shop_product_details_keyboard(mapping, user_id=user_id),
+                api_shop_product_details_keyboard(mapping, styled=False, user_id=user_id),
             )
             return
         if api_mapping_requires_customer_email(mapping) or api_shop_mapping_stock(mapping) == 1:
@@ -14039,9 +14268,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[user_id] = {"step": "api_shop_quantity", "api_callback_token": callback_token}
         await send_shop_inline_with_style_fallback(
             query,
-            render_api_shop_quantity_prompt(mapping),
-            api_shop_quantity_keyboard(mapping),
-            api_shop_quantity_keyboard(mapping, styled=False),
+            render_api_shop_quantity_prompt(mapping, user_id),
+            api_shop_quantity_keyboard(mapping, user_id=user_id),
+            api_shop_quantity_keyboard(mapping, styled=False, user_id=user_id),
         )
         return
 
@@ -14060,8 +14289,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_shop_inline_with_style_fallback(
                 query,
                 f"❌ <b>{escape_html(validation_error)}</b>",
-                api_shop_product_details_keyboard(mapping) if mapping else shop_return_keyboard(),
-                api_shop_product_details_keyboard(mapping, styled=False) if mapping else shop_return_keyboard(styled=False),
+                api_shop_product_details_keyboard(mapping, user_id=user_id) if mapping else shop_return_keyboard(user_id=user_id),
+                api_shop_product_details_keyboard(mapping, styled=False, user_id=user_id) if mapping else shop_return_keyboard(styled=False, user_id=user_id),
             )
             return
         await send_shop_inline_with_style_fallback(
@@ -14106,8 +14335,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_shop_inline_with_style_fallback(
                 query,
                 "❌ <b>This product is no longer available.</b>",
-                shop_return_keyboard(),
-                shop_return_keyboard(styled=False),
+                shop_return_keyboard(user_id=user_id),
+                shop_return_keyboard(styled=False, user_id=user_id),
             )
             return
         user_state[user_id] = {"step": "api_shop_custom_quantity", "api_callback_token": callback_token}
@@ -14133,15 +14362,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_shop_inline_with_style_fallback(
                 query,
                 "❌ <b>This product is no longer available.</b>",
-                shop_return_keyboard(),
-                shop_return_keyboard(styled=False),
+                shop_return_keyboard(user_id=user_id),
+                shop_return_keyboard(styled=False, user_id=user_id),
             )
             return
         await send_shop_inline_with_style_fallback(
             query,
-            render_api_shop_product_details(mapping),
-            api_shop_product_details_keyboard(mapping),
-            api_shop_product_details_keyboard(mapping, styled=False),
+            render_api_shop_product_details(mapping, user_id),
+            api_shop_product_details_keyboard(mapping, user_id=user_id),
+            api_shop_product_details_keyboard(mapping, styled=False, user_id=user_id),
         )
         return
 
@@ -14151,16 +14380,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_shop_inline_with_style_fallback(
                 query,
                 render_product_details(product_id, user_id),
-                out_of_stock_product_keyboard(product_id),
-                out_of_stock_product_keyboard(product_id, styled=False),
+                out_of_stock_product_keyboard(product_id, user_id=user_id),
+                out_of_stock_product_keyboard(product_id, styled=False, user_id=user_id),
             )
             return
         user_state[user_id] = {"step": "buy_qty_select", "product_id": product_id}
         await send_shop_inline_with_style_fallback(
             query,
             render_product_details(product_id, user_id),
-            buy_qty_keyboard(product_id),
-            buy_qty_keyboard(product_id, styled=False),
+            buy_qty_keyboard(product_id, user_id=user_id),
+            buy_qty_keyboard(product_id, styled=False, user_id=user_id),
         )
         return
 
@@ -14178,8 +14407,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_shop_inline_with_style_fallback(
             query,
             f"🔔 You will be notified when <b>{product['name']}</b> is back in stock.",
-            shop_return_keyboard(),
-            shop_return_keyboard(styled=False),
+            shop_return_keyboard(user_id=user_id),
+            shop_return_keyboard(styled=False, user_id=user_id),
         )
         return
 
@@ -14191,8 +14420,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_shop_inline_with_style_fallback(
                 query,
                 f"❌ <b>Only {stock} pcs available.</b>",
-                buy_qty_keyboard(product_id),
-                buy_qty_keyboard(product_id, styled=False),
+                buy_qty_keyboard(product_id, user_id=user_id),
+                buy_qty_keyboard(product_id, styled=False, user_id=user_id),
             )
             return
         try:
@@ -14201,8 +14430,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_shop_inline_with_style_fallback(
                 query,
                 "❌ <b>This product has an invalid price.</b> Please contact support.",
-                buy_qty_keyboard(product_id),
-                buy_qty_keyboard(product_id, styled=False),
+                buy_qty_keyboard(product_id, user_id=user_id),
+                buy_qty_keyboard(product_id, styled=False, user_id=user_id),
             )
             return
         if user_wallet[user_id] >= total:
@@ -14339,9 +14568,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[user_id] = {"step": "deposit_amount"}
         await send_user_inline_with_style_fallback(
             query,
-            render_deposit_text(),
-            deposit_amount_keyboard(),
-            deposit_amount_keyboard(styled=False),
+            render_deposit_text(user_id),
+            deposit_amount_keyboard(user_id=user_id),
+            deposit_amount_keyboard(styled=False, user_id=user_id),
         )
         return
 
