@@ -1702,30 +1702,89 @@ def _warzone_products_from_payload(payload):
         return payload
     if not isinstance(payload, dict):
         return None
-    for value in (
-        payload.get("products"),
-        payload.get("data"),
-        payload.get("result"),
-        _seller_api_nested_value(payload, "data.products"),
-        _seller_api_nested_value(payload, "result.products"),
-    ):
+    list_paths = (
+        "products", "data", "data.products", "data.items", "data.list",
+        "data.results", "data.records", "result", "result.products",
+        "result.items", "result.list", "result.results", "result.records",
+        "response", "response.products", "response.items", "items", "list",
+        "results", "records", "catalog.products", "inventory.products",
+        "store.products", "shop.products",
+    )
+    for path in list_paths:
+        value = _seller_api_nested_value(payload, path)
         if isinstance(value, list):
             return value
     return None
 
 
+def _safe_seller_api_field_names(value, limit: int = 30) -> list:
+    if not isinstance(value, dict):
+        return []
+    provider_keys = {
+        str(provider.get("api_key") or "").lower()
+        for provider in load_seller_api_providers().values()
+        if provider.get("api_key")
+    }
+    keys = []
+    for key in list(value.keys())[:limit]:
+        key_text = str(key)[:64]
+        if any(secret in key_text.lower() for secret in provider_keys):
+            key_text = "[redacted-field]"
+        keys.append(key_text)
+    return keys
+
+
+def _safe_warzone_product_diagnostic(payload, http_status=None, products=None) -> str:
+    def safe_keys(value) -> str:
+        keys = _safe_seller_api_field_names(value)
+        return ", ".join(keys) if keys else ("None" if isinstance(value, dict) else "N/A")
+
+    if isinstance(products, list):
+        lines = ["Product list found but product fields not recognized."]
+        first_product = products[0] if products else None
+        if isinstance(first_product, dict):
+            lines.append(f"First product keys: {safe_keys(first_product)}")
+        else:
+            lines.append("First product type: non-object")
+        return "\n".join(lines)
+
+    lines = ["Product list not found."]
+    if http_status is not None:
+        lines.append(f"HTTP status: {http_status}")
+    if not isinstance(payload, dict):
+        lines.append("Top-level JSON type: non-object")
+        return "\n".join(lines)
+    lines.append(f"Top-level keys: {safe_keys(payload)}")
+    for key in ("data", "result", "response", "catalog", "inventory", "store", "shop"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            lines.append(f"{key} keys: {safe_keys(value)}")
+    return "\n".join(lines)
+
+
 def normalize_warzone_product(product: dict) -> dict:
     if not isinstance(product, dict):
         return {}
-    product_id = _seller_api_nested_value(product, "id", "_id", "product_id", "productId", "uuid")
+    product_id = _seller_api_nested_value(
+        product,
+        "id", "_id", "product_id", "productId", "productID",
+        "service_id", "serviceId", "sku", "code",
+    )
     name = _seller_api_nested_value(
-        product, "name", "product_name", "productName", "title", "display_name"
+        product,
+        "name", "title", "product_name", "productName", "service_name",
+        "serviceName", "display_name", "displayName",
     )
     price = _seller_api_nested_value(
-        product, "price", "cost", "amount", "usdPricing", "walletPricing", "pricing"
+        product,
+        "price", "cost", "amount", "rate", "usd_price", "usdPrice",
+        "walletPricing", "pricing", "price_usd", "priceUSD",
     )
     stock = _seller_api_nested_value(
-        product, "stock", "available", "quantity", "qty", "inventory", "total_stock", "stats.available"
+        product,
+        "stock", "available", "quantity", "qty", "amount_available",
+        "available_quantity", "availableQuantity", "inventory", "count",
+        "stats.available",
     )
     requires_email = _seller_api_nested_value(
         product, "requires_customer_email", "requiresCustomerEmail", "need_email", "requireEmail"
@@ -1743,7 +1802,11 @@ def normalize_warzone_product(product: dict) -> dict:
         "stock": stock,
         "requires_customer_email": requires_email,
         "is_slot_product": is_slot,
+        "_source_field_names": _safe_seller_api_field_names(product),
     }
+    stats = product.get("stats")
+    if isinstance(stats, dict):
+        normalized["_source_stats_field_names"] = _safe_seller_api_field_names(stats, 20)
     if description not in (None, ""):
         normalized["description"] = description
     return normalized
@@ -1801,14 +1864,28 @@ def fetch_buyer_api_balance(provider_id: str = "default") -> dict:
 
 def fetch_buyer_api_products(provider_id: str = "default"):
     if seller_api_provider_type(provider_id) == "warzone_v1":
-        payload = _buyer_api_get(seller_api_products_path(provider_id), provider_id=provider_id)
+        payload, http_status = _buyer_api_get(
+            seller_api_products_path(provider_id),
+            provider_id=provider_id,
+            include_status=True,
+        )
         products = _warzone_products_from_payload(payload)
         if not isinstance(products, list):
-            raise BuyerAPIError("Seller API product response is missing the product list.")
+            raise BuyerAPIError(
+                _safe_warzone_product_diagnostic(payload, http_status),
+                "products_unrecognized",
+            )
         normalized = [normalize_warzone_product(product) for product in products if isinstance(product, dict)]
         normalized = [product for product in normalized if product.get("id") not in (None, "")]
+        if products and not normalized:
+            raise BuyerAPIError(
+                _safe_warzone_product_diagnostic(payload, http_status, products),
+                "product_fields_unrecognized",
+            )
         total = _seller_api_nested_value(
-            payload, "total", "count", "data.total", "data.count", "result.total", "result.count"
+            payload,
+            "total", "count", "data.total", "data.count", "result.total",
+            "result.count", "response.total", "response.count",
         )
         try:
             total = int(total)
@@ -5032,6 +5109,20 @@ def render_buyer_api_product_field_inspection(products: list) -> str:
     product = products[0]
     if not isinstance(product, dict):
         return "🔎 <b>API PRODUCT FIELD INSPECTION</b>\n\nThe first product is not an object."
+    source_fields = product.get("_source_field_names")
+    source_stats_fields = product.get("_source_stats_field_names")
+    if isinstance(source_fields, list):
+        source_text = escape_html(", ".join(str(key) for key in source_fields) or "None")
+        stats_text = escape_html(
+            ", ".join(str(key) for key in source_stats_fields)
+            if isinstance(source_stats_fields, list) and source_stats_fields else "None"
+        )
+        return (
+            "🔎 <b>API PRODUCT FIELD INSPECTION</b>\n\n"
+            "Only field names are shown; no raw values are exposed.\n\n"
+            f"<b>Top-level keys:</b> {source_text}\n"
+            f"<b>stats keys:</b> {stats_text}"
+        )
     stats = product.get("stats") if isinstance(product.get("stats"), dict) else {}
     return (
         "🔎 <b>API PRODUCT FIELD INSPECTION</b>\n\n"
