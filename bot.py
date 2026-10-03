@@ -399,11 +399,14 @@ def _new_seller_api_auto_refresh_status():
     "last_total_products": 0,
     "last_missing_marked": 0,
     "last_restored": 0,
+    "last_prices_updated": 0,
     "last_balance": None,
     "last_balance_text": None,
     "low_balance_threshold": 5,
     "last_low_balance_alert_at": None,
     "low_balance_alert_active": False,
+    "last_error_alert_at": None,
+    "last_error_alert_signature": None,
     }
 
 
@@ -4061,6 +4064,7 @@ def render_seller_api_auto_refresh_status(provider_id: str = "default") -> str:
         f"<b>Last total products:</b> {int(status.get('last_total_products', 0) or 0)}\n"
         f"<b>Missing marked:</b> {int(status.get('last_missing_marked', 0) or 0)}\n"
         f"<b>Restored:</b> {int(status.get('last_restored', 0) or 0)}\n"
+        f"<b>Prices updated:</b> {int(status.get('last_prices_updated', 0) or 0)}\n"
         f"<b>Current API balance:</b> {_seller_api_status_value(balance_text, 'N/A')}\n"
         f"<b>Low balance threshold:</b> {float(status.get('low_balance_threshold', 5)):.2f} USDT\n"
         f"<b>Last low-balance alert:</b> {_seller_api_status_value(status.get('last_low_balance_alert_at'))}"
@@ -4559,11 +4563,48 @@ async def maybe_notify_low_seller_api_balance(bot, balance, provider_id: str = "
     return sent
 
 
+async def maybe_notify_seller_api_refresh_error(
+    bot, error_text: str, provider_id: str = "default"
+) -> bool:
+    safe_error = _seller_api_refresh_error_text(error_text)
+    status = get_seller_api_provider_status(provider_id)
+    signature = hashlib.sha256(safe_error.lower().encode("utf-8")).hexdigest()
+    now = datetime.now()
+    last_alert = status.get("last_error_alert_at")
+    try:
+        last_alert_dt = datetime.fromisoformat(str(last_alert)) if last_alert else None
+    except (TypeError, ValueError):
+        last_alert_dt = None
+    if (
+        status.get("last_error_alert_signature") == signature
+        and last_alert_dt
+        and (now - last_alert_dt).total_seconds() < 6 * 60 * 60
+    ):
+        return False
+
+    text = (
+        "⚠️ <b>Seller API Auto Refresh Needs Attention</b>\n\n"
+        f"<b>Provider:</b> {escape_html(seller_api_provider_name(provider_id))}\n"
+        f"<b>Error:</b> {escape_html(safe_error)}"
+    )
+    sent = False
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, text, parse_mode="HTML")
+            sent = True
+        except Exception as exc:
+            print(f"Seller API refresh error alert failed for admin_id={admin_id}: {type(exc).__name__}")
+    if sent:
+        status["last_error_alert_at"] = now.isoformat(timespec="seconds")
+        status["last_error_alert_signature"] = signature
+    return sent
+
+
 async def notify_admin_seller_api_refresh_changes(
     bot, total: int, sync_result: dict, balance_text: str, provider_id: str = "default"
 ):
     text = (
-        "🔄 <b>Seller API auto refresh completed</b>\n\n"
+        "⚠️ <b>Seller API Product Status Changed</b>\n\n"
         f"<b>Provider:</b> {escape_html(seller_api_provider_name(provider_id))}\n"
         f"<b>Total products:</b> {total}\n"
         f"<b>Missing marked:</b> {int(sync_result.get('missing', 0) or 0)}\n"
@@ -4588,6 +4629,7 @@ async def run_seller_api_refresh(bot, source: str = "manual", provider_id: str =
     status["last_run_at"] = now_text
     status["last_missing_marked"] = 0
     status["last_restored"] = 0
+    status["last_prices_updated"] = 0
     result = {"skipped": False, "success": False, "products": None, "total": 0, "sync": {}}
     errors = []
     try:
@@ -4612,6 +4654,7 @@ async def run_seller_api_refresh(bot, source: str = "manual", provider_id: str =
                 status["last_total_products"] = total
                 status["last_missing_marked"] = int(sync_result.get("missing", 0) or 0)
                 status["last_restored"] = int(sync_result.get("restored", 0) or 0)
+                status["last_prices_updated"] = int(sync_result.get("prices_updated", 0) or 0)
                 fetched_at = datetime.now().timestamp()
                 for admin_id in set(ADMIN_IDS) | set(seller_api_browser_cache.keys()):
                     seller_api_browser_cache.setdefault(admin_id, {})[provider_id] = {
@@ -4637,10 +4680,13 @@ async def run_seller_api_refresh(bot, source: str = "manual", provider_id: str =
         result["error"] = status["last_error"]
         result["balance"] = balance
         result["balance_text"] = balance_text
+        if source == "auto" and status["last_error"]:
+            await maybe_notify_seller_api_refresh_error(
+                bot, status["last_error"], provider_id
+            )
         if source == "auto" and result["success"] and (
             status["last_missing_marked"]
             or status["last_restored"]
-            or int(result.get("sync", {}).get("prices_updated", 0) or 0)
         ):
             await notify_admin_seller_api_refresh_changes(
                 bot, result["total"], result["sync"], balance_text, provider_id
@@ -4651,6 +4697,8 @@ async def run_seller_api_refresh(bot, source: str = "manual", provider_id: str =
         status["last_error"] = safe_error
         result["error"] = safe_error
         print(f"Seller API refresh failed safely: {type(exc).__name__}")
+        if source == "auto":
+            await maybe_notify_seller_api_refresh_error(bot, safe_error, provider_id)
         return result
     finally:
         seller_api_refresh_running.discard(provider_id)
@@ -4675,6 +4723,9 @@ async def seller_api_auto_refresh_loop(
     except Exception as exc:
         status["last_error"] = _seller_api_refresh_error_text(exc)
         print(f"Seller API auto-refresh loop failed: {type(exc).__name__}")
+        await maybe_notify_seller_api_refresh_error(
+            application.bot, status["last_error"], provider_id
+        )
 
 
 def schedule_seller_api_auto_refresh(
@@ -7701,12 +7752,18 @@ def render_api_shop_product_details(mapping: dict) -> str:
     else:
         stock_text = str(stock)
     availability_line = "<b>Availability:</b> Currently unavailable\n" if stock is not None and stock <= 0 else ""
+    activation_line = (
+        "📧 <b>Slot activation</b> Email required\n\n"
+        if api_mapping_requires_customer_email(mapping)
+        else ""
+    )
     return (
         f"{product_icon_html(mapping)} <b>PRODUCT DETAILS</b>\n\n"
         f"<b>Name:</b> {escape_html(name)}\n"
         f"<b>Price:</b> {format_money(selling_price)}\n"
         f"<b>Stock:</b> {escape_html(stock_text)}{' pcs' if stock is not None else ''}\n"
         f"{availability_line}"
+        f"{activation_line}"
         "<b>Delivery:</b> Instant delivery after purchase\n\n"
         f"<b>Details:</b>\n{details_text}"
     )
@@ -7719,7 +7776,7 @@ def api_shop_product_details_keyboard(mapping: dict, styled: bool = True) -> Inl
     stock = api_shop_mapping_stock(mapping)
     if is_api_shop_mapping_visible(mapping) and stock != 0:
         rows.append([make_styled_inline_button(
-            "🛒 Buy Now",
+            "📧 Enter Activation Info" if api_mapping_requires_customer_email(mapping) else "🛒 Buy Now",
             callback_data=f"api_shop_buy_{api_shop_callback_token(mapping.get('api_product_id'), mapping_provider_id(mapping))}",
             style="success" if styled else None,
         )])
@@ -8313,14 +8370,18 @@ async def continue_api_shop_purchase(context, user_id: int, callback_token: str,
         }
         await context.bot.send_message(
             user_id,
-            "📧 <b>ACTIVATION EMAIL</b>\n\n"
-            "Please enter the email where you want this product activated.",
+            "📧 <b>ACTIVATION INFORMATION</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "👉 Please enter your email where you want this product activated.\n\n"
+            "<b>Example:</b>\n"
+            "<code>buyer1@gmail.com</code>\n\n"
+            "📌 After payment, your activation request will be processed.",
             reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Cancel", callback_data="user_back_to_dashboard")],
                 [InlineKeyboardButton(
                     "⬅️ Back",
-                    callback_data=f"api_shop_buy_{callback_token}",
+                    callback_data=f"api_shop_view_{callback_token}",
                 )],
-                [InlineKeyboardButton("🏠 Back to Menu", callback_data="user_back_to_dashboard")],
             ]),
             parse_mode="HTML",
         )
@@ -10122,7 +10183,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if user_mode[user_id] != "admin" and step == "api_shop_customer_email":
         if not is_valid_customer_email(text):
-            await update.message.reply_text("❌ Please enter a valid email address.")
+            await update.message.reply_text(
+                "❌ Please enter a valid email address and try again.\n\n"
+                "Example: buyer1@gmail.com"
+            )
             return
         callback_token = str(state.get("api_callback_token") or "")
         try:
