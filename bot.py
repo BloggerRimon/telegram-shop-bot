@@ -7775,11 +7775,28 @@ def api_shop_product_details_keyboard(mapping: dict, styled: bool = True) -> Inl
     rows = []
     stock = api_shop_mapping_stock(mapping)
     if is_api_shop_mapping_visible(mapping) and stock != 0:
+        token = api_shop_callback_token(mapping.get("api_product_id"), mapping_provider_id(mapping))
+        requires_email = api_mapping_requires_customer_email(mapping)
         rows.append([make_styled_inline_button(
-            "📧 Enter Activation Info" if api_mapping_requires_customer_email(mapping) else "🛒 Buy Now",
-            callback_data=f"api_shop_buy_{api_shop_callback_token(mapping.get('api_product_id'), mapping_provider_id(mapping))}",
+            "📧 Enter Activation Info" if requires_email else "🛒 Buy Now",
+            callback_data=f"api_shop_buy_{token}",
             style="success" if styled else None,
         )])
+        if requires_email:
+            quantity_buttons = []
+            for quantity in (2, 3, 5, 10):
+                if stock is not None and stock < quantity:
+                    continue
+                total = round(api_shop_mapping_price(mapping) * quantity, 2)
+                quantity_buttons.append(make_styled_inline_button(
+                    f"x{quantity} — {format_money(total)}",
+                    callback_data=f"api_shop_slot_qty_{token}_{quantity}",
+                    style="primary" if styled else None,
+                ))
+            rows.extend(
+                quantity_buttons[index:index + 2]
+                for index in range(0, len(quantity_buttons), 2)
+            )
     rows.extend([
         [make_styled_inline_button(
             "⬅️ Back to Shop",
@@ -7845,6 +7862,14 @@ def is_valid_customer_email(value: str) -> bool:
     return bool(re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", str(value or "").strip()))
 
 
+def parse_customer_emails(value: str) -> list:
+    return [
+        email.strip()
+        for email in re.split(r"[\n,]+", str(value or ""))
+        if email.strip()
+    ]
+
+
 def api_mapping_requires_customer_email(mapping: dict) -> bool:
     mapping = mapping or {}
     return any(_buyer_api_bool_value(mapping.get(key)) for key in (
@@ -7866,8 +7891,8 @@ def validate_api_shop_purchase(mapping: dict, quantity: int) -> str:
         return "This product is currently unavailable."
     if not isinstance(quantity, int) or quantity <= 0:
         return "Quantity must be a whole number greater than 0."
-    if api_mapping_requires_customer_email(mapping) and quantity != 1:
-        return "This activation product currently supports one email per order. Please choose quantity 1."
+    if api_mapping_requires_customer_email(mapping) and quantity not in {1, 2, 3, 5, 10}:
+        return "Please select one of the available activation quantities."
     stock = api_shop_mapping_stock(mapping)
     if stock is not None and quantity > stock:
         return f"Only {stock} pcs are currently available."
@@ -8056,7 +8081,8 @@ async def notify_admin_api_purchase_failure(
     unit_price: float,
     total: float,
     error,
-    customer_email: str = None,
+    customer_emails: list = None,
+    activation_results: list = None,
 ):
     category = api_purchase_failure_category(error)
     category_labels = {
@@ -8090,6 +8116,8 @@ async def notify_admin_api_purchase_failure(
     if category == "parse_missing_delivery" and not order_code:
         reason_summaries[category] = "No recognized delivery fields were returned."
     provider_id = mapping_provider_id(mapping)
+    customer_emails = [str(email) for email in (customer_emails or []) if str(email).strip()]
+    activation_results = activation_results or []
     notes = []
     if category == "insufficient_seller_balance":
         notes.append("Possible seller API balance issue. Please recharge/check seller account.")
@@ -8112,7 +8140,8 @@ async def notify_admin_api_purchase_failure(
         f"<b>Product:</b> {escape_html(api_mapping_display_name(mapping))}\n"
         f"<b>API product ID:</b> <code>{escape_html(mapping.get('api_product_id') or 'N/A')}</code>\n"
         f"<b>Quantity:</b> {quantity}\n"
-        f"<b>Customer email:</b> {escape_html(customer_email or 'N/A')}\n"
+        f"<b>Customer emails ({len(customer_emails)}):</b> "
+        f"{escape_html(', '.join(customer_emails) or 'N/A')}\n"
         f"<b>User unit price:</b> {format_money(unit_price)}\n"
         f"<b>Total paid:</b> {format_money(total)}\n"
         f"<b>Failure category:</b> {escape_html(category_labels[category])}\n"
@@ -8122,6 +8151,19 @@ async def notify_admin_api_purchase_failure(
     )
     if notes:
         text += "\n\n" + "\n".join(escape_html(note) for note in notes)
+    if activation_results:
+        completed_count = sum(result.get("status") == "completed" for result in activation_results)
+        text += (
+            "\n\n<b>Activation requests:</b>\n"
+            f"Completed: {completed_count}\n"
+            f"Pending/failed: {len(activation_results) - completed_count}"
+        )
+        for result in activation_results:
+            status_label = "Completed" if result.get("status") == "completed" else "Needs review"
+            text += (
+                f"\n• {escape_html(result.get('email') or 'N/A')} — {status_label}"
+                f" — Order: <code>{escape_html(result.get('order_code') or 'N/A')}</code>"
+            )
     safe_diagnostic = str(getattr(error, "safe_diagnostic", "") or "").strip()
     if safe_diagnostic:
         text += (
@@ -8150,7 +8192,8 @@ async def notify_admin_api_purchase_success(
     total: float,
     order_code: str,
     delivered_count: int,
-    customer_email: str = None,
+    customer_emails: list = None,
+    order_codes: list = None,
 ):
     balance_data = None
     try:
@@ -8161,6 +8204,8 @@ async def notify_admin_api_purchase_success(
         print(f"Seller API post-purchase balance check failed: {type(exc).__name__}")
 
     profile = get_user_profile(user_id)
+    customer_emails = [str(email) for email in (customer_emails or []) if str(email).strip()]
+    order_codes = [str(code) for code in (order_codes or []) if str(code).strip()]
     username = str(profile.get("username") or "").strip().lstrip("@")
     username_text = f"@{username}" if username else "N/A"
     full_name = " ".join(
@@ -8208,11 +8253,12 @@ async def notify_admin_api_purchase_success(
         f"• Display name: {escape_html(api_mapping_display_name(mapping))}\n"
         f"• API product ID: <code>{escape_html(mapping.get('api_product_id') or 'N/A')}</code>\n"
         f"• Quantity: {quantity}\n"
-        f"• Customer email: {escape_html(customer_email or 'N/A')}\n"
+        f"• Customer emails ({len(customer_emails)}): {escape_html(', '.join(customer_emails) or 'N/A')}\n"
         f"• Unit selling price: {format_money(unit_price)}\n"
         f"• Total paid: {format_money(total)}\n\n"
         "<b>Seller/API</b>\n"
         f"• Seller order code: <code>{escape_html(order_code or 'N/A')}</code>\n"
+        f"• Seller order codes: {escape_html(', '.join(order_codes) or 'N/A')}\n"
         f"• API cost per item: {api_cost_text}\n"
         f"• Estimated API total cost: {api_total_text}\n"
         f"• Estimated profit: {profit_text}\n"
@@ -8248,7 +8294,9 @@ async def handle_api_purchase_failure(
     unit_price: float,
     total: float,
     error,
-    customer_email: str = None,
+    customer_emails: list = None,
+    activation_results: list = None,
+    partial_delivered_items: list = None,
 ):
     category = api_purchase_failure_category(error)
     order_code = str(getattr(error, "order_code", "") or "").strip()
@@ -8263,6 +8311,29 @@ async def handle_api_purchase_failure(
         category,
         order_code,
     )
+    customer_emails = [str(email) for email in (customer_emails or []) if str(email).strip()]
+    activation_results = activation_results or []
+    order_codes = [
+        str(result.get("order_code"))
+        for result in activation_results
+        if result.get("order_code")
+    ]
+    if customer_emails:
+        order["activation_emails"] = customer_emails
+    if order_codes:
+        order["seller_order_codes"] = order_codes
+    if activation_results:
+        order["activation_results"] = [
+            {
+                "email": str(result.get("email") or ""),
+                "status": str(result.get("status") or "pending_support"),
+                "seller_order_code": str(result.get("order_code") or ""),
+                "delivered_count": int(result.get("delivered_count", 0) or 0),
+            }
+            for result in activation_results
+        ]
+    if partial_delivered_items:
+        order["delivered_items"] = snapshot_delivered_items(partial_delivered_items)
     add_transaction_record(
         user_id,
         "Wallet Purchase",
@@ -8286,7 +8357,8 @@ async def handle_api_purchase_failure(
         unit_price,
         total,
         error,
-        customer_email,
+        customer_emails,
+        activation_results,
     )
     pending_text = (
         "⚠️ Your activation request is being processed."
@@ -8368,13 +8440,26 @@ async def continue_api_shop_purchase(context, user_id: int, callback_token: str,
             "api_callback_token": callback_token,
             "qty": quantity,
         }
+        if quantity == 1:
+            email_instruction = "👉 Please enter your email where you want this product activated."
+            email_example = "<code>buyer1@gmail.com</code>"
+        else:
+            email_instruction = (
+                f"👉 Please enter {quantity} emails, one per line or separated by commas."
+            )
+            email_example = "\n".join(
+                f"<code>buyer{index}@gmail.com</code>"
+                for index in range(1, quantity + 1)
+            )
         await context.bot.send_message(
             user_id,
             "📧 <b>ACTIVATION INFORMATION</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n\n"
-            "👉 Please enter your email where you want this product activated.\n\n"
+            f"{email_instruction}\n\n"
             "<b>Example:</b>\n"
-            "<code>buyer1@gmail.com</code>\n\n"
+            f"{email_example}\n\n"
+            "Each email corresponds to 1 slot.\n"
+            f"<b>Total:</b> {format_money(total)}\n\n"
             "📌 After payment, your activation request will be processed.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("❌ Cancel", callback_data="user_back_to_dashboard")],
@@ -8394,7 +8479,7 @@ async def process_api_shop_purchase(
     user_id: int,
     callback_token: str,
     quantity: int,
-    customer_email: str = None,
+    customer_emails=None,
 ):
     mapping = find_api_shop_mapping(callback_token)
     if mapping is None:
@@ -8412,9 +8497,23 @@ async def process_api_shop_purchase(
     if validation_error:
         await context.bot.send_message(user_id, f"❌ {validation_error}")
         return False
-    if api_mapping_requires_customer_email(mapping) and not is_valid_customer_email(customer_email):
-        await context.bot.send_message(user_id, "❌ Please enter a valid email address.")
-        return False
+    requires_email = api_mapping_requires_customer_email(mapping)
+    if requires_email:
+        if isinstance(customer_emails, str):
+            customer_emails = parse_customer_emails(customer_emails)
+        else:
+            customer_emails = [str(email).strip() for email in (customer_emails or []) if str(email).strip()]
+        if len(customer_emails) != quantity or not all(
+            is_valid_customer_email(email) for email in customer_emails
+        ):
+            await context.bot.send_message(
+                user_id,
+                f"❌ You selected x{quantity}, please enter exactly {quantity} valid "
+                f"email{'s' if quantity != 1 else ''}.",
+            )
+            return False
+    else:
+        customer_emails = []
 
     unit_price = api_shop_mapping_price(mapping)
     total = round(unit_price * quantity, 2)
@@ -8444,43 +8543,110 @@ async def process_api_shop_purchase(
         if float(user_wallet.get(user_id, 0.0)) < total:
             await context.bot.send_message(user_id, "❌ Wallet balance is not enough.")
             return False
-        try:
-            result = await asyncio.to_thread(
-                purchase_buyer_api_product,
-                mapping.get("api_product_id"),
-                quantity,
-                customer_email,
-                provider_id,
-            )
-        except BuyerAPIError as exc:
-            print(f"Mapped product purchase failed: category={api_purchase_failure_category(exc)}")
-            if api_purchase_failure_category(exc) == "config":
-                await notify_unavailable_api_provider(context, user_id, mapping)
+        activation_results = []
+        order_codes = []
+        delivered_items = []
+        remaining_stock_values = []
+        attempt_errors = []
+        if requires_email:
+            for customer_email in customer_emails:
+                try:
+                    attempt_result = await asyncio.to_thread(
+                        purchase_buyer_api_product,
+                        mapping.get("api_product_id"),
+                        1,
+                        customer_email,
+                        provider_id,
+                    )
+                    attempt_items = list(attempt_result.get("accounts") or [])
+                    attempt_order_code = str(attempt_result.get("order_code") or "")
+                    delivered_items.extend(attempt_items)
+                    if attempt_result.get("remaining_stock") is not None:
+                        remaining_stock_values.append(attempt_result.get("remaining_stock"))
+                    if attempt_order_code:
+                        order_codes.append(attempt_order_code)
+                    activation_results.append({
+                        "email": customer_email,
+                        "status": "completed",
+                        "order_code": attempt_order_code,
+                        "delivered_count": len(attempt_items),
+                    })
+                except BuyerAPIError as exc:
+                    print(f"Mapped activation purchase failed: category={api_purchase_failure_category(exc)}")
+                    attempt_errors.append(exc)
+                    attempt_order_code = str(getattr(exc, "order_code", "") or "")
+                    if attempt_order_code:
+                        order_codes.append(attempt_order_code)
+                    activation_results.append({
+                        "email": customer_email,
+                        "status": "pending_support",
+                        "order_code": attempt_order_code,
+                        "delivered_count": 0,
+                    })
+                except Exception as exc:
+                    print(f"Mapped activation purchase failed unexpectedly: {type(exc).__name__}")
+                    attempt_errors.append(BuyerAPIError("Unexpected purchase failure.", "unknown"))
+                    activation_results.append({
+                        "email": customer_email,
+                        "status": "pending_support",
+                        "order_code": "",
+                        "delivered_count": 0,
+                    })
+            if attempt_errors:
+                if (
+                    all(api_purchase_failure_category(error) == "config" for error in attempt_errors)
+                    and not delivered_items
+                ):
+                    await notify_unavailable_api_provider(context, user_id, mapping)
+                    return False
+                await handle_api_purchase_failure(
+                    context,
+                    user_id,
+                    mapping,
+                    quantity,
+                    unit_price,
+                    total,
+                    attempt_errors[0],
+                    customer_emails,
+                    activation_results,
+                    delivered_items,
+                )
                 return False
-            await handle_api_purchase_failure(
-                context,
-                user_id,
-                mapping,
-                quantity,
-                unit_price,
-                total,
-                exc,
-                customer_email,
-            )
-            return False
-        except Exception as exc:
-            print(f"Mapped product purchase failed unexpectedly: {type(exc).__name__}")
-            await handle_api_purchase_failure(
-                context,
-                user_id,
-                mapping,
-                quantity,
-                unit_price,
-                total,
-                BuyerAPIError("Unexpected purchase failure.", "unknown"),
-                customer_email,
-            )
-            return False
+            result = {
+                "accounts": delivered_items,
+                "order_code": ", ".join(order_codes),
+                "remaining_stock": remaining_stock_values[-1] if remaining_stock_values else None,
+            }
+        else:
+            try:
+                result = await asyncio.to_thread(
+                    purchase_buyer_api_product,
+                    mapping.get("api_product_id"),
+                    quantity,
+                    None,
+                    provider_id,
+                )
+            except BuyerAPIError as exc:
+                print(f"Mapped product purchase failed: category={api_purchase_failure_category(exc)}")
+                if api_purchase_failure_category(exc) == "config":
+                    await notify_unavailable_api_provider(context, user_id, mapping)
+                    return False
+                await handle_api_purchase_failure(
+                    context, user_id, mapping, quantity, unit_price, total, exc
+                )
+                return False
+            except Exception as exc:
+                print(f"Mapped product purchase failed unexpectedly: {type(exc).__name__}")
+                await handle_api_purchase_failure(
+                    context,
+                    user_id,
+                    mapping,
+                    quantity,
+                    unit_price,
+                    total,
+                    BuyerAPIError("Unexpected purchase failure.", "unknown"),
+                )
+                return False
 
         delivered_items = result["accounts"]
         order_code = result.get("order_code", "")
@@ -8495,6 +8661,20 @@ async def process_api_shop_purchase(
             delivered_items,
             order_code,
         )
+        if customer_emails:
+            order["activation_emails"] = customer_emails
+        if order_codes:
+            order["seller_order_codes"] = order_codes
+        if activation_results:
+            order["activation_results"] = [
+                {
+                    "email": str(result_item.get("email") or ""),
+                    "status": "completed",
+                    "seller_order_code": str(result_item.get("order_code") or ""),
+                    "delivered_count": int(result_item.get("delivered_count", 0) or 0),
+                }
+                for result_item in activation_results
+            ]
         add_transaction_record(
             user_id,
             "Wallet Purchase",
@@ -8526,7 +8706,8 @@ async def process_api_shop_purchase(
                 total,
                 order_code,
                 len(delivered_items),
-                customer_email,
+                customer_emails,
+                order_codes,
             ))
         except Exception as exc:
             # Admin reporting must never change an already completed user purchase.
@@ -10182,18 +10363,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if user_mode[user_id] != "admin" and step == "api_shop_customer_email":
-        if not is_valid_customer_email(text):
-            await update.message.reply_text(
-                "❌ Please enter a valid email address and try again.\n\n"
-                "Example: buyer1@gmail.com"
-            )
-            return
         callback_token = str(state.get("api_callback_token") or "")
         try:
             quantity = int(state.get("qty"))
         except (TypeError, ValueError):
             quantity = 0
-        await process_api_shop_purchase(context, user_id, callback_token, quantity, text)
+        customer_emails = parse_customer_emails(text)
+        if quantity <= 0 or len(customer_emails) != quantity or not all(
+            is_valid_customer_email(email) for email in customer_emails
+        ):
+            expected_quantity = quantity if quantity > 0 else 1
+            await update.message.reply_text(
+                f"❌ You selected x{expected_quantity}, please enter exactly "
+                f"{expected_quantity} valid email{'s' if expected_quantity != 1 else ''}.\n\n"
+                "Use one email per line or separate them with commas."
+            )
+            return
+        await process_api_shop_purchase(
+            context, user_id, callback_token, quantity, customer_emails
+        )
         return
 
     # ========= ADMIN MAIN MENUS =========
@@ -13855,6 +14043,34 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             api_shop_quantity_keyboard(mapping),
             api_shop_quantity_keyboard(mapping, styled=False),
         )
+        return
+
+    if data.startswith("api_shop_slot_qty_"):
+        selection = data.replace("api_shop_slot_qty_", "", 1)
+        callback_token, _, quantity_text = selection.rpartition("_")
+        try:
+            quantity = int(quantity_text)
+        except ValueError:
+            quantity = 0
+        mapping = find_api_shop_mapping(callback_token)
+        validation_error = validate_api_shop_purchase(mapping, quantity) if mapping else "This product is no longer available."
+        if not mapping or not api_mapping_requires_customer_email(mapping):
+            validation_error = "This activation option is no longer available."
+        if validation_error:
+            await send_shop_inline_with_style_fallback(
+                query,
+                f"❌ <b>{escape_html(validation_error)}</b>",
+                api_shop_product_details_keyboard(mapping) if mapping else shop_return_keyboard(),
+                api_shop_product_details_keyboard(mapping, styled=False) if mapping else shop_return_keyboard(styled=False),
+            )
+            return
+        await send_shop_inline_with_style_fallback(
+            query,
+            "⏳ <b>Preparing activation information...</b>",
+            user_back_to_menu_keyboard(),
+            user_back_to_menu_keyboard(styled=False),
+        )
+        await continue_api_shop_purchase(context, user_id, callback_token, quantity)
         return
 
     if data.startswith("api_shop_qty_"):
