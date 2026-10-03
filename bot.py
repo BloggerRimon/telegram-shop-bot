@@ -1205,12 +1205,13 @@ def load_seller_api_providers() -> dict:
             "telegram_buyer": "telegram_buyer",
             "warzone_v1": "warzone_v1",
         }.get(provider_type_raw, provider_type_raw)
-        product_id_field = os.getenv(f"{prefix}_PRODUCT_ID_FIELD", "product_id").strip()
+        default_product_id_field = "service_id" if provider_type == "warzone_v1" else "product_id"
+        product_id_field = os.getenv(f"{prefix}_PRODUCT_ID_FIELD", default_product_id_field).strip()
         quantity_field = os.getenv(f"{prefix}_QUANTITY_FIELD", "quantity").strip()
         email_field = os.getenv(f"{prefix}_EMAIL_FIELD", "email").strip()
-        if product_id_field not in {"product_id", "productId"}:
-            product_id_field = "product_id"
-        if quantity_field not in {"quantity", "qty"}:
+        if product_id_field not in {"service_id", "serviceId", "product_id", "productId", "id"}:
+            product_id_field = default_product_id_field
+        if quantity_field not in {"quantity", "qty", "amount"}:
             quantity_field = "quantity"
         if email_field not in {"email", "customer_email"}:
             email_field = "email"
@@ -1512,10 +1513,19 @@ def purchase_buyer_api_product(
         except (ValueError, TypeError):
             error_payload = None
         category, order_code = _buyer_api_purchase_failure_metadata(error_payload, "http_error")
+        safe_diagnostic = ""
+        if provider_type == "warzone_v1":
+            safe_diagnostic = _safe_warzone_http_error_diagnostic(
+                error_payload,
+                response.status_code,
+                payload.keys(),
+                provider_id,
+            )
         raise BuyerAPIError(
             f"Purchase service returned HTTP {response.status_code}.",
             category,
             order_code,
+            safe_diagnostic,
         )
     try:
         response_payload = response.json()
@@ -1947,6 +1957,95 @@ def _safe_warzone_purchase_diagnostic(response_payload, http_status=None) -> str
         else:
             lines.append(f"First {path} item type: {type(first_item).__name__}")
         break
+    return "\n".join(lines)
+
+
+def _safe_warzone_http_error_value(value, field_name: str, provider_id: str) -> str:
+    if isinstance(value, dict):
+        keys = _safe_seller_api_field_names(value)
+        return f"fields: {', '.join(keys)}" if keys else "structured error"
+    if isinstance(value, list):
+        scalar_values = [item for item in value[:3] if isinstance(item, (str, int, float, bool))]
+        if not scalar_values:
+            return "structured error"
+        value = "; ".join(str(item) for item in scalar_values)
+    if not isinstance(value, (str, int, float, bool)):
+        return ""
+
+    text = " ".join(str(value).split()).strip()
+    if not text:
+        return ""
+    try:
+        api_key = str(get_seller_api_provider(provider_id).get("api_key") or "")
+    except BuyerAPIError:
+        api_key = ""
+    if api_key and api_key.lower() in text.lower():
+        return "[redacted]"
+    lowered = text.lower()
+    sensitive_markers = (
+        "password", "credential", "username", "redeem", "license key",
+        "access token", "secret token", "account:", "account=",
+    )
+    if "|" in text or re.search(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b", text):
+        return "[redacted]"
+    if any(marker in lowered for marker in sensitive_markers):
+        return "[redacted]"
+    if re.search(r"\b[A-Za-z0-9_-]{32,}\b", text):
+        return "[redacted]"
+    safe_error_markers = (
+        "error", "invalid", "missing", "required", "validation", "bad request",
+        "forbidden", "unauthorized", "denied", "not found", "unavailable",
+        "failed", "failure", "stock", "balance", "insufficient", "quantity",
+        "service", "product", "request", "inactive", "disabled", "limit",
+    )
+    if field_name not in {"status", "code"} and not any(
+        marker in lowered for marker in safe_error_markers
+    ):
+        return "[redacted]"
+    if field_name == "code" and not any(marker in lowered for marker in (
+        "error", "invalid", "missing", "required", "validation", "bad_request",
+        "forbidden", "unauthorized", "not_found", "unavailable", "stock", "balance",
+    )):
+        return "[redacted]"
+    return text[:240]
+
+
+def _safe_warzone_http_error_diagnostic(
+    response_payload,
+    http_status,
+    payload_keys,
+    provider_id: str,
+) -> str:
+    lines = [
+        "Endpoint: POST /api/v1/order",
+        f"HTTP status: {http_status}",
+        f"Payload keys sent: {', '.join(str(key) for key in payload_keys)}",
+    ]
+    if not isinstance(response_payload, dict):
+        lines.append("Response JSON: unavailable or non-object")
+        return "\n".join(lines)
+
+    response_keys = _safe_seller_api_field_names(response_payload)
+    lines.append(f"Response keys: {', '.join(response_keys) if response_keys else 'None'}")
+    labels = {
+        "message": "API message",
+        "error": "API error",
+        "errors": "API errors",
+        "detail": "API detail",
+        "reason": "API reason",
+        "status": "API status",
+        "code": "API code",
+    }
+    for field_name, label in labels.items():
+        if field_name not in response_payload:
+            continue
+        safe_value = _safe_warzone_http_error_value(
+            response_payload.get(field_name),
+            field_name,
+            provider_id,
+        )
+        if safe_value:
+            lines.append(f"{label}: {safe_value}")
     return "\n".join(lines)
 
 
@@ -4049,6 +4148,8 @@ def render_seller_api_debug_config(provider_id: str = "default") -> str:
             "<b>Products endpoint:</b> <code>GET /api/v1/products</code>",
             "<b>Purchase endpoint:</b> <code>POST /api/v1/order</code>",
             "<b>Auth:</b> <code>X-API-Key</code>",
+            f"<b>Payload mode:</b> <code>{escape_html(provider.get('product_id_field'))} + "
+            f"{escape_html(provider.get('quantity_field'))}</code>",
         ])
     api_key = str(provider.get("api_key") or "")
     lines = [
