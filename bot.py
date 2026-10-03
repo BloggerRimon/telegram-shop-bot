@@ -9,7 +9,7 @@ import random
 import re
 import string
 import requests
-from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_UP
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP, ROUND_UP
 from datetime import datetime
 
 from telegram import (
@@ -4123,11 +4123,51 @@ def update_api_product_mapping(product: dict, provider_id: str = None, **changes
     mapping.setdefault("enabled", False)
     mapping.setdefault("selling_price", None)
     mapping.setdefault("category_id", None)
+    mapping.setdefault("pricing_mode", "manual")
+    mapping.setdefault("fixed_profit", None)
+    mapping.setdefault("auto_price_last_cost", None)
+    mapping.setdefault("auto_price_last_updated_at", None)
     mapping.update(_api_product_mapping_snapshot(product, provider_id))
     mapping.update(changes)
     api_product_mappings[mapping_key] = mapping
     sync_api_product_shop_order(mapping)
     return mapping
+
+
+def api_mapping_pricing_mode(mapping: dict) -> str:
+    return "fixed_profit" if str((mapping or {}).get("pricing_mode") or "manual") == "fixed_profit" else "manual"
+
+
+def recalculate_api_mapping_selling_price(mapping: dict, api_cost=None, updated_at: str = None) -> dict:
+    result = {"applied": False, "changed": False, "price": None, "reason": "manual"}
+    if not isinstance(mapping, dict) or api_mapping_pricing_mode(mapping) != "fixed_profit":
+        return result
+
+    cost = safe_decimal(mapping.get("api_cost") if api_cost is None else api_cost)
+    profit = safe_decimal(mapping.get("fixed_profit"))
+    if cost is None or not cost.is_finite() or cost < 0:
+        result["reason"] = "missing_cost"
+        return result
+    if profit is None or not profit.is_finite() or profit < 0 or profit > 1000:
+        result["reason"] = "invalid_profit"
+        return result
+
+    calculated = (cost + profit).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if calculated <= 0:
+        result["reason"] = "invalid_price"
+        return result
+
+    previous = safe_decimal(mapping.get("selling_price"))
+    mapping["selling_price"] = float(calculated)
+    mapping["auto_price_last_cost"] = float(cost)
+    mapping["auto_price_last_updated_at"] = updated_at or datetime.now().isoformat(timespec="seconds")
+    result.update({
+        "applied": True,
+        "changed": previous is None or previous != calculated,
+        "price": float(calculated),
+        "reason": None,
+    })
+    return result
 
 
 def sync_api_product_mapping_validity(
@@ -4143,7 +4183,7 @@ def sync_api_product_mapping_validity(
             current_products[api_product_id] = product
 
     now_text = datetime.now().isoformat(timespec="seconds")
-    result = {"missing": 0, "restored": 0, "updated": 0}
+    result = {"missing": 0, "restored": 0, "updated": 0, "prices_updated": 0}
     for mapping_key, mapping in saved_api_shop_mappings():
         if mapping_provider_id(mapping) != provider_id:
             continue
@@ -4175,6 +4215,14 @@ def sync_api_product_mapping_validity(
         if fresh_snapshot.get("last_stock") is None:
             fresh_snapshot.pop("last_stock", None)
         mapping.update(fresh_snapshot)
+        if "api_cost" in fresh_snapshot:
+            price_result = recalculate_api_mapping_selling_price(
+                mapping,
+                fresh_snapshot["api_cost"],
+                now_text,
+            )
+            if price_result.get("changed"):
+                result["prices_updated"] += 1
         mapping["seller_missing"] = False
         if was_missing:
             mapping["last_restored_at"] = now_text
@@ -4332,6 +4380,7 @@ async def notify_admin_seller_api_refresh_changes(
         f"<b>Total products:</b> {total}\n"
         f"<b>Missing marked:</b> {int(sync_result.get('missing', 0) or 0)}\n"
         f"<b>Restored:</b> {int(sync_result.get('restored', 0) or 0)}\n"
+        f"<b>Prices updated:</b> {int(sync_result.get('prices_updated', 0) or 0)}\n"
         f"<b>Current balance:</b> {escape_html(balance_text)}"
     )
     for admin_id in ADMIN_IDS:
@@ -4401,7 +4450,9 @@ async def run_seller_api_refresh(bot, source: str = "manual", provider_id: str =
         result["balance"] = balance
         result["balance_text"] = balance_text
         if source == "auto" and result["success"] and (
-            status["last_missing_marked"] or status["last_restored"]
+            status["last_missing_marked"]
+            or status["last_restored"]
+            or int(result.get("sync", {}).get("prices_updated", 0) or 0)
         ):
             await notify_admin_seller_api_refresh_changes(
                 bot, result["total"], result["sync"], balance_text, provider_id
@@ -4892,6 +4943,31 @@ def render_api_shop_mapping_detail(mapping_key: str, mapping: dict) -> str:
     status = "✅ Enabled" if _buyer_api_bool_value(mapping.get("enabled")) else "❌ Disabled"
     price = _buyer_api_numeric_value(mapping.get("selling_price"))
     price_text = format_money(price) if price is not None and price > 0 else "Not set"
+    api_cost = _buyer_api_numeric_value(mapping.get("api_cost"))
+    api_cost_text = format_money(api_cost) if api_cost is not None and api_cost >= 0 else "N/A"
+    pricing_mode = api_mapping_pricing_mode(mapping)
+    if pricing_mode == "fixed_profit":
+        fixed_profit = _buyer_api_numeric_value(mapping.get("fixed_profit"))
+        fixed_profit_text = format_money(fixed_profit) if fixed_profit is not None else "Not set"
+        calculation_text = (
+            f"{api_cost_text} + {fixed_profit_text} = {price_text}"
+            if api_cost is not None and fixed_profit is not None and price is not None
+            else "Waiting for valid API cost and fixed profit"
+        )
+        pricing_text = (
+            "<b>Pricing Mode:</b> Auto Profit\n"
+            f"<b>API Cost:</b> {api_cost_text}\n"
+            f"<b>Fixed Profit:</b> {fixed_profit_text}\n"
+            f"<b>Auto Selling Price:</b> {calculation_text}"
+        )
+    else:
+        profit = round(price - api_cost, 2) if price is not None and api_cost is not None else None
+        pricing_text = (
+            "<b>Pricing Mode:</b> Manual\n"
+            f"<b>Selling Price:</b> {price_text}\n"
+            f"<b>API Cost:</b> {api_cost_text}\n"
+            f"<b>Profit:</b> {format_money(profit) if profit is not None else 'N/A'}"
+        )
     custom_name_status = "Set" if str(mapping.get("custom_name") or "").strip() else "Not set"
     details_status = "Set" if str(mapping.get("details") or "").strip() else "Not set"
     if _product_custom_emoji_id(mapping):
@@ -4917,7 +4993,7 @@ def render_api_shop_mapping_detail(mapping_key: str, mapping: dict) -> str:
         f"<b>API product ID:</b> <code>{escape_html(api_product_id or 'N/A')}</code>\n"
         f"<b>Status:</b> {status}\n"
         f"<b>Category:</b> {escape_html(_api_mapping_category_name(mapping))}\n"
-        f"<b>Selling price:</b> {price_text}\n"
+        f"{pricing_text}\n"
         f"<b>Last stock:</b> {escape_html(_api_mapping_stock_text(mapping))}\n"
         f"<b>Requires customer email:</b> {'Yes' if _buyer_api_bool_value(mapping.get('requires_customer_email')) else 'No'}\n"
         f"<b>Slot product:</b> {'Yes' if _buyer_api_bool_value(mapping.get('is_slot_product')) else 'No'}\n"
@@ -4936,11 +5012,19 @@ def api_shop_mapping_manager_keyboard(mapping: dict) -> InlineKeyboardMarkup:
             [InlineKeyboardButton("⬅️ Back", callback_data="seller_api_shop_return")],
         ])
     toggle_text = "❌ Disable" if _buyer_api_bool_value(mapping.get("enabled")) else "✅ Enable"
-    return InlineKeyboardMarkup([
+    rows = [
         [InlineKeyboardButton(toggle_text, callback_data="seller_api_shop_toggle")],
         [InlineKeyboardButton("✏️ Edit Product Name", callback_data="seller_api_shop_name")],
         [InlineKeyboardButton("🧹 Clear Custom Name", callback_data="seller_api_shop_name_clear")],
         [InlineKeyboardButton("💲 Edit Selling Price", callback_data="seller_api_shop_price")],
+        [InlineKeyboardButton("📈 Set Auto Profit", callback_data="seller_api_shop_auto_profit")],
+    ]
+    if api_mapping_pricing_mode(mapping) == "fixed_profit":
+        rows.append([
+            InlineKeyboardButton("🔁 Switch to Manual Pricing", callback_data="seller_api_shop_pricing_manual")
+        ])
+    rows.extend([
+        [InlineKeyboardButton("🧮 Recalculate Price Now", callback_data="seller_api_shop_price_recalculate")],
         [InlineKeyboardButton("📁 Change Category", callback_data="seller_api_shop_category")],
         [InlineKeyboardButton("🎨 Set Icon", callback_data="seller_api_shop_icon")],
         [InlineKeyboardButton("🧹 Clear Icon", callback_data="seller_api_shop_icon_clear")],
@@ -4949,6 +5033,7 @@ def api_shop_mapping_manager_keyboard(mapping: dict) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🗑 Remove From Shop", callback_data="seller_api_shop_remove")],
         [InlineKeyboardButton("⬅️ Back", callback_data="seller_api_shop_return")],
     ])
+    return InlineKeyboardMarkup(rows)
 
 
 def api_shop_mapping_category_keyboard() -> InlineKeyboardMarkup:
@@ -10046,10 +10131,43 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         mapping["selling_price"] = float(selling_price)
+        mapping["pricing_mode"] = "manual"
         admin_temp[user_id].pop("pending_api_shop_price", None)
         user_state[user_id] = {"step": "seller_api_shop_detail"}
         await update.message.reply_text(
             "✅ <b>Selling price saved.</b>\n\n" + render_api_shop_mapping_detail(mapping_key, mapping),
+            reply_markup=api_shop_mapping_manager_keyboard(mapping),
+            parse_mode="HTML",
+        )
+        return
+
+    if step == "seller_api_shop_auto_profit_input" and is_admin(user_id):
+        mapping_key, mapping = selected_saved_api_shop_mapping(user_id)
+        if not mapping:
+            await update.message.reply_text("❌ Mapped product selection expired.", reply_markup=seller_api_keyboard())
+            return
+        fixed_profit = safe_decimal(text)
+        if (
+            fixed_profit is None
+            or not fixed_profit.is_finite()
+            or fixed_profit < 0
+            or fixed_profit > 1000
+        ):
+            await update.message.reply_text("❌ Fixed profit must be a number from 0 to 1000.")
+            return
+        mapping["pricing_mode"] = "fixed_profit"
+        mapping["fixed_profit"] = float(fixed_profit)
+        price_result = recalculate_api_mapping_selling_price(mapping)
+        user_state[user_id] = {"step": "seller_api_shop_detail"}
+        if price_result.get("applied"):
+            message = "✅ <b>Auto profit saved and selling price recalculated.</b>"
+        else:
+            message = (
+                "✅ <b>Auto profit saved.</b>\n\n"
+                "⚠️ Price will update after the next successful API refresh because API cost is unavailable."
+            )
+        await update.message.reply_text(
+            message + "\n\n" + render_api_shop_mapping_detail(mapping_key, mapping),
             reply_markup=api_shop_mapping_manager_keyboard(mapping),
             parse_mode="HTML",
         )
@@ -10086,7 +10204,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML",
             )
             return
-        update_api_product_mapping(product, selling_price=float(selling_price))
+        update_api_product_mapping(
+            product,
+            selling_price=float(selling_price),
+            pricing_mode="manual",
+        )
         admin_temp[user_id].pop("pending_api_selling_price", None)
         user_state[user_id] = {"step": "seller_api_product_detail"}
         await update.message.reply_text(
@@ -11126,6 +11248,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Products: {int(refresh_result.get('total', 0) or 0)}\n"
                 f"Missing marked: {int(refresh_result.get('sync', {}).get('missing', 0) or 0)}\n"
                 f"Restored: {int(refresh_result.get('sync', {}).get('restored', 0) or 0)}\n"
+                f"Prices updated: {int(refresh_result.get('sync', {}).get('prices_updated', 0) or 0)}\n"
                 f"Balance: {escape_html(refresh_result.get('balance_text') or 'Could not fetch')}"
             )
         else:
@@ -11325,6 +11448,63 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if data == "seller_api_shop_auto_profit":
+        _, mapping = selected_saved_api_shop_mapping(user_id)
+        if not mapping:
+            await send_api_shop_manager(query, user_id, 0)
+            return
+        user_state[user_id] = {"step": "seller_api_shop_auto_profit_input"}
+        await edit_seller_api_callback_message(
+            query,
+            user_id,
+            "📈 <b>SET AUTO PROFIT</b>\n\n"
+            "Send the fixed profit amount to add to the latest API cost.\n"
+            "Allowed range: 0 to 1000.",
+            InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅️ Back", callback_data="seller_api_shop_detail")
+            ]]),
+        )
+        return
+
+    if data == "seller_api_shop_pricing_manual":
+        mapping_key, mapping = selected_saved_api_shop_mapping(user_id)
+        if not mapping:
+            await send_api_shop_manager(query, user_id, 0)
+            return
+        mapping["pricing_mode"] = "manual"
+        user_state[user_id] = {"step": "seller_api_shop_detail"}
+        await edit_seller_api_callback_message(
+            query,
+            user_id,
+            "✅ <b>Manual pricing enabled.</b>\n\n"
+            "The current selling price was kept. The saved fixed profit will not be applied while manual pricing is active.\n\n"
+            + render_api_shop_mapping_detail(mapping_key, mapping),
+            api_shop_mapping_manager_keyboard(mapping),
+        )
+        return
+
+    if data == "seller_api_shop_price_recalculate":
+        mapping_key, mapping = selected_saved_api_shop_mapping(user_id)
+        if not mapping:
+            await send_api_shop_manager(query, user_id, 0)
+            return
+        price_result = recalculate_api_mapping_selling_price(mapping)
+        if price_result.get("applied"):
+            message = "✅ <b>Auto selling price recalculated.</b>"
+        elif price_result.get("reason") == "manual":
+            message = "⚠️ <b>Switch to Auto Profit pricing before recalculating.</b>"
+        elif price_result.get("reason") == "missing_cost":
+            message = "⚠️ <b>API cost is unavailable. Run a successful product refresh first.</b>"
+        else:
+            message = "⚠️ <b>Saved fixed profit is invalid. Set Auto Profit again.</b>"
+        await edit_seller_api_callback_message(
+            query,
+            user_id,
+            message + "\n\n" + render_api_shop_mapping_detail(mapping_key, mapping),
+            api_shop_mapping_manager_keyboard(mapping),
+        )
+        return
+
     if data == "seller_api_shop_price_confirm":
         mapping_key, mapping = selected_saved_api_shop_mapping(user_id)
         pending_price = admin_temp.get(user_id, {}).pop("pending_api_shop_price", None)
@@ -11333,6 +11513,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_api_shop_manager(query, user_id, 0)
             return
         mapping["selling_price"] = price
+        mapping["pricing_mode"] = "manual"
         user_state[user_id] = {"step": "seller_api_shop_detail"}
         await edit_seller_api_callback_message(
             query,
@@ -11674,7 +11855,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not product or _buyer_api_numeric_value(pending_price) is None or float(pending_price) <= 0:
             await send_inline_from_callback(query, "❌ <b>Pending selling price expired.</b>", seller_api_keyboard())
             return
-        update_api_product_mapping(product, selling_price=float(pending_price))
+        update_api_product_mapping(
+            product,
+            selling_price=float(pending_price),
+            pricing_mode="manual",
+        )
         user_state[user_id] = {"step": "seller_api_product_detail"}
         await edit_seller_api_callback_message(
             query,
