@@ -1167,10 +1167,17 @@ def is_admin(user_id: int) -> bool:
 
 
 class BuyerAPIError(Exception):
-    def __init__(self, message: str, category: str = "unknown", order_code: str = ""):
+    def __init__(
+        self,
+        message: str,
+        category: str = "unknown",
+        order_code: str = "",
+        safe_diagnostic: str = "",
+    ):
         super().__init__(message)
         self.category = str(category or "unknown")
         self.order_code = str(order_code or "").strip()
+        self.safe_diagnostic = str(safe_diagnostic or "").strip()
 
 
 def load_seller_api_providers() -> dict:
@@ -1418,9 +1425,13 @@ def _buyer_api_purchase_failure_metadata(payload, default_category: str = "unkno
     if not isinstance(payload, dict):
         return default_category, ""
     sources = [payload]
-    for key in ("data", "result", "order"):
+    for key in ("data", "result", "order", "orderData"):
         if isinstance(payload.get(key), dict):
             sources.append(payload[key])
+    for path in ("data.order", "data.orderData", "result.order", "result.orderData"):
+        value = _seller_api_nested_value(payload, path)
+        if isinstance(value, dict):
+            sources.append(value)
     order_code = ""
     reason_parts = []
     for source in sources:
@@ -1539,9 +1550,17 @@ def purchase_buyer_api_product(
         delivered_items = [str(item) for item in accounts if item not in (None, "") and str(item).strip()]
     if not delivered_items:
         _, order_code = _buyer_api_purchase_failure_metadata(response_payload, "empty_delivery")
+        if provider_type == "warzone_v1":
+            order_code = _warzone_order_reference(response_payload) or order_code
+            raise BuyerAPIError(
+                "Purchase completed without recognized delivery fields.",
+                "parse_missing_delivery",
+                order_code,
+                _safe_warzone_purchase_diagnostic(response_payload, response.status_code),
+            )
         raise BuyerAPIError("Purchase completed without deliverable items.", "empty_delivery", order_code)
 
-    order_code = _seller_api_nested_value(
+    order_code = _warzone_order_reference(response_payload) if provider_type == "warzone_v1" else _seller_api_nested_value(
         response_payload,
         "orderCode", "order_code", "order_id", "id",
         "data.orderCode", "data.order_id", "data.id",
@@ -1827,31 +1846,64 @@ def normalize_warzone_product(product: dict) -> dict:
     return normalized
 
 
+def _warzone_delivery_array_paths() -> tuple:
+    return (
+        "accounts", "codes", "items", "credentials", "products", "data", "result", "services",
+        "data.accounts", "data.codes", "data.items", "data.credentials",
+        "data.order.accounts", "data.order.codes", "data.order.items",
+        "result.accounts", "result.codes", "result.items",
+        "order.accounts", "order.codes", "order.items",
+        "orderData.accounts", "orderData.codes", "orderData.items",
+        "service.accounts", "service.codes", "service.items",
+    )
+
+
+def _warzone_order_reference(response_payload) -> str:
+    value = _seller_api_nested_value(
+        response_payload,
+        "orderCode", "order_code", "order_id", "id",
+        "data.orderCode", "data.order_id", "data.id",
+        "result.orderCode", "result.order_id", "result.id",
+        "order.id", "order.order_id", "order.orderCode", "order.code",
+        "orderData.id", "orderData.order_id", "orderData.orderCode", "orderData.code",
+        "data.order.id", "data.order.order_id", "data.order.orderCode", "data.order.code",
+        "result.order.id", "result.order.order_id", "result.order.orderCode", "result.order.code",
+    )
+    return str(value).strip() if value not in (None, "") else ""
+
+
+def _warzone_delivery_string_paths() -> tuple:
+    return (
+        "account", "code", "credential", "credentials", "license", "key",
+        "redeem_code", "redeemCode", "data.account", "data.code",
+        "data.credential", "data.key", "data.redeem_code", "data.redeemCode",
+        "result.account", "result.code", "result.key", "order.account",
+        "order.code", "order.key",
+    )
+
+
 def _normalize_warzone_delivery_items(response_payload: dict) -> list:
-    sources = [response_payload]
-    for key in ("data", "result", "order"):
-        value = response_payload.get(key) if isinstance(response_payload, dict) else None
-        if isinstance(value, dict):
-            sources.append(value)
     values = None
-    for source in sources:
-        for key in ("accounts", "codes", "items", "credentials", "links"):
-            candidate = source.get(key)
-            if isinstance(candidate, list):
-                values = candidate
-                break
-            if isinstance(candidate, (str, int, float, dict)):
+    for path in _warzone_delivery_array_paths():
+        candidate = _seller_api_nested_value(response_payload, path)
+        if isinstance(candidate, list):
+            values = candidate
+            break
+    if values is None:
+        for path in _warzone_delivery_string_paths():
+            candidate = _seller_api_nested_value(response_payload, path)
+            if isinstance(candidate, (str, int, float)) and str(candidate).strip():
                 values = [candidate]
                 break
-        if values is not None:
-            break
     delivered = []
     for item in values or []:
         if item in (None, ""):
             continue
         if isinstance(item, dict):
             simple_value = _seller_api_nested_value(
-                item, "account", "code", "license", "key", "link", "url", "value", "content"
+                item,
+                "account", "code", "credential", "license", "key", "redeem_code",
+                "redeemCode", "link", "url", "value", "content",
             )
             text = str(simple_value).strip() if simple_value not in (None, "") else json.dumps(
                 item, ensure_ascii=False, separators=(",", ":")
@@ -1861,6 +1913,41 @@ def _normalize_warzone_delivery_items(response_payload: dict) -> list:
         if text:
             delivered.append(text)
     return delivered
+
+
+def _safe_warzone_purchase_diagnostic(response_payload, http_status=None) -> str:
+    def safe_keys(value) -> str:
+        keys = _safe_seller_api_field_names(value)
+        return ", ".join(keys) if keys else ("None" if isinstance(value, dict) else "N/A")
+
+    lines = []
+    if http_status is not None:
+        lines.append(f"HTTP status: {http_status}")
+    if not isinstance(response_payload, dict):
+        lines.append("Top-level response type: non-object")
+        return "\n".join(lines)
+
+    lines.append(f"Top-level response keys: {safe_keys(response_payload)}")
+    object_paths = (
+        "data", "result", "order", "orderData", "data.order", "data.orderData",
+        "result.order", "result.orderData", "service",
+    )
+    for path in object_paths:
+        value = _seller_api_nested_value(response_payload, path)
+        if isinstance(value, dict):
+            lines.append(f"{path} keys: {safe_keys(value)}")
+
+    for path in _warzone_delivery_array_paths():
+        value = _seller_api_nested_value(response_payload, path)
+        if not isinstance(value, list) or not value:
+            continue
+        first_item = value[0]
+        if isinstance(first_item, dict):
+            lines.append(f"First {path} item keys: {safe_keys(first_item)}")
+        else:
+            lines.append(f"First {path} item type: {type(first_item).__name__}")
+        break
+    return "\n".join(lines)
 
 
 def fetch_buyer_api_balance(provider_id: str = "default") -> dict:
@@ -7519,8 +7606,6 @@ def render_api_shop_product_details(mapping: dict) -> str:
         f"<b>Price:</b> {format_money(selling_price)}\n"
         f"<b>Stock:</b> {escape_html(stock_text)}{' pcs' if stock is not None else ''}\n"
         f"{availability_line}"
-        f"<b>Requires customer email:</b> {'Yes' if _buyer_api_bool_value(mapping.get('requires_customer_email')) else 'No'}\n"
-        f"<b>Slot product:</b> {'Yes' if _buyer_api_bool_value(mapping.get('is_slot_product')) else 'No'}\n"
         "<b>Delivery:</b> Instant delivery after purchase\n\n"
         f"<b>Details:</b>\n{details_text}"
     )
@@ -7779,6 +7864,7 @@ def api_purchase_failure_category(error) -> str:
         "http_error",
         "invalid_response",
         "empty_delivery",
+        "parse_missing_delivery",
         "config",
         "unknown",
     }
@@ -7812,6 +7898,7 @@ async def notify_admin_api_purchase_failure(
         "http_error": "HTTP error",
         "invalid_response": "invalid response",
         "empty_delivery": "empty delivery",
+        "parse_missing_delivery": "parse missing delivery",
         "config": "configuration error",
         "unknown": "unknown",
     }
@@ -7823,6 +7910,7 @@ async def notify_admin_api_purchase_failure(
         "http_error": "Automatic fulfillment returned a network or HTTP error.",
         "invalid_response": "Automatic fulfillment returned an invalid response.",
         "empty_delivery": "Automatic fulfillment returned no deliverable items.",
+        "parse_missing_delivery": "Seller API created order but no delivery fields were recognized.",
         "config": "Automatic fulfillment configuration is unavailable.",
         "unknown": "Automatic fulfillment failed for an unknown reason.",
     }
@@ -7830,12 +7918,16 @@ async def notify_admin_api_purchase_failure(
     username = str(profile.get("username") or "").strip().lstrip("@")
     username_text = f"@{username}" if username else "N/A"
     order_code = str(getattr(error, "order_code", "") or "").strip()
+    if category == "parse_missing_delivery" and not order_code:
+        reason_summaries[category] = "No recognized delivery fields were returned."
     provider_id = mapping_provider_id(mapping)
     notes = []
     if category == "insufficient_seller_balance":
         notes.append("Possible seller API balance issue. Please recharge/check seller account.")
     if category == "timeout":
         notes.append("Timeout may be ambiguous because the purchase endpoint has no documented idempotency key.")
+    if category == "parse_missing_delivery" and order_code:
+        notes.append("Check seller panel order history for this API order ID.")
     text = (
         "🚨 <b>API ORDER NEEDS SUPPORT</b>\n\n"
         f"<b>Provider:</b> {escape_html(seller_api_provider_name(provider_id))} "
@@ -7855,6 +7947,12 @@ async def notify_admin_api_purchase_failure(
     )
     if notes:
         text += "\n\n" + "\n".join(escape_html(note) for note in notes)
+    safe_diagnostic = str(getattr(error, "safe_diagnostic", "") or "").strip()
+    if safe_diagnostic:
+        text += (
+            "\n\n<b>Safe response shape:</b>\n"
+            f"<pre>{escape_html(safe_diagnostic)}</pre>"
+        )
     for admin_id in ADMIN_IDS:
         try:
             await bot.send_message(
