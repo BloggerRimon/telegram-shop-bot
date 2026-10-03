@@ -1190,8 +1190,26 @@ def load_seller_api_providers() -> dict:
         name = os.getenv(f"{prefix}_NAME", default_name).strip() or default_name
         base_url = os.getenv(f"{prefix}_URL", "").strip()
         api_key = os.getenv(f"{prefix}_KEY", "").strip()
+        provider_type_raw = os.getenv(f"{prefix}_TYPE", "telegram_buyer").strip().lower()
+        provider_type = {
+            "": "telegram_buyer",
+            "default": "telegram_buyer",
+            "current": "telegram_buyer",
+            "telegram_buyer": "telegram_buyer",
+            "warzone_v1": "warzone_v1",
+        }.get(provider_type_raw, provider_type_raw)
+        product_id_field = os.getenv(f"{prefix}_PRODUCT_ID_FIELD", "product_id").strip()
+        quantity_field = os.getenv(f"{prefix}_QUANTITY_FIELD", "quantity").strip()
+        email_field = os.getenv(f"{prefix}_EMAIL_FIELD", "email").strip()
+        if product_id_field not in {"product_id", "productId"}:
+            product_id_field = "product_id"
+        if quantity_field not in {"quantity", "qty"}:
+            quantity_field = "quantity"
+        if email_field not in {"email", "customer_email"}:
+            email_field = "email"
         if slot != "default" and not any((
-            enabled_env, base_url, api_key, os.getenv(f"{prefix}_NAME", "").strip()
+            enabled_env, base_url, api_key, os.getenv(f"{prefix}_NAME", "").strip(),
+            os.getenv(f"{prefix}_TYPE", "").strip(),
         )):
             continue
         normalized_url = base_url.rstrip("/")
@@ -1202,6 +1220,7 @@ def load_seller_api_providers() -> dict:
         providers[provider_id] = {
             "id": provider_id,
             "name": name,
+            "type": provider_type,
             "enabled": enabled_text.lower() == "true",
             "base_url": normalized_url,
             "api_key": api_key,
@@ -1209,6 +1228,9 @@ def load_seller_api_providers() -> dict:
             "configured": configured,
             "env_prefix": prefix,
             "url_had_api_suffix": base_url.rstrip("/").lower().endswith(api_suffix),
+            "product_id_field": product_id_field,
+            "quantity_field": quantity_field,
+            "email_field": email_field,
         }
     return providers
 
@@ -1235,6 +1257,13 @@ def seller_api_provider_name(provider_id: str = "default") -> str:
         return str(get_seller_api_provider(provider_id).get("name") or provider_id)
     except BuyerAPIError:
         return str(provider_id or "default")
+
+
+def seller_api_provider_type(provider_id: str = "default") -> str:
+    try:
+        return str(get_seller_api_provider(provider_id).get("type") or "telegram_buyer")
+    except BuyerAPIError:
+        return "telegram_buyer"
 
 
 def mapping_provider_id(mapping: dict = None) -> str:
@@ -1295,7 +1324,24 @@ def buyer_api_endpoint(path: str, provider_id: str = "default") -> str:
     return f"{normalize_buyer_api_url(provider_id)}{path}"
 
 
+def seller_api_balance_path(provider_id: str = "default") -> str:
+    return "/api/v1/me" if seller_api_provider_type(provider_id) == "warzone_v1" else "/api/telegram-buyer/balance"
+
+
+def seller_api_products_path(provider_id: str = "default") -> str:
+    return "/api/v1/products" if seller_api_provider_type(provider_id) == "warzone_v1" else "/api/telegram-buyer/products"
+
+
+def seller_api_purchase_path(provider_id: str = "default") -> str:
+    return "/api/v1/order" if seller_api_provider_type(provider_id) == "warzone_v1" else "/api/telegram-buyer/purchase"
+
+
 def buyer_api_endpoint_preview(path: str, params: dict = None, provider_id: str = "default") -> str:
+    if seller_api_provider_type(provider_id) == "warzone_v1":
+        return (
+            f"GET {buyer_api_endpoint(path, provider_id)} "
+            f"[X-API-Key: {mask_buyer_api_key(provider_id)}]"
+        )
     query_parts = [f"key={mask_buyer_api_key(provider_id)}"]
     for key, value in (params or {}).items():
         query_parts.append(f"{key}={value}")
@@ -1308,17 +1354,24 @@ def _validate_buyer_api_config(provider_id: str = "default") -> dict:
         raise BuyerAPIError(f"{provider.get('name')} is disabled.", "config")
     if not provider.get("base_url") or not provider.get("api_key"):
         raise BuyerAPIError(f"{provider.get('name')} configuration is incomplete.", "config")
+    if provider.get("type") not in {"telegram_buyer", "warzone_v1"}:
+        raise BuyerAPIError(f"{provider.get('name')} has an unsupported provider type.", "config")
     return provider
 
 
 def _buyer_api_get(path: str, params: dict = None, provider_id: str = "default"):
     provider = _validate_buyer_api_config(provider_id)
     request_params = dict(params or {})
-    request_params["key"] = provider["api_key"]
+    headers = None
+    if provider.get("type") == "warzone_v1":
+        headers = {"X-API-Key": provider["api_key"]}
+    else:
+        request_params["key"] = provider["api_key"]
     try:
         response = requests.get(
             buyer_api_endpoint(path, provider_id),
             params=request_params,
+            headers=headers,
             timeout=20,
         )
     except requests.Timeout as exc:
@@ -1358,14 +1411,17 @@ def _buyer_api_purchase_failure_metadata(payload, default_category: str = "unkno
     if not isinstance(payload, dict):
         return default_category, ""
     sources = [payload]
-    for key in ("data", "result"):
+    for key in ("data", "result", "order"):
         if isinstance(payload.get(key), dict):
             sources.append(payload[key])
     order_code = ""
     reason_parts = []
     for source in sources:
         if not order_code:
-            value = source.get("orderCode", source.get("order_code"))
+            value = source.get(
+                "orderCode",
+                source.get("order_code", source.get("order_id", source.get("id"))),
+            )
             if value not in (None, ""):
                 order_code = str(value).strip()
         for key in ("message", "error", "detail", "code", "status"):
@@ -1396,18 +1452,33 @@ def purchase_buyer_api_product(
 ) -> dict:
     """Place one external purchase and return only the fulfillment fields the bot needs."""
     provider = _validate_buyer_api_config(provider_id)
-    payload = {
-        "key": provider["api_key"],
-        "product_id": str(api_product_id),
-        "quantity": int(quantity),
-        "lang": "en",
-    }
-    if customer_email:
-        payload["customer_email"] = str(customer_email).strip()
+    provider_type = provider.get("type")
+    headers = None
+    if provider_type == "warzone_v1":
+        payload = {
+            provider.get("product_id_field", "product_id"): str(api_product_id),
+            provider.get("quantity_field", "quantity"): int(quantity),
+        }
+        if customer_email:
+            payload[provider.get("email_field", "email")] = str(customer_email).strip()
+        headers = {
+            "X-API-Key": provider["api_key"],
+            "Content-Type": "application/json",
+        }
+    else:
+        payload = {
+            "key": provider["api_key"],
+            "product_id": str(api_product_id),
+            "quantity": int(quantity),
+            "lang": "en",
+        }
+        if customer_email:
+            payload["customer_email"] = str(customer_email).strip()
     try:
         response = requests.post(
-            buyer_api_endpoint("/api/telegram-buyer/purchase", provider_id),
+            buyer_api_endpoint(seller_api_purchase_path(provider_id), provider_id),
             json=payload,
+            headers=headers,
             timeout=30,
         )
     except requests.Timeout as exc:
@@ -1440,20 +1511,36 @@ def purchase_buyer_api_product(
     success = response_payload.get("success")
     if success is None:
         success = result.get("success")
-    if success is not True:
+    status_text = str(
+        _seller_api_nested_value(response_payload, "status", "data.status", "result.status") or ""
+    ).strip().lower()
+    if provider_type == "warzone_v1":
+        if success is False or status_text in {"failed", "failure", "error", "cancelled", "canceled"}:
+            category, order_code = _buyer_api_purchase_failure_metadata(response_payload)
+            raise BuyerAPIError("Purchase service did not complete the order.", category, order_code)
+    elif success is not True:
         category, order_code = _buyer_api_purchase_failure_metadata(response_payload)
         raise BuyerAPIError("Purchase service did not complete the order.", category, order_code)
 
-    accounts = result.get("accounts", response_payload.get("accounts"))
-    if not isinstance(accounts, list):
-        account = result.get("account", response_payload.get("account"))
-        accounts = [account] if isinstance(account, (str, int, float)) else []
-    delivered_items = [str(item) for item in accounts if item not in (None, "") and str(item).strip()]
+    if provider_type == "warzone_v1":
+        delivered_items = _normalize_warzone_delivery_items(response_payload)
+    else:
+        accounts = result.get("accounts", response_payload.get("accounts"))
+        if not isinstance(accounts, list):
+            account = result.get("account", response_payload.get("account"))
+            accounts = [account] if isinstance(account, (str, int, float)) else []
+        delivered_items = [str(item) for item in accounts if item not in (None, "") and str(item).strip()]
     if not delivered_items:
         _, order_code = _buyer_api_purchase_failure_metadata(response_payload, "empty_delivery")
         raise BuyerAPIError("Purchase completed without deliverable items.", "empty_delivery", order_code)
 
-    order_code = result.get("orderCode", response_payload.get("orderCode"))
+    order_code = _seller_api_nested_value(
+        response_payload,
+        "orderCode", "order_code", "order_id", "id",
+        "data.orderCode", "data.order_id", "data.id",
+        "result.orderCode", "result.order_id", "result.id",
+        "order.id", "order.order_id",
+    )
     remaining_stock = None
     for source in (result, response_payload):
         for key in ("remainingStock", "remaining_stock", "stock", "available"):
@@ -1515,15 +1602,158 @@ def _buyer_api_data(payload):
     return payload
 
 
+def _seller_api_nested_value(payload, *paths):
+    for path in paths:
+        current = payload
+        for part in str(path).split("."):
+            if not isinstance(current, dict) or part not in current:
+                current = None
+                break
+            current = current.get(part)
+        if current not in (None, ""):
+            return current
+    return None
+
+
+def normalize_warzone_balance(payload) -> dict:
+    if not isinstance(payload, dict):
+        raise BuyerAPIError("Seller API balance response is missing balance data.")
+    balance = _seller_api_nested_value(
+        payload,
+        "balance", "wallet", "credit", "credits",
+        "account.balance", "data.balance", "data.wallet", "data.credit",
+        "user.balance", "result.balance",
+    )
+    if isinstance(balance, dict):
+        balance = _seller_api_nested_value(balance, "balance", "amount", "value", "credit", "credits")
+    if balance in (None, ""):
+        raise BuyerAPIError("Seller API balance response is missing balance data.")
+    currency = _seller_api_nested_value(
+        payload, "walletCurrency", "currency", "account.currency", "data.currency", "user.currency"
+    ) or "USDT"
+    return {
+        "balance": balance,
+        "balanceText": f"{balance} {currency}",
+        "walletCurrency": str(currency),
+    }
+
+
+def _warzone_products_from_payload(payload):
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return None
+    for value in (
+        payload.get("products"),
+        payload.get("data"),
+        payload.get("result"),
+        _seller_api_nested_value(payload, "data.products"),
+        _seller_api_nested_value(payload, "result.products"),
+    ):
+        if isinstance(value, list):
+            return value
+    return None
+
+
+def normalize_warzone_product(product: dict) -> dict:
+    if not isinstance(product, dict):
+        return {}
+    product_id = _seller_api_nested_value(product, "id", "_id", "product_id", "productId", "uuid")
+    name = _seller_api_nested_value(
+        product, "name", "product_name", "productName", "title", "display_name"
+    )
+    price = _seller_api_nested_value(
+        product, "price", "cost", "amount", "usdPricing", "walletPricing", "pricing"
+    )
+    stock = _seller_api_nested_value(
+        product, "stock", "available", "quantity", "qty", "inventory", "total_stock", "stats.available"
+    )
+    requires_email = _seller_api_nested_value(
+        product, "requires_customer_email", "requiresCustomerEmail", "need_email", "requireEmail"
+    )
+    is_slot = _seller_api_nested_value(
+        product, "is_slot_product", "isSlotProduct", "slot"
+    )
+    description = _seller_api_nested_value(
+        product, "description", "product_description", "details", "summary"
+    )
+    normalized = {
+        "id": product_id,
+        "name": name,
+        "price": price,
+        "stock": stock,
+        "requires_customer_email": requires_email,
+        "is_slot_product": is_slot,
+    }
+    if description not in (None, ""):
+        normalized["description"] = description
+    return normalized
+
+
+def _normalize_warzone_delivery_items(response_payload: dict) -> list:
+    sources = [response_payload]
+    for key in ("data", "result", "order"):
+        value = response_payload.get(key) if isinstance(response_payload, dict) else None
+        if isinstance(value, dict):
+            sources.append(value)
+    values = None
+    for source in sources:
+        for key in ("accounts", "codes", "items", "credentials", "links"):
+            candidate = source.get(key)
+            if isinstance(candidate, list):
+                values = candidate
+                break
+            if isinstance(candidate, (str, int, float, dict)):
+                values = [candidate]
+                break
+        if values is not None:
+            break
+    delivered = []
+    for item in values or []:
+        if item in (None, ""):
+            continue
+        if isinstance(item, dict):
+            simple_value = _seller_api_nested_value(
+                item, "account", "code", "license", "key", "link", "url", "value", "content"
+            )
+            text = str(simple_value).strip() if simple_value not in (None, "") else json.dumps(
+                item, ensure_ascii=False, separators=(",", ":")
+            )
+        else:
+            text = str(item).strip()
+        if text:
+            delivered.append(text)
+    return delivered
+
+
 def fetch_buyer_api_balance(provider_id: str = "default") -> dict:
-    payload = _buyer_api_data(_buyer_api_get("/api/telegram-buyer/balance", provider_id=provider_id))
+    if seller_api_provider_type(provider_id) == "warzone_v1":
+        return normalize_warzone_balance(
+            _buyer_api_get(seller_api_balance_path(provider_id), provider_id=provider_id)
+        )
+    payload = _buyer_api_data(_buyer_api_get(seller_api_balance_path(provider_id), provider_id=provider_id))
     if not isinstance(payload, dict):
         raise BuyerAPIError("Seller API balance response is missing balance data.")
     return payload
 
 
 def fetch_buyer_api_products(provider_id: str = "default"):
-    payload = _buyer_api_get("/api/telegram-buyer/products", {"lang": "en"}, provider_id=provider_id)
+    if seller_api_provider_type(provider_id) == "warzone_v1":
+        payload = _buyer_api_get(seller_api_products_path(provider_id), provider_id=provider_id)
+        products = _warzone_products_from_payload(payload)
+        if not isinstance(products, list):
+            raise BuyerAPIError("Seller API product response is missing the product list.")
+        normalized = [normalize_warzone_product(product) for product in products if isinstance(product, dict)]
+        normalized = [product for product in normalized if product.get("id") not in (None, "")]
+        total = _seller_api_nested_value(
+            payload, "total", "count", "data.total", "data.count", "result.total", "result.count"
+        )
+        try:
+            total = int(total)
+        except (TypeError, ValueError):
+            total = len(normalized)
+        return normalized, total
+    payload = _buyer_api_get(seller_api_products_path(provider_id), {"lang": "en"}, provider_id=provider_id)
     data = _buyer_api_data(payload)
     if isinstance(data, list):
         total = payload.get("total", payload.get("count", len(data))) if isinstance(payload, dict) else len(data)
@@ -3552,6 +3782,7 @@ def render_seller_api_provider_panel(provider_id: str = "default") -> str:
     return (
         f"🔌 <b>{escape_html(provider.get('name'))}</b>\n\n"
         f"<b>Provider ID:</b> <code>{escape_html(provider_id)}</code>\n"
+        f"<b>Type:</b> <code>{escape_html(provider.get('type') or 'telegram_buyer')}</code>\n"
         f"<b>Status:</b> {status_text}\n"
         f"<b>Configuration:</b> {configured}\n"
         f"<b>API URL:</b> <code>{escape_html(provider.get('base_url') or 'Not configured')}</code>\n"
@@ -3569,14 +3800,15 @@ def render_seller_api_debug_config(provider_id: str = "default") -> str:
         "🔎 <b>SELLER API DEBUG CONFIG</b>",
         "",
         f"<b>Provider:</b> {escape_html(provider.get('name'))} (<code>{escape_html(provider_id)}</code>)",
+        f"<b>Type:</b> <code>{escape_html(provider.get('type') or 'telegram_buyer')}</code>",
         f"<b>Enabled:</b> {'true' if provider.get('enabled') else 'false'}",
         f"<b>Base URL:</b> <code>{escape_html(provider.get('base_url') or 'Not configured')}</code>",
         f"<b>Masked key:</b> <code>{escape_html(provider.get('masked_key'))}</code>",
         f"<b>Key length:</b> {len(api_key)}",
         f"<b>Starts with api_:</b> {'Yes' if api_key.startswith('api_') else 'No'}",
         "",
-        f"<code>{escape_html(buyer_api_endpoint_preview('/api/telegram-buyer/balance', provider_id=provider_id))}</code>",
-        f"<code>{escape_html(buyer_api_endpoint_preview('/api/telegram-buyer/products', {'lang': 'en'}, provider_id))}</code>",
+        f"<code>{escape_html(buyer_api_endpoint_preview(seller_api_balance_path(provider_id), provider_id=provider_id))}</code>",
+        f"<code>{escape_html(buyer_api_endpoint_preview(seller_api_products_path(provider_id), {'lang': 'en'} if provider.get('type') != 'warzone_v1' else None, provider_id))}</code>",
     ]
     warning = buyer_api_url_warning(provider_id)
     if warning:
