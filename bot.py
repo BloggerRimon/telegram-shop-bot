@@ -1,7 +1,9 @@
 import os
 import asyncio
+import csv
 import hashlib
 import hmac
+import io
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -10,7 +12,7 @@ import re
 import string
 import requests
 from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP, ROUND_UP
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 from telegram import (
     Update,
@@ -4495,6 +4497,7 @@ def admin_menu() -> ReplyKeyboardMarkup:
         ["💰 User Balance", "🔔 Notify Requests"],
         ["👑 Gold VIP", "⚡ Flash Deal"],
         ["👥 User Details", "📊 Analytics"],
+        ["📊 Sales Reports"],
         ["🎨 Dashboard Emojis"],
         ["🔌 Seller APIs"],
         ["📢 Broadcast"],
@@ -6558,6 +6561,16 @@ def admin_product_select_keyboard(action_prefix: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+def sales_reports_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📅 Today Report", callback_data="sales_report_today")],
+        [InlineKeyboardButton("📅 Yesterday Report", callback_data="sales_report_yesterday")],
+        [InlineKeyboardButton("🗓 Pick Date", callback_data="sales_report_pick_date")],
+        [InlineKeyboardButton("📆 Last 7 Days", callback_data="sales_report_last_7_days")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="sales_report_back")],
+    ])
+
+
 def admin_shop_reorder_select_keyboard() -> InlineKeyboardMarkup:
     normalize_shop_order()
     rows = []
@@ -7777,6 +7790,252 @@ def render_analytics() -> str:
         f"Top Product: {top_product_text}",
     ]
     return "\n".join(lines)
+
+
+SALES_REPORT_COMPLETED_STATUSES = {
+    "completed", "complete", "success", "successful", "delivered",
+}
+SALES_REPORT_PENDING_STATUSES = {
+    "pending_support", "pending_manual_delivery", "paid_pending_support",
+    "activation_processing", "pending_activation",
+}
+SALES_REPORT_COLUMNS = [
+    "Date",
+    "Product Name",
+    "Product Type",
+    "Quantity Sold",
+    "Total Sales USD",
+    "Average Unit Price",
+    "Completed Orders",
+    "Pending Support Orders",
+    "Total Orders",
+]
+
+
+def render_sales_reports_panel() -> str:
+    return (
+        "📊 <b>SALES REPORTS</b>\n\n"
+        "Download a CSV summary grouped by date and product.\n"
+        "Completed and paid pending-support orders are included."
+    )
+
+
+def normalize_sales_order_status(status) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(status or "").strip().lower()).strip("_")
+
+
+def sales_order_status_group(order: dict):
+    status = normalize_sales_order_status((order or {}).get("status"))
+    if status in SALES_REPORT_COMPLETED_STATUSES:
+        return "completed"
+    if status in SALES_REPORT_PENDING_STATUSES:
+        return "pending_support"
+    return None
+
+
+def sales_order_date(order: dict):
+    value = (order or {}).get("created_at")
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, dict) and value.get("__datetime__"):
+        value = value.get("__datetime__")
+    text = str(value or "").strip()
+    if not text:
+        return None
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        return datetime.fromisoformat(normalized).date()
+    except ValueError:
+        pass
+    for date_format in ("%Y-%m-%d %I:%M:%S %p", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, date_format).date()
+        except ValueError:
+            continue
+    return None
+
+
+def sales_order_product_type(order: dict) -> str:
+    order = order or {}
+    explicit_type = str(order.get("product_type") or "").strip().lower()
+    if explicit_type in {"local", "api"}:
+        return explicit_type
+    if order.get("api_product_id"):
+        return "api"
+    product_id = str(order.get("product_id") or "").strip()
+    if product_id:
+        return "local"
+    return "unknown"
+
+
+def sales_order_product_name(order: dict) -> str:
+    order = order or {}
+    for field in ("product_name", "product"):
+        value = str(order.get(field) or "").strip()
+        if value:
+            return value
+    product_id = str(order.get("product_id") or order.get("api_product_id") or "").strip()
+    return product_id or "Unknown Product"
+
+
+def sales_order_quantity(order: dict) -> Decimal:
+    order = order or {}
+    for field in ("qty", "quantity"):
+        quantity = safe_decimal(order.get(field))
+        if quantity is not None and quantity > 0:
+            return quantity
+    delivered_items = order.get("delivered_items")
+    if isinstance(delivered_items, list) and delivered_items:
+        return Decimal(len(delivered_items))
+    return Decimal("0")
+
+
+def sales_order_total(order: dict, quantity: Decimal) -> Decimal:
+    order = order or {}
+    for field in ("total_paid", "total", "amount_paid", "usd_amount"):
+        total = safe_decimal(order.get(field))
+        if total is not None and total >= 0:
+            return total
+    for field in ("unit_price", "price"):
+        unit_price = safe_decimal(order.get(field))
+        if unit_price is not None and unit_price >= 0 and quantity > 0:
+            return unit_price * quantity
+    return Decimal("0")
+
+
+def _sales_report_decimal(value, places: str = "0.01") -> Decimal:
+    return Decimal(str(value or 0)).quantize(Decimal(places), rounding=ROUND_HALF_UP)
+
+
+def _sales_report_quantity_text(value: Decimal) -> str:
+    value = Decimal(str(value or 0))
+    if value == value.to_integral_value():
+        return str(int(value))
+    return format(value.normalize(), "f")
+
+
+def aggregate_sales_report(orders, start_date: date, end_date: date) -> dict:
+    groups = {}
+    for order in orders or []:
+        if not isinstance(order, dict):
+            continue
+        status_group = sales_order_status_group(order)
+        if status_group is None:
+            continue
+        order_date = sales_order_date(order)
+        if order_date is None or order_date < start_date or order_date > end_date:
+            continue
+        product_type = sales_order_product_type(order)
+        product_name = sales_order_product_name(order)
+        product_id = str(order.get("product_id") or order.get("api_product_id") or product_name).strip()
+        key = (order_date.isoformat(), product_type, product_id, product_name)
+        row = groups.setdefault(key, {
+            "date": order_date.isoformat(),
+            "product_name": product_name,
+            "product_type": product_type,
+            "quantity": Decimal("0"),
+            "total_sales": Decimal("0"),
+            "completed_orders": 0,
+            "pending_support_orders": 0,
+            "total_orders": 0,
+        })
+        quantity = sales_order_quantity(order)
+        row["quantity"] += quantity
+        row["total_sales"] += sales_order_total(order, quantity)
+        row[f"{status_group}_orders"] += 1
+        row["total_orders"] += 1
+
+    rows = sorted(groups.values(), key=lambda row: (row["date"], row["product_name"].casefold(), row["product_type"]))
+    for row in rows:
+        row["total_sales"] = _sales_report_decimal(row["total_sales"])
+        row["average_unit_price"] = (
+            _sales_report_decimal(row["total_sales"] / row["quantity"])
+            if row["quantity"] > 0 else Decimal("0.00")
+        )
+
+    totals = {
+        "quantity": sum((row["quantity"] for row in rows), Decimal("0")),
+        "total_sales": _sales_report_decimal(sum((row["total_sales"] for row in rows), Decimal("0"))),
+        "completed_orders": sum(row["completed_orders"] for row in rows),
+        "pending_support_orders": sum(row["pending_support_orders"] for row in rows),
+        "total_orders": sum(row["total_orders"] for row in rows),
+    }
+    totals["average_unit_price"] = (
+        _sales_report_decimal(totals["total_sales"] / totals["quantity"])
+        if totals["quantity"] > 0 else Decimal("0.00")
+    )
+    return {"rows": rows, "totals": totals, "start_date": start_date, "end_date": end_date}
+
+
+def build_sales_report_csv(report: dict) -> str:
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(SALES_REPORT_COLUMNS)
+    for row in report.get("rows", []):
+        writer.writerow([
+            row["date"],
+            row["product_name"],
+            row["product_type"],
+            _sales_report_quantity_text(row["quantity"]),
+            f"{row['total_sales']:.2f}",
+            f"{row['average_unit_price']:.2f}",
+            row["completed_orders"],
+            row["pending_support_orders"],
+            row["total_orders"],
+        ])
+    totals = report.get("totals", {})
+    writer.writerow([])
+    writer.writerow([
+        "TOTAL",
+        "ALL PRODUCTS",
+        "",
+        _sales_report_quantity_text(totals.get("quantity", Decimal("0"))),
+        f"{_sales_report_decimal(totals.get('total_sales', 0)):.2f}",
+        f"{_sales_report_decimal(totals.get('average_unit_price', 0)):.2f}",
+        int(totals.get("completed_orders", 0)),
+        int(totals.get("pending_support_orders", 0)),
+        int(totals.get("total_orders", 0)),
+    ])
+    return output.getvalue()
+
+
+def sales_report_filename(start_date: date, end_date: date) -> str:
+    if start_date == end_date:
+        return f"sales_report_{start_date.isoformat()}.csv"
+    return f"sales_report_last_7_days_{end_date.isoformat()}.csv"
+
+
+async def send_sales_report_document(bot, admin_chat_id: int, start_date: date, end_date: date) -> bool:
+    report = aggregate_sales_report(all_orders, start_date, end_date)
+    if not report["rows"]:
+        empty_text = "No sales found for this date." if start_date == end_date else "No sales found for this period."
+        await bot.send_message(admin_chat_id, empty_text)
+        return False
+
+    csv_text = build_sales_report_csv(report)
+    document = io.BytesIO(csv_text.encode("utf-8-sig"))
+    document.name = sales_report_filename(start_date, end_date)
+    totals = report["totals"]
+    date_text = start_date.isoformat() if start_date == end_date else f"{start_date.isoformat()} to {end_date.isoformat()}"
+    caption = (
+        "📊 <b>Sales report ready</b>\n"
+        f"Date: {date_text}\n"
+        f"Total sales: {format_money(float(totals['total_sales']))}\n"
+        f"Total quantity: {_sales_report_quantity_text(totals['quantity'])}"
+    )
+    try:
+        await bot.send_document(
+            chat_id=admin_chat_id,
+            document=document,
+            filename=document.name,
+            caption=caption,
+            parse_mode="HTML",
+        )
+    finally:
+        document.close()
+    return True
 
 
 # =========================
@@ -11023,6 +11282,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(render_analytics(), reply_markup=admin_menu(), parse_mode="HTML")
             return
 
+        if text == "📊 Sales Reports":
+            user_state[user_id] = {"step": "sales_reports_admin"}
+            await update.message.reply_text(
+                render_sales_reports_panel(),
+                reply_markup=sales_reports_keyboard(),
+                parse_mode="HTML",
+            )
+            return
+
         if text == "🎨 Dashboard Emojis":
             reset_admin_temp(user_id)
             user_state[user_id] = {"step": "dashboard_emoji_admin"}
@@ -11064,6 +11332,29 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML",
             )
             return
+
+    if step == "sales_report_date_input" and is_admin(user_id):
+        try:
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+                raise ValueError
+            selected_date = datetime.strptime(text, "%Y-%m-%d").date()
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Invalid date. Please enter a real date in YYYY-MM-DD format.\n"
+                "Example: 2026-10-05"
+            )
+            return
+
+        user_state[user_id] = {"step": "sales_reports_admin"}
+        await send_sales_report_document(
+            context.bot, update.effective_chat.id, selected_date, selected_date
+        )
+        await update.message.reply_text(
+            render_sales_reports_panel(),
+            reply_markup=sales_reports_keyboard(),
+            parse_mode="HTML",
+        )
+        return
 
     if step == "seller_api_search_input" and is_admin(user_id):
         temp = _seller_api_browser_temp(user_id)
@@ -12187,6 +12478,50 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ensure_user(user_id, query.from_user)
 
     if data == "noop":
+        return
+
+    # ========= ADMIN SALES REPORTS =========
+    if data.startswith("sales_report_") and not is_admin(user_id):
+        await send_inline_from_callback(query, "❌ <b>You are not allowed.</b>", close_keyboard())
+        return
+
+    if data == "sales_report_menu":
+        user_state[user_id] = {"step": "sales_reports_admin"}
+        await send_inline_from_callback(query, render_sales_reports_panel(), sales_reports_keyboard())
+        return
+
+    if data == "sales_report_today":
+        report_date = now_dt().date()
+        await send_sales_report_document(context.bot, query.message.chat_id, report_date, report_date)
+        return
+
+    if data == "sales_report_yesterday":
+        report_date = now_dt().date() - timedelta(days=1)
+        await send_sales_report_document(context.bot, query.message.chat_id, report_date, report_date)
+        return
+
+    if data == "sales_report_last_7_days":
+        end_date = now_dt().date()
+        start_date = end_date - timedelta(days=6)
+        await send_sales_report_document(context.bot, query.message.chat_id, start_date, end_date)
+        return
+
+    if data == "sales_report_pick_date":
+        user_state[user_id] = {"step": "sales_report_date_input"}
+        await send_inline_from_callback(
+            query,
+            "🗓 <b>PICK REPORT DATE</b>\n\n"
+            "Enter a date in <code>YYYY-MM-DD</code> format.\n"
+            "Example: <code>2026-10-05</code>",
+            InlineKeyboardMarkup(
+                [[InlineKeyboardButton("⬅️ Back", callback_data="sales_report_menu")]]
+            ),
+        )
+        return
+
+    if data == "sales_report_back":
+        user_state[user_id] = {"step": "admin_main"}
+        await send_inline_from_callback(query, "⬅️ Back to admin menu.", close_keyboard())
         return
 
     # ========= SELLER API ADMIN (READ-ONLY) =========
