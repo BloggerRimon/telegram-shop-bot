@@ -1,6 +1,5 @@
 import os
 import asyncio
-import csv
 import hashlib
 import hmac
 import io
@@ -420,6 +419,13 @@ seller_api_auto_refresh = seller_api_provider_status["default"]["auto_refresh"]
 seller_api_refresh_running = set()
 seller_api_auto_refresh_tasks = {}
 
+sales_report_settings = {
+    "auto_daily_enabled": False,
+    "daily_time": "00:05",
+    "last_auto_report_date": None,
+}
+sales_report_auto_task = None
+
 DASHBOARD_EMOJI_KEYS = (
     "shop",
     "orders",
@@ -585,6 +591,7 @@ def build_state_snapshot():
         "api_product_mappings": api_product_mappings,
         "seller_api_auto_refresh": seller_api_auto_refresh,
         "seller_api_provider_status": seller_api_provider_status,
+        "sales_report_settings": sales_report_settings,
         "dashboard_custom_emoji_ids": dashboard_custom_emoji_ids,
         "dashboard_header_custom_emoji_ids": dashboard_header_custom_emoji_ids,
         "PROMO_CODES": PROMO_CODES,
@@ -694,6 +701,27 @@ def apply_loaded_state(data: dict):
             status["low_balance_threshold"] = (
                 float(provider_threshold) if provider_threshold is not None and provider_threshold > 0 else 5
             )
+
+    loaded_sales_report_settings = data.get("sales_report_settings", {})
+    if isinstance(loaded_sales_report_settings, dict):
+        sales_report_settings["auto_daily_enabled"] = _buyer_api_bool_value(
+            loaded_sales_report_settings.get("auto_daily_enabled")
+        )
+        daily_time = str(loaded_sales_report_settings.get("daily_time") or "00:05").strip()
+        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", daily_time):
+            daily_time = "00:05"
+        sales_report_settings["daily_time"] = daily_time
+        last_report_date = str(
+            loaded_sales_report_settings.get("last_auto_report_date") or ""
+        ).strip()
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", last_report_date):
+            last_report_date = None
+        else:
+            try:
+                datetime.strptime(last_report_date, "%Y-%m-%d")
+            except ValueError:
+                last_report_date = None
+        sales_report_settings["last_auto_report_date"] = last_report_date
     if "normalize_shop_order" in globals():
         normalize_shop_order()
 
@@ -6567,7 +6595,19 @@ def sales_reports_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📅 Yesterday Report", callback_data="sales_report_yesterday")],
         [InlineKeyboardButton("🗓 Pick Date", callback_data="sales_report_pick_date")],
         [InlineKeyboardButton("📆 Last 7 Days", callback_data="sales_report_last_7_days")],
+        [InlineKeyboardButton("⚙️ Auto Daily Report", callback_data="sales_report_auto_settings")],
         [InlineKeyboardButton("⬅️ Back", callback_data="sales_report_back")],
+    ])
+
+
+def sales_report_auto_keyboard() -> InlineKeyboardMarkup:
+    enabled = bool(sales_report_settings.get("auto_daily_enabled"))
+    toggle_text = "❌ Disable Auto Daily Report" if enabled else "✅ Enable Auto Daily Report"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(toggle_text, callback_data="sales_report_auto_toggle")],
+        [InlineKeyboardButton("🕒 Set Report Time", callback_data="sales_report_auto_set_time")],
+        [InlineKeyboardButton("🧪 Send Test Report Now", callback_data="sales_report_auto_test")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="sales_report_menu")],
     ])
 
 
@@ -7799,24 +7839,23 @@ SALES_REPORT_PENDING_STATUSES = {
     "pending_support", "pending_manual_delivery", "paid_pending_support",
     "activation_processing", "pending_activation",
 }
-SALES_REPORT_COLUMNS = [
-    "Date",
-    "Product Name",
-    "Product Type",
-    "Quantity Sold",
-    "Total Sales USD",
-    "Average Unit Price",
-    "Completed Orders",
-    "Pending Support Orders",
-    "Total Orders",
-]
-
-
 def render_sales_reports_panel() -> str:
     return (
         "📊 <b>SALES REPORTS</b>\n\n"
-        "Download a CSV summary grouped by date and product.\n"
+        "Download a TXT summary grouped by date and product.\n"
         "Completed and paid pending-support orders are included."
+    )
+
+
+def render_sales_report_auto_panel() -> str:
+    enabled_text = "Enabled" if sales_report_settings.get("auto_daily_enabled") else "Disabled"
+    last_date = sales_report_settings.get("last_auto_report_date") or "Never"
+    return (
+        "⚙️ <b>AUTO DAILY SALES REPORT</b>\n\n"
+        f"Status: <b>{enabled_text}</b>\n"
+        f"Report time: <code>{sales_report_settings.get('daily_time', '00:05')}</code> server time\n"
+        f"Last automatic report date: <code>{last_date}</code>\n\n"
+        "When enabled, yesterday's report is sent to admins after the configured time."
     )
 
 
@@ -7969,58 +8008,73 @@ def aggregate_sales_report(orders, start_date: date, end_date: date) -> dict:
     return {"rows": rows, "totals": totals, "start_date": start_date, "end_date": end_date}
 
 
-def build_sales_report_csv(report: dict) -> str:
-    output = io.StringIO(newline="")
-    writer = csv.writer(output)
-    writer.writerow(SALES_REPORT_COLUMNS)
-    for row in report.get("rows", []):
-        writer.writerow([
-            row["date"],
-            row["product_name"],
-            row["product_type"],
-            _sales_report_quantity_text(row["quantity"]),
-            f"{row['total_sales']:.2f}",
-            f"{row['average_unit_price']:.2f}",
-            row["completed_orders"],
-            row["pending_support_orders"],
-            row["total_orders"],
+def build_sales_report_txt(report: dict) -> str:
+    start_date = report.get("start_date")
+    end_date = report.get("end_date")
+    is_daily = start_date == end_date
+    date_text = (
+        start_date.isoformat()
+        if is_daily else f"{start_date.isoformat()} to {end_date.isoformat()}"
+    )
+    lines = [
+        "📊 DAILY SALES REPORT" if is_daily else "📊 SALES REPORT",
+        f"Date: {date_text}",
+        "",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "",
+    ]
+    for index, row in enumerate(report.get("rows", []), start=1):
+        lines.extend([
+            f"{index}. {row['product_name']}",
+            f"Product Type: {str(row['product_type']).upper()}",
+            f"Quantity Sold: {_sales_report_quantity_text(row['quantity'])}",
+            f"Total Sales: ${row['total_sales']:.2f}",
+            f"Average Unit Price: ${row['average_unit_price']:.2f}",
+            f"Completed Orders: {row['completed_orders']}",
+            f"Pending/Processing Orders: {row['pending_support_orders']}",
+            f"Total Orders: {row['total_orders']}",
+            "",
         ])
     totals = report.get("totals", {})
-    writer.writerow([])
-    writer.writerow([
-        "TOTAL",
-        "ALL PRODUCTS",
+    lines.extend([
+        "━━━━━━━━━━━━━━━━━━━━",
+        "TOTAL SUMMARY",
         "",
-        _sales_report_quantity_text(totals.get("quantity", Decimal("0"))),
-        f"{_sales_report_decimal(totals.get('total_sales', 0)):.2f}",
-        f"{_sales_report_decimal(totals.get('average_unit_price', 0)):.2f}",
-        int(totals.get("completed_orders", 0)),
-        int(totals.get("pending_support_orders", 0)),
-        int(totals.get("total_orders", 0)),
+        f"Total Quantity: {_sales_report_quantity_text(totals.get('quantity', Decimal('0')))}",
+        f"Total Sales: ${_sales_report_decimal(totals.get('total_sales', 0)):.2f}",
+        f"Completed Orders: {int(totals.get('completed_orders', 0))}",
+        f"Pending/Processing Orders: {int(totals.get('pending_support_orders', 0))}",
+        f"Total Orders: {int(totals.get('total_orders', 0))}",
     ])
-    return output.getvalue()
+    return "\n".join(lines) + "\n"
 
 
 def sales_report_filename(start_date: date, end_date: date) -> str:
     if start_date == end_date:
-        return f"sales_report_{start_date.isoformat()}.csv"
-    return f"sales_report_last_7_days_{end_date.isoformat()}.csv"
+        return f"sales_report_{start_date.isoformat()}.txt"
+    return f"sales_report_last_7_days_{end_date.isoformat()}.txt"
 
 
-async def send_sales_report_document(bot, admin_chat_id: int, start_date: date, end_date: date) -> bool:
+async def send_sales_report_document(
+    bot,
+    admin_chat_id: int,
+    start_date: date,
+    end_date: date,
+    caption_title: str = "📊 Sales report ready",
+) -> bool:
     report = aggregate_sales_report(all_orders, start_date, end_date)
     if not report["rows"]:
         empty_text = "No sales found for this date." if start_date == end_date else "No sales found for this period."
         await bot.send_message(admin_chat_id, empty_text)
         return False
 
-    csv_text = build_sales_report_csv(report)
-    document = io.BytesIO(csv_text.encode("utf-8-sig"))
+    report_text = build_sales_report_txt(report)
+    document = io.BytesIO(report_text.encode("utf-8"))
     document.name = sales_report_filename(start_date, end_date)
     totals = report["totals"]
     date_text = start_date.isoformat() if start_date == end_date else f"{start_date.isoformat()} to {end_date.isoformat()}"
     caption = (
-        "📊 <b>Sales report ready</b>\n"
+        f"<b>{caption_title}</b>\n"
         f"Date: {date_text}\n"
         f"Total sales: {format_money(float(totals['total_sales']))}\n"
         f"Total quantity: {_sales_report_quantity_text(totals['quantity'])}"
@@ -8036,6 +8090,86 @@ async def send_sales_report_document(bot, admin_chat_id: int, start_date: date, 
     finally:
         document.close()
     return True
+
+
+def parse_sales_report_daily_time(value=None):
+    text = str(value or sales_report_settings.get("daily_time") or "00:05").strip()
+    if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", text):
+        return 0, 5
+    hour_text, minute_text = text.split(":", 1)
+    return int(hour_text), int(minute_text)
+
+
+def sales_report_auto_due_date(current_time: datetime = None):
+    if not sales_report_settings.get("auto_daily_enabled"):
+        return None
+    current_time = current_time or now_dt()
+    hour, minute = parse_sales_report_daily_time()
+    scheduled_time = current_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if current_time < scheduled_time:
+        return None
+    report_date = current_time.date() - timedelta(days=1)
+    if sales_report_settings.get("last_auto_report_date") == report_date.isoformat():
+        return None
+    return report_date
+
+
+async def send_auto_daily_sales_report(bot, report_date: date) -> bool:
+    report = aggregate_sales_report(all_orders, report_date, report_date)
+    delivered_to_admin = False
+    for admin_id in ADMIN_IDS:
+        try:
+            if report["rows"]:
+                await send_sales_report_document(
+                    bot,
+                    admin_id,
+                    report_date,
+                    report_date,
+                    caption_title="📊 Daily sales report",
+                )
+            else:
+                await bot.send_message(
+                    admin_id,
+                    "📊 Daily sales report\n"
+                    f"Date: {report_date.isoformat()}\n"
+                    "No sales found.",
+                )
+            delivered_to_admin = True
+        except Exception as exc:
+            print(f"Automatic sales report send failed safely: {type(exc).__name__}")
+    if delivered_to_admin:
+        sales_report_settings["last_auto_report_date"] = report_date.isoformat()
+        try:
+            force_save_bot_state()
+        except Exception as exc:
+            print(f"Automatic sales report state save failed safely: {type(exc).__name__}")
+    return delivered_to_admin
+
+
+async def sales_report_auto_daily_loop(application, first_delay: int = 5):
+    try:
+        await asyncio.sleep(max(1, int(first_delay)))
+        while sales_report_settings.get("auto_daily_enabled"):
+            report_date = sales_report_auto_due_date()
+            if report_date is not None:
+                await send_auto_daily_sales_report(application.bot, report_date)
+            await asyncio.sleep(60)
+    except asyncio.CancelledError:
+        return
+    except Exception as exc:
+        print(f"Automatic sales report loop failed safely: {type(exc).__name__}")
+
+
+def schedule_sales_report_auto_daily(application, first_delay: int = 5):
+    global sales_report_auto_task
+    current_task = sales_report_auto_task
+    sales_report_auto_task = None
+    if current_task and not current_task.done():
+        current_task.cancel()
+    if sales_report_settings.get("auto_daily_enabled"):
+        sales_report_auto_task = application.create_task(
+            sales_report_auto_daily_loop(application, first_delay=first_delay)
+        )
 
 
 # =========================
@@ -10851,11 +10985,16 @@ async def post_init(application):
     load_nowpayments_pending()
     start_nowpayments_webhook_server()
     schedule_seller_api_auto_refresh(application, first_delay=30)
+    schedule_sales_report_auto_daily(application, first_delay=5)
 
 
 async def post_shutdown(application):
+    global sales_report_auto_task
     tasks = list(seller_api_auto_refresh_tasks.values())
     seller_api_auto_refresh_tasks.clear()
+    if sales_report_auto_task is not None:
+        tasks.append(sales_report_auto_task)
+        sales_report_auto_task = None
     for task in tasks:
         if task and not task.done():
             task.cancel()
@@ -11352,6 +11491,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             render_sales_reports_panel(),
             reply_markup=sales_reports_keyboard(),
+            parse_mode="HTML",
+        )
+        return
+
+    if step == "sales_report_time_input" and is_admin(user_id):
+        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", text):
+            await update.message.reply_text(
+                "❌ Invalid time. Please enter server time in HH:MM format.\n"
+                "Example: 00:05"
+            )
+            return
+        sales_report_settings["daily_time"] = text
+        user_state[user_id] = {"step": "sales_report_auto_settings"}
+        schedule_sales_report_auto_daily(context.application, first_delay=5)
+        await update.message.reply_text(
+            "✅ Automatic report time updated.\n\n" + render_sales_report_auto_panel(),
+            reply_markup=sales_report_auto_keyboard(),
             parse_mode="HTML",
         )
         return
@@ -12516,6 +12672,43 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardMarkup(
                 [[InlineKeyboardButton("⬅️ Back", callback_data="sales_report_menu")]]
             ),
+        )
+        return
+
+    if data == "sales_report_auto_settings":
+        user_state[user_id] = {"step": "sales_report_auto_settings"}
+        await send_inline_from_callback(
+            query, render_sales_report_auto_panel(), sales_report_auto_keyboard()
+        )
+        return
+
+    if data == "sales_report_auto_toggle":
+        sales_report_settings["auto_daily_enabled"] = not bool(
+            sales_report_settings.get("auto_daily_enabled")
+        )
+        schedule_sales_report_auto_daily(context.application, first_delay=5)
+        await send_inline_from_callback(
+            query, render_sales_report_auto_panel(), sales_report_auto_keyboard()
+        )
+        return
+
+    if data == "sales_report_auto_set_time":
+        user_state[user_id] = {"step": "sales_report_time_input"}
+        await send_inline_from_callback(
+            query,
+            "🕒 <b>SET DAILY REPORT TIME</b>\n\n"
+            "Enter server time in <code>HH:MM</code> 24-hour format.\n"
+            "Example: <code>00:05</code>",
+            InlineKeyboardMarkup(
+                [[InlineKeyboardButton("⬅️ Back", callback_data="sales_report_auto_settings")]]
+            ),
+        )
+        return
+
+    if data == "sales_report_auto_test":
+        report_date = now_dt().date()
+        await send_sales_report_document(
+            context.bot, query.message.chat_id, report_date, report_date
         )
         return
 
