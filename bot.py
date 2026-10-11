@@ -6123,10 +6123,7 @@ def deposit_amount_keyboard(back_callback: str = "user_back_to_dashboard", style
 
 def payment_method_keyboard(prefix: str, styled: bool = False, user_id: int = None) -> InlineKeyboardMarkup:
     rows = [
-        [
-            make_styled_inline_button("🏦 Binance ID", callback_data=f"{prefix}_method_binance", style="success" if styled else None),
-            make_styled_inline_button("🏦 Bybit ID", callback_data=f"{prefix}_method_bybit", style="success" if styled else None),
-        ],
+        [make_styled_inline_button("🏦 Binance ID", callback_data=f"{prefix}_method_binance", style="success" if styled else None)],
         [make_styled_inline_button("💸 Crypto Address", callback_data=f"{prefix}_method_crypto", style="primary" if styled else None)],
         [make_styled_inline_button(f"⬅️ {t(user_id, 'back')}", callback_data=f"{prefix}_back", style="primary" if styled else None)],
     ]
@@ -15473,8 +15470,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "buy_method_bybit":
-        state = user_state[user_id]
-        await send_inline_from_callback(query, render_buy_manual_payment_text(state["product_id"], state["qty"], state["total"], "Bybit ID", BYBIT_ID, user_id), final_manual_keyboard("buymanual", user_id))
+        state = user_state.get(user_id, {})
+        if all(state.get(field) is not None for field in ("product_id", "qty", "total")):
+            reply_markup = payment_method_keyboard("buy", user_id=user_id)
+        else:
+            reply_markup = user_back_to_menu_keyboard(user_id=user_id)
+        await send_inline_from_callback(
+            query,
+            "Bybit payment is currently unavailable. Please use another payment method.",
+            reply_markup,
+        )
         return
 
     if data == "buy_method_crypto":
@@ -15608,14 +15613,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "dep_method_bybit":
         amount = user_state.get(user_id, {}).get("amount")
-        if amount is None:
-            await query.answer("Please start a new deposit request.", show_alert=True)
-            return
+        if amount is not None:
+            styled_keyboard = payment_method_keyboard("dep", styled=True, user_id=user_id)
+            fallback_keyboard = payment_method_keyboard("dep", styled=False, user_id=user_id)
+        else:
+            styled_keyboard = user_back_to_menu_keyboard(user_id=user_id)
+            fallback_keyboard = user_back_to_menu_keyboard(styled=False, user_id=user_id)
         await send_user_inline_with_style_fallback(
             query,
-            render_manual_payment_text(amount, "Bybit ID", BYBIT_ID, user_id),
-            deposit_manual_keyboard(user_id=user_id),
-            deposit_manual_keyboard(styled=False, user_id=user_id),
+            "Bybit payment is currently unavailable. Please use another payment method.",
+            styled_keyboard,
+            fallback_keyboard,
         )
         return
 
