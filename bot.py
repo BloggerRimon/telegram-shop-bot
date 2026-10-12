@@ -613,6 +613,7 @@ def build_state_snapshot():
             str(client_id): {
                 "name": str(client.get("name") or client_id),
                 "api_key_hash": str(client.get("api_key_hash") or ""),
+                "telegram_user_id": client.get("telegram_user_id"),
                 "enabled": bool(client.get("enabled")),
                 "wallet_balance": float(client.get("wallet_balance", 0) or 0),
                 "created_at": client.get("created_at"),
@@ -712,9 +713,16 @@ def apply_loaded_state(data: dict):
             if not client_id or not re.fullmatch(r"[0-9a-f]{64}", key_hash):
                 continue
             balance = safe_decimal(client.get("wallet_balance"))
+            try:
+                telegram_user_id = int(client.get("telegram_user_id"))
+                if telegram_user_id <= 0:
+                    telegram_user_id = None
+            except (TypeError, ValueError):
+                telegram_user_id = None
             seller_api_clients[client_id] = {
                 "name": str(client.get("name") or client_id).strip()[:80],
                 "api_key_hash": key_hash,
+                "telegram_user_id": telegram_user_id,
                 "enabled": _buyer_api_bool_value(client.get("enabled")),
                 "wallet_balance": float(balance) if balance is not None and balance >= 0 else 0.0,
                 "created_at": client.get("created_at") or now_dt(),
@@ -1410,6 +1418,128 @@ USER_TRANSLATIONS["ru"].update({"congratulations": "Поздравляем!", "g
 USER_TRANSLATIONS["tr"].update({"congratulations": "Tebrikler!", "gold_vip_welcome": "Artık Gold VIP üyesisiniz.", "gold_vip_benefit": "Seçili ürünlerde özel bayi/VIP fiyatlarını görebilirsiniz.", "open_shop_vip": "Mağazayı açın ve VIP fırsatlarından yararlanın."})
 USER_TRANSLATIONS["fr"].update({"congratulations": "Félicitations !", "gold_vip_welcome": "Vous êtes maintenant membre Gold VIP.", "gold_vip_benefit": "Vous pouvez voir les prix revendeur/VIP sur certains produits.", "open_shop_vip": "Ouvrez la boutique et profitez de vos offres VIP."})
 USER_TRANSLATIONS["de"].update({"congratulations": "Glückwunsch!", "gold_vip_welcome": "Du bist jetzt Gold-VIP-Mitglied.", "gold_vip_benefit": "Du siehst jetzt spezielle Händler-/VIP-Preise für ausgewählte Produkte.", "open_shop_vip": "Öffne den Shop und nutze deine VIP-Angebote."})
+
+
+USER_TRANSLATIONS["en"].update({
+    "api_key_button": "API Key", "api_key_title": "YOUR API KEY", "api_key_label": "API Key",
+    "api_key_new_warning": "Copy this key now. You will not be able to see it again.",
+    "api_key_existing": "Already generated. Regenerate to get a new key.",
+    "api_key_revoked": "Revoked. Generate a new key to restore API access.",
+    "api_key_status": "Status", "api_balance": "API Balance",
+    "api_balance_note": "This API balance is separate from your Telegram shop wallet. Contact admin to add API balance.",
+    "api_base_url": "Base URL", "api_base_missing": "Base URL is not configured. Please contact admin.",
+    "api_endpoints": "Endpoints", "api_list_products": "List products", "api_check_balance": "Check balance",
+    "api_place_order": "Place order", "api_auth": "Authentication",
+    "api_auth_help": "Use the key parameter in the query or purchase request body.",
+    "api_copy_key": "Copy API Key", "api_copy_base": "Copy Base URL", "api_regenerate": "Regenerate API Key",
+    "api_generate": "Generate New API Key", "api_revoke": "Revoke API Key",
+    "api_regenerate_confirm": "Regenerating immediately invalidates your old key. Continue?",
+    "api_revoke_confirm": "Revoking this key immediately disables API access. Continue?",
+    "api_confirm_regenerate": "Yes, Regenerate", "api_confirm_revoke": "Yes, Revoke",
+    "api_key_revoked_success": "API key revoked successfully.",
+    "api_copy_help": "Use long-press on the code shown above to copy it.",
+    "api_enabled": "Enabled", "api_disabled": "Disabled", "api_service_disabled": "The API service is currently unavailable.",
+})
+USER_TRANSLATIONS["es"].update({
+    "api_key_button": "Clave API", "api_key_title": "TU CLAVE API", "api_key_label": "Clave API",
+    "api_key_new_warning": "Copia esta clave ahora. No podrás volver a verla.",
+    "api_key_existing": "Ya generada. Regenera para obtener una clave nueva.",
+    "api_key_revoked": "Revocada. Genera una clave nueva para restaurar el acceso.",
+    "api_key_status": "Estado", "api_balance": "Saldo API",
+    "api_balance_note": "Este saldo API está separado de tu cartera de la tienda. Contacta al administrador para añadir saldo API.",
+    "api_base_url": "URL base", "api_base_missing": "La URL base no está configurada. Contacta al administrador.",
+    "api_endpoints": "Endpoints", "api_list_products": "Listar productos", "api_check_balance": "Consultar saldo",
+    "api_place_order": "Realizar pedido", "api_auth": "Autenticación",
+    "api_auth_help": "Usa el parámetro key en la consulta o en el cuerpo de la compra.",
+    "api_copy_key": "Copiar clave API", "api_copy_base": "Copiar URL base", "api_regenerate": "Regenerar clave API",
+    "api_generate": "Generar nueva clave API", "api_revoke": "Revocar clave API",
+    "api_regenerate_confirm": "Regenerar invalida inmediatamente tu clave anterior. ¿Continuar?",
+    "api_revoke_confirm": "Revocar desactiva inmediatamente el acceso API. ¿Continuar?",
+    "api_confirm_regenerate": "Sí, regenerar", "api_confirm_revoke": "Sí, revocar",
+    "api_key_revoked_success": "Clave API revocada correctamente.",
+    "api_copy_help": "Mantén pulsado el código mostrado arriba para copiarlo.",
+    "api_enabled": "Activa", "api_disabled": "Desactivada", "api_service_disabled": "El servicio API no está disponible actualmente.",
+})
+USER_TRANSLATIONS["ru"].update({
+    "api_key_button": "API-ключ", "api_key_title": "ВАШ API-КЛЮЧ", "api_key_label": "API-ключ",
+    "api_key_new_warning": "Скопируйте ключ сейчас. Позже его нельзя будет увидеть снова.",
+    "api_key_existing": "Ключ уже создан. Создайте новый, чтобы получить другое значение.",
+    "api_key_revoked": "Ключ отозван. Создайте новый ключ для восстановления доступа.",
+    "api_key_status": "Статус", "api_balance": "Баланс API",
+    "api_balance_note": "Баланс API отделён от кошелька магазина. Обратитесь к администратору для пополнения.",
+    "api_base_url": "Базовый URL", "api_base_missing": "Базовый URL не настроен. Обратитесь к администратору.",
+    "api_endpoints": "Эндпоинты", "api_list_products": "Список товаров", "api_check_balance": "Проверить баланс",
+    "api_place_order": "Оформить заказ", "api_auth": "Авторизация",
+    "api_auth_help": "Используйте параметр key в запросе или теле запроса покупки.",
+    "api_copy_key": "Копировать API-ключ", "api_copy_base": "Копировать базовый URL", "api_regenerate": "Создать новый API-ключ",
+    "api_generate": "Сгенерировать новый API-ключ", "api_revoke": "Отозвать API-ключ",
+    "api_regenerate_confirm": "Новый ключ сразу отключит старый. Продолжить?",
+    "api_revoke_confirm": "Отзыв ключа сразу отключит доступ к API. Продолжить?",
+    "api_confirm_regenerate": "Да, создать новый", "api_confirm_revoke": "Да, отозвать",
+    "api_key_revoked_success": "API-ключ успешно отозван.",
+    "api_copy_help": "Нажмите и удерживайте код выше, чтобы скопировать его.",
+    "api_enabled": "Включён", "api_disabled": "Отключён", "api_service_disabled": "Сервис API сейчас недоступен.",
+})
+USER_TRANSLATIONS["tr"].update({
+    "api_key_button": "API Anahtarı", "api_key_title": "API ANAHTARINIZ", "api_key_label": "API Anahtarı",
+    "api_key_new_warning": "Bu anahtarı şimdi kopyalayın. Daha sonra tekrar göremezsiniz.",
+    "api_key_existing": "Zaten oluşturuldu. Yeni anahtar almak için yeniden oluşturun.",
+    "api_key_revoked": "İptal edildi. API erişimini geri açmak için yeni anahtar oluşturun.",
+    "api_key_status": "Durum", "api_balance": "API Bakiyesi",
+    "api_balance_note": "API bakiyesi Telegram mağaza cüzdanınızdan ayrıdır. Bakiye eklemek için yöneticiyle iletişime geçin.",
+    "api_base_url": "Temel URL", "api_base_missing": "Temel URL yapılandırılmamış. Yöneticiyle iletişime geçin.",
+    "api_endpoints": "Uç noktalar", "api_list_products": "Ürünleri listele", "api_check_balance": "Bakiye kontrol et",
+    "api_place_order": "Sipariş ver", "api_auth": "Kimlik doğrulama",
+    "api_auth_help": "Sorguda veya satın alma isteği gövdesinde key parametresini kullanın.",
+    "api_copy_key": "API Anahtarını Kopyala", "api_copy_base": "Temel URL'yi Kopyala", "api_regenerate": "API Anahtarını Yenile",
+    "api_generate": "Yeni API Anahtarı Oluştur", "api_revoke": "API Anahtarını İptal Et",
+    "api_regenerate_confirm": "Yenileme eski anahtarınızı hemen geçersiz kılar. Devam edilsin mi?",
+    "api_revoke_confirm": "İptal etmek API erişimini hemen kapatır. Devam edilsin mi?",
+    "api_confirm_regenerate": "Evet, yenile", "api_confirm_revoke": "Evet, iptal et",
+    "api_key_revoked_success": "API anahtarı başarıyla iptal edildi.",
+    "api_copy_help": "Kopyalamak için yukarıdaki koda basılı tutun.",
+    "api_enabled": "Etkin", "api_disabled": "Devre dışı", "api_service_disabled": "API hizmeti şu anda kullanılamıyor.",
+})
+USER_TRANSLATIONS["fr"].update({
+    "api_key_button": "Clé API", "api_key_title": "VOTRE CLÉ API", "api_key_label": "Clé API",
+    "api_key_new_warning": "Copiez cette clé maintenant. Vous ne pourrez plus la revoir.",
+    "api_key_existing": "Déjà générée. Régénérez-la pour obtenir une nouvelle clé.",
+    "api_key_revoked": "Révoquée. Générez une nouvelle clé pour rétablir l'accès.",
+    "api_key_status": "Statut", "api_balance": "Solde API",
+    "api_balance_note": "Ce solde API est distinct du portefeuille de la boutique. Contactez l'administrateur pour l'alimenter.",
+    "api_base_url": "URL de base", "api_base_missing": "L'URL de base n'est pas configurée. Contactez l'administrateur.",
+    "api_endpoints": "Points de terminaison", "api_list_products": "Lister les produits", "api_check_balance": "Vérifier le solde",
+    "api_place_order": "Passer une commande", "api_auth": "Authentification",
+    "api_auth_help": "Utilisez le paramètre key dans la requête ou le corps de l'achat.",
+    "api_copy_key": "Copier la clé API", "api_copy_base": "Copier l'URL de base", "api_regenerate": "Régénérer la clé API",
+    "api_generate": "Générer une nouvelle clé API", "api_revoke": "Révoquer la clé API",
+    "api_regenerate_confirm": "La régénération invalide immédiatement l'ancienne clé. Continuer ?",
+    "api_revoke_confirm": "La révocation désactive immédiatement l'accès API. Continuer ?",
+    "api_confirm_regenerate": "Oui, régénérer", "api_confirm_revoke": "Oui, révoquer",
+    "api_key_revoked_success": "Clé API révoquée avec succès.",
+    "api_copy_help": "Appuyez longuement sur le code ci-dessus pour le copier.",
+    "api_enabled": "Activée", "api_disabled": "Désactivée", "api_service_disabled": "Le service API est actuellement indisponible.",
+})
+USER_TRANSLATIONS["de"].update({
+    "api_key_button": "API-Schlüssel", "api_key_title": "DEIN API-SCHLÜSSEL", "api_key_label": "API-Schlüssel",
+    "api_key_new_warning": "Kopiere diesen Schlüssel jetzt. Du kannst ihn später nicht erneut ansehen.",
+    "api_key_existing": "Bereits erstellt. Erstelle einen neuen Schlüssel, um ihn erneut zu erhalten.",
+    "api_key_revoked": "Widerrufen. Erstelle einen neuen Schlüssel, um den Zugriff wiederherzustellen.",
+    "api_key_status": "Status", "api_balance": "API-Guthaben",
+    "api_balance_note": "Dieses API-Guthaben ist vom Shop-Wallet getrennt. Kontaktiere den Administrator zum Aufladen.",
+    "api_base_url": "Basis-URL", "api_base_missing": "Die Basis-URL ist nicht konfiguriert. Kontaktiere den Administrator.",
+    "api_endpoints": "Endpunkte", "api_list_products": "Produkte auflisten", "api_check_balance": "Guthaben prüfen",
+    "api_place_order": "Bestellung aufgeben", "api_auth": "Authentifizierung",
+    "api_auth_help": "Verwende den Parameter key in der Abfrage oder im Kaufanfrage-Text.",
+    "api_copy_key": "API-Schlüssel kopieren", "api_copy_base": "Basis-URL kopieren", "api_regenerate": "API-Schlüssel neu erstellen",
+    "api_generate": "Neuen API-Schlüssel erstellen", "api_revoke": "API-Schlüssel widerrufen",
+    "api_regenerate_confirm": "Ein neuer Schlüssel macht den alten sofort ungültig. Fortfahren?",
+    "api_revoke_confirm": "Der Widerruf deaktiviert den API-Zugriff sofort. Fortfahren?",
+    "api_confirm_regenerate": "Ja, neu erstellen", "api_confirm_revoke": "Ja, widerrufen",
+    "api_key_revoked_success": "API-Schlüssel erfolgreich widerrufen.",
+    "api_copy_help": "Halte den oben angezeigten Code gedrückt, um ihn zu kopieren.",
+    "api_enabled": "Aktiviert", "api_disabled": "Deaktiviert", "api_service_disabled": "Der API-Dienst ist derzeit nicht verfügbar.",
+})
 
 
 def normalize_user_language(language) -> str:
@@ -2200,10 +2330,40 @@ def generate_seller_api_key() -> str:
     return "api_" + secrets.token_urlsafe(32)
 
 
-def create_seller_api_client(name: str, notes: str = ""):
+def seller_api_client_telegram_user_id(client: dict):
+    try:
+        user_id = int((client or {}).get("telegram_user_id"))
+    except (TypeError, ValueError):
+        return None
+    return user_id if user_id > 0 else None
+
+
+def find_seller_api_client_by_user_id(user_id: int):
+    try:
+        wanted_user_id = int(user_id)
+    except (TypeError, ValueError):
+        return None, None
+    for client_id, client in seller_api_clients.items():
+        if seller_api_client_telegram_user_id(client) == wanted_user_id:
+            return str(client_id), client
+    return None, None
+
+
+def create_seller_api_client(name: str, notes: str = "", telegram_user_id=None):
     clean_name = " ".join(str(name or "").split()).strip()[:80]
     if not clean_name:
         raise ValueError("Client name is required.")
+    linked_user_id = None
+    if telegram_user_id is not None:
+        try:
+            linked_user_id = int(telegram_user_id)
+        except (TypeError, ValueError):
+            raise ValueError("Invalid Telegram user ID.")
+        if linked_user_id <= 0:
+            raise ValueError("Invalid Telegram user ID.")
+        existing_client_id, _ = find_seller_api_client_by_user_id(linked_user_id)
+        if existing_client_id:
+            raise ValueError("This Telegram user already has an API client.")
     client_number = int(seller_api_server_settings.get("next_client_number", 1) or 1)
     while f"client_{client_number}" in seller_api_clients:
         client_number += 1
@@ -2213,12 +2373,39 @@ def create_seller_api_client(name: str, notes: str = ""):
     seller_api_clients[client_id] = {
         "name": clean_name,
         "api_key_hash": seller_api_hash_key(raw_key),
+        "telegram_user_id": linked_user_id,
         "enabled": True,
         "wallet_balance": 0.0,
         "created_at": now_dt(),
         "notes": str(notes or "").strip()[:500],
     }
     return client_id, seller_api_clients[client_id], raw_key
+
+
+def seller_api_user_client_name(user_id: int) -> str:
+    profile = get_user_profile(user_id)
+    username = str(profile.get("username") or "").strip().lstrip("@")
+    full_name = " ".join(
+        part for part in (
+            str(profile.get("first_name") or "").strip(),
+            str(profile.get("last_name") or "").strip(),
+        )
+        if part
+    ).strip()
+    identity = f"@{username}" if username else full_name or f"User {int(user_id)}"
+    return f"Telegram reseller: {identity}"[:80]
+
+
+def ensure_user_seller_api_client(user_id: int):
+    client_id, client = find_seller_api_client_by_user_id(user_id)
+    if client is not None:
+        return client_id, client, None
+    client_id, client, raw_key = create_seller_api_client(
+        seller_api_user_client_name(user_id),
+        notes="Created by Telegram user self-service.",
+        telegram_user_id=user_id,
+    )
+    return client_id, client, raw_key
 
 
 def regenerate_seller_api_client_key(client_id: str) -> str:
@@ -5069,6 +5256,19 @@ def make_user_dashboard_button(text: str, callback_data: str) -> InlineKeyboardB
     return InlineKeyboardButton(text, callback_data=callback_data)
 
 
+def make_copy_text_button(text: str, value: str, fallback_callback: str) -> InlineKeyboardButton:
+    clean_value = str(value or "").strip()
+    if clean_value:
+        try:
+            return InlineKeyboardButton(
+                text,
+                api_kwargs={"copy_text": {"text": clean_value}},
+            )
+        except (TypeError, ValueError):
+            pass
+    return InlineKeyboardButton(text, callback_data=fallback_callback)
+
+
 DASHBOARD_BUTTONS = {
     "shop": {"text": "Shop", "text_key": "shop", "emoji": "🛍", "callback": "user_dashboard_shop", "style": "primary"},
     "orders": {"text": "My Orders", "text_key": "my_orders", "emoji": "📦", "callback": "user_dashboard_orders", "style": "primary"},
@@ -5080,6 +5280,7 @@ DASHBOARD_BUTTONS = {
     "transactions": {"text": "Transactions", "text_key": "transactions", "emoji": "🧾", "callback": "user_dashboard_transactions", "style": "primary"},
     "support": {"text": "Support", "text_key": "support", "emoji": "🎧", "callback": "user_dashboard_support", "style": "danger"},
     "language": {"text": "Language", "text_key": "language", "emoji": "🌐", "callback": "user_dashboard_language", "style": "primary"},
+    "api_key": {"text": "API Key", "text_key": "api_key_button", "emoji": "🔌", "callback": "user_dashboard_api_key", "style": "primary"},
 }
 DASHBOARD_BUTTON_LAYOUT = (
     ("shop", "orders"),
@@ -5087,6 +5288,7 @@ DASHBOARD_BUTTON_LAYOUT = (
     ("promo", "refer"),
     ("profile", "transactions"),
     ("support", "language"),
+    ("api_key",),
 )
 
 
@@ -5142,6 +5344,87 @@ def user_dashboard_keyboard(styled: bool = True, custom_icons: bool = True, user
 def user_dashboard_back_keyboard(user_id: int = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [make_user_dashboard_button(f"⬅️ {t(user_id, 'back_to_menu')}", "user_dashboard")],
+    ])
+
+
+def user_profile_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"🔌 {t(user_id, 'api_key_button')}", callback_data="user_api_key_open")],
+        [InlineKeyboardButton(f"⬅️ {t(user_id, 'back_to_menu')}", callback_data="user_dashboard")],
+    ])
+
+
+def user_seller_api_key_keyboard(
+    user_id: int,
+    client: dict,
+    raw_key: str = None,
+    copy_buttons: bool = True,
+) -> InlineKeyboardMarkup:
+    rows = []
+    if raw_key:
+        if copy_buttons:
+            copy_key_button = make_copy_text_button(
+                f"📋 {t(user_id, 'api_copy_key')}",
+                raw_key,
+                "user_api_key_copy_help",
+            )
+        else:
+            copy_key_button = InlineKeyboardButton(
+                f"📋 {t(user_id, 'api_copy_key')}",
+                callback_data="user_api_key_copy_help",
+            )
+        rows.append([copy_key_button])
+    else:
+        rows.append([InlineKeyboardButton(
+            f"📋 {t(user_id, 'api_copy_key')}",
+            callback_data="user_api_key_copy_unavailable",
+        )])
+    base_url = seller_api_user_base_url()
+    if base_url:
+        if copy_buttons:
+            copy_base_button = make_copy_text_button(
+                f"📋 {t(user_id, 'api_copy_base')}",
+                base_url,
+                "user_api_key_copy_help",
+            )
+        else:
+            copy_base_button = InlineKeyboardButton(
+                f"📋 {t(user_id, 'api_copy_base')}",
+                callback_data="user_api_key_copy_help",
+            )
+        rows.append([copy_base_button])
+    else:
+        rows.append([InlineKeyboardButton(
+            f"📋 {t(user_id, 'api_copy_base')}",
+            callback_data="user_api_key_base_missing",
+        )])
+    regenerate_key = "api_regenerate" if _buyer_api_bool_value((client or {}).get("enabled")) else "api_generate"
+    rows.append([InlineKeyboardButton(
+        f"🔄 {t(user_id, regenerate_key)}",
+        callback_data="user_api_key_regenerate",
+    )])
+    if _buyer_api_bool_value((client or {}).get("enabled")):
+        rows.append([InlineKeyboardButton(
+            f"❌ {t(user_id, 'api_revoke')}",
+            callback_data="user_api_key_revoke",
+        )])
+    rows.append([InlineKeyboardButton(
+        f"⬅️ {t(user_id, 'back')}",
+        callback_data="user_dashboard_profile",
+    )])
+    return InlineKeyboardMarkup(rows)
+
+
+def user_seller_api_confirmation_keyboard(user_id: int, action: str) -> InlineKeyboardMarkup:
+    if action == "revoke":
+        confirm_text = t(user_id, "api_confirm_revoke")
+        confirm_callback = "user_api_key_revoke_confirm"
+    else:
+        confirm_text = t(user_id, "api_confirm_regenerate")
+        confirm_callback = "user_api_key_regenerate_confirm"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"✅ {confirm_text}", callback_data=confirm_callback)],
+        [InlineKeyboardButton(f"❌ {t(user_id, 'cancel')}", callback_data="user_api_key_open")],
     ])
 
 
@@ -5260,10 +5543,13 @@ def render_seller_api_client_detail(client_id: str) -> str:
     if not isinstance(client, dict):
         return "❌ <b>API client not found.</b>"
     client_orders = [order for order in seller_api_orders if order.get("client_id") == client_id]
+    linked_user_id = seller_api_client_telegram_user_id(client)
+    linked_user_text = f"<code>{linked_user_id}</code>" if linked_user_id else "Not linked"
     return (
         "👤 <b>SELLER API CLIENT</b>\n\n"
         f"Name: <b>{escape_html(client.get('name', client_id))}</b>\n"
         f"Client ID: <code>{escape_html(client_id)}</code>\n"
+        f"Telegram user ID: {linked_user_text}\n"
         f"Status: <b>{'Enabled' if _buyer_api_bool_value(client.get('enabled')) else 'Disabled'}</b>\n"
         f"Balance: <b>{format_money(client.get('wallet_balance', 0))}</b>\n"
         f"Key fingerprint: <code>{escape_html(seller_api_client_key_fingerprint(client))}</code>\n"
@@ -7777,6 +8063,56 @@ def render_user_id_text(user_id: int) -> str:
         f"🆔 <b>{t(user_id, 'profile_title')}</b>\n\n"
         f"<b>{t(user_id, 'user_id')}:</b> <code>{user_id}</code>\n"
         f"<b>{t(user_id, 'username')}:</b> {escape_html('@' + username if username else t(user_id, 'no_username'))}"
+    )
+
+
+def seller_api_user_base_url() -> str:
+    return str(SELLER_API_BASE_URL or PUBLIC_BASE_URL or "").strip().rstrip("/")
+
+
+def render_user_seller_api_key_text(user_id: int, client: dict, raw_key: str = None) -> str:
+    client = client or {}
+    enabled = _buyer_api_bool_value(client.get("enabled"))
+    status_text = t(user_id, "api_enabled" if enabled else "api_disabled")
+    balance = safe_decimal(client.get("wallet_balance")) or Decimal("0")
+    base_url = seller_api_user_base_url()
+    if raw_key:
+        key_text = (
+            f"<code>{escape_html(raw_key)}</code>\n"
+            f"⚠️ <b>{t(user_id, 'api_key_new_warning')}</b>"
+        )
+    elif enabled:
+        key_text = (
+            f"{escape_html(t(user_id, 'api_key_existing'))}\n"
+            f"<code>{escape_html(seller_api_client_key_fingerprint(client))}</code>"
+        )
+    else:
+        key_text = escape_html(t(user_id, "api_key_revoked"))
+    base_text = (
+        f"<code>{escape_html(base_url)}</code>"
+        if base_url else
+        f"⚠️ {escape_html(t(user_id, 'api_base_missing'))}"
+    )
+    service_note = ""
+    if not seller_api_server_enabled():
+        service_note = f"\n⚠️ <b>{escape_html(t(user_id, 'api_service_disabled'))}</b>\n"
+    example_body = '{"key":"YOUR_API_KEY","product_id":"PRODUCT_ID","quantity":1,"lang":"en"}'
+    return (
+        f"🚨 <b>{t(user_id, 'api_key_title')}</b>\n\n"
+        f"<b>{t(user_id, 'api_key_label')}:</b>\n{key_text}\n\n"
+        f"<b>{t(user_id, 'api_key_status')}:</b> {escape_html(status_text)}\n"
+        f"<b>{t(user_id, 'api_balance')}:</b> {format_money(balance)} USDT\n"
+        f"<i>{escape_html(t(user_id, 'api_balance_note'))}</i>\n"
+        f"{service_note}\n"
+        f"<b>{t(user_id, 'api_base_url')}:</b>\n{base_text}\n\n"
+        f"<b>{t(user_id, 'api_endpoints')}:</b>\n"
+        f"<code>GET {SELLER_API_PRODUCTS_PATH}</code> — {escape_html(t(user_id, 'api_list_products'))}\n"
+        f"<code>GET {SELLER_API_BALANCE_PATH}</code> — {escape_html(t(user_id, 'api_check_balance'))}\n"
+        f"<code>POST {SELLER_API_PURCHASE_PATH}</code> — {escape_html(t(user_id, 'api_place_order'))}\n\n"
+        f"<b>{t(user_id, 'api_auth')}:</b>\n"
+        f"{escape_html(t(user_id, 'api_auth_help'))}\n"
+        f"<code>key=YOUR_API_KEY</code>\n\n"
+        f"<code>{escape_html(example_body)}</code>"
     )
 
 
@@ -16194,7 +16530,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if data == "user_dashboard_profile":
             await edit_user_dashboard_panel(
-                query, render_user_id_text(user_id), user_dashboard_back_keyboard(user_id)
+                query, render_user_id_text(user_id), user_profile_keyboard(user_id)
+            )
+            return
+
+        if data == "user_dashboard_api_key":
+            _, client, raw_key = ensure_user_seller_api_client(user_id)
+            if raw_key:
+                save_bot_state()
+            await edit_user_dashboard_panel(
+                query,
+                render_user_seller_api_key_text(user_id, client, raw_key),
+                user_seller_api_key_keyboard(user_id, client, raw_key),
+                fallback_keyboards=[
+                    user_seller_api_key_keyboard(user_id, client, raw_key, copy_buttons=False),
+                ],
             )
             return
 
@@ -16224,6 +16574,115 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 query, t(user_id, "select_language"), user_language_keyboard(user_id)
             )
             return
+
+    if data == "user_api_key_open":
+        _, client, raw_key = ensure_user_seller_api_client(user_id)
+        if raw_key:
+            save_bot_state()
+        await edit_user_dashboard_panel(
+            query,
+            render_user_seller_api_key_text(user_id, client, raw_key),
+            user_seller_api_key_keyboard(user_id, client, raw_key),
+            fallback_keyboards=[
+                user_seller_api_key_keyboard(user_id, client, raw_key, copy_buttons=False),
+            ],
+        )
+        return
+
+    if data == "user_api_key_copy_help":
+        try:
+            await query.answer(t(user_id, "api_copy_help"), show_alert=True)
+        except Exception:
+            pass
+        return
+
+    if data == "user_api_key_copy_unavailable":
+        _, client = find_seller_api_client_by_user_id(user_id)
+        message_key = "api_key_existing" if _buyer_api_bool_value((client or {}).get("enabled")) else "api_key_revoked"
+        try:
+            await query.answer(t(user_id, message_key), show_alert=True)
+        except Exception:
+            pass
+        return
+
+    if data == "user_api_key_base_missing":
+        try:
+            await query.answer(t(user_id, "api_base_missing"), show_alert=True)
+        except Exception:
+            pass
+        return
+
+    if data == "user_api_key_regenerate":
+        _, client = find_seller_api_client_by_user_id(user_id)
+        if client is None:
+            _, client, raw_key = ensure_user_seller_api_client(user_id)
+            save_bot_state()
+            await edit_user_dashboard_panel(
+                query,
+                render_user_seller_api_key_text(user_id, client, raw_key),
+                user_seller_api_key_keyboard(user_id, client, raw_key),
+                fallback_keyboards=[
+                    user_seller_api_key_keyboard(user_id, client, raw_key, copy_buttons=False),
+                ],
+            )
+            return
+        await edit_user_dashboard_panel(
+            query,
+            f"🔄 <b>{t(user_id, 'api_regenerate')}</b>\n\n{escape_html(t(user_id, 'api_regenerate_confirm'))}",
+            user_seller_api_confirmation_keyboard(user_id, "regenerate"),
+        )
+        return
+
+    if data == "user_api_key_regenerate_confirm":
+        client_id, client = find_seller_api_client_by_user_id(user_id)
+        if client is None:
+            client_id, client, raw_key = ensure_user_seller_api_client(user_id)
+        else:
+            raw_key = regenerate_seller_api_client_key(client_id)
+            client["enabled"] = True
+        save_bot_state()
+        await edit_user_dashboard_panel(
+            query,
+            render_user_seller_api_key_text(user_id, client, raw_key),
+            user_seller_api_key_keyboard(user_id, client, raw_key),
+            fallback_keyboards=[
+                user_seller_api_key_keyboard(user_id, client, raw_key, copy_buttons=False),
+            ],
+        )
+        return
+
+    if data == "user_api_key_revoke":
+        _, client = find_seller_api_client_by_user_id(user_id)
+        if client is None or not _buyer_api_bool_value(client.get("enabled")):
+            _, client, raw_key = ensure_user_seller_api_client(user_id)
+            await edit_user_dashboard_panel(
+                query,
+                render_user_seller_api_key_text(user_id, client, raw_key),
+                user_seller_api_key_keyboard(user_id, client, raw_key),
+                fallback_keyboards=[
+                    user_seller_api_key_keyboard(user_id, client, raw_key, copy_buttons=False),
+                ],
+            )
+            return
+        await edit_user_dashboard_panel(
+            query,
+            f"❌ <b>{t(user_id, 'api_revoke')}</b>\n\n{escape_html(t(user_id, 'api_revoke_confirm'))}",
+            user_seller_api_confirmation_keyboard(user_id, "revoke"),
+        )
+        return
+
+    if data == "user_api_key_revoke_confirm":
+        _, client = find_seller_api_client_by_user_id(user_id)
+        if client is not None:
+            client["enabled"] = False
+            save_bot_state()
+        await edit_user_dashboard_panel(
+            query,
+            f"✅ {escape_html(t(user_id, 'api_key_revoked_success'))}\n\n"
+            + render_user_seller_api_key_text(user_id, client or {}),
+            user_seller_api_key_keyboard(user_id, client or {}, copy_buttons=False),
+        )
+        return
 
     if data.startswith("user_language_"):
         language = data.replace("user_language_", "", 1)
