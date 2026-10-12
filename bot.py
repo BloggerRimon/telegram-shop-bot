@@ -617,6 +617,7 @@ def build_state_snapshot():
                 "enabled": bool(client.get("enabled")),
                 "wallet_balance": float(client.get("wallet_balance", 0) or 0),
                 "created_at": client.get("created_at"),
+                "last_api_request_at": client.get("last_api_request_at"),
                 "notes": str(client.get("notes") or ""),
             }
             for client_id, client in seller_api_clients.items()
@@ -726,6 +727,7 @@ def apply_loaded_state(data: dict):
                 "enabled": _buyer_api_bool_value(client.get("enabled")),
                 "wallet_balance": float(balance) if balance is not None and balance >= 0 else 0.0,
                 "created_at": client.get("created_at") or now_dt(),
+                "last_api_request_at": client.get("last_api_request_at"),
                 "notes": str(client.get("notes") or "")[:500],
             }
 
@@ -2377,6 +2379,7 @@ def create_seller_api_client(name: str, notes: str = "", telegram_user_id=None):
         "enabled": True,
         "wallet_balance": 0.0,
         "created_at": now_dt(),
+        "last_api_request_at": None,
         "notes": str(notes or "").strip()[:500],
     }
     return client_id, seller_api_clients[client_id], raw_key
@@ -2454,6 +2457,7 @@ def authenticate_seller_api_client(api_key: str):
         return None, None, {"success": False, "error": "invalid_key"}
     if not seller_api_rate_limit_allowed(client_id):
         return None, None, {"success": False, "error": "rate_limited"}
+    client["last_api_request_at"] = now_dt()
     return client_id, client, None
 
 
@@ -2611,6 +2615,7 @@ def add_seller_api_order_record(
         "client_name": str(seller_api_clients.get(client_id, {}).get("name") or client_id),
         "source": "Seller API",
         "product_id": str(product_id),
+        "product_public_id": str(product_id),
         "product_name": str(product_name),
         "product_type": str(product_type),
         "quantity": int(quantity),
@@ -2618,6 +2623,7 @@ def add_seller_api_order_record(
         "total_paid": float(total),
         "status": str(status),
         "customer_emails": list(customer_emails or []),
+        "customer_email_count": len(list(customer_emails or [])),
         "webhook_requested": bool(webhook_url),
         "delivered_count": 0,
         "created_at": now_dt(),
@@ -2651,6 +2657,46 @@ def deduct_seller_api_client_balance(client_id: str, total: Decimal) -> Decimal:
     remaining = (balance - total).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     client["wallet_balance"] = float(remaining)
     return remaining
+
+
+def adjust_seller_api_client_balance(
+    client_id: str,
+    amount: Decimal,
+    action: str,
+    admin_user_id: int,
+    note: str = "",
+) -> Decimal:
+    client = seller_api_clients.get(str(client_id or ""))
+    if not isinstance(client, dict):
+        raise ValueError("client_not_found")
+    clean_action = str(action or "").strip().lower()
+    if clean_action not in {"add", "remove"}:
+        raise ValueError("invalid_action")
+    clean_amount = Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if clean_amount <= 0:
+        raise ValueError("invalid_amount")
+    before = (safe_decimal(client.get("wallet_balance")) or Decimal("0")).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    if clean_action == "remove" and clean_amount > before:
+        raise ValueError("insufficient_balance")
+    after = before + clean_amount if clean_action == "add" else before - clean_amount
+    after = after.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    client["wallet_balance"] = float(after)
+    seller_api_transactions.append({
+        "client_id": str(client_id),
+        "client_name": str(client.get("name") or client_id),
+        "source": "Seller API Admin",
+        "type": "Balance Add" if clean_action == "add" else "Balance Remove",
+        "amount": float(clean_amount if clean_action == "add" else -clean_amount),
+        "admin_user_id": int(admin_user_id),
+        "note": str(note or "").strip()[:500],
+        "balance_before": float(before),
+        "balance_after": float(after),
+        "status": "Completed",
+        "created_at": now_dt(),
+    })
+    return after
 
 
 def save_seller_api_state_safely():
@@ -5503,17 +5549,167 @@ def seller_api_server_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
-def seller_api_clients_keyboard() -> InlineKeyboardMarkup:
+SELLER_API_CLIENT_PAGE_SIZE = 8
+SELLER_API_CLIENT_ORDER_PAGE_SIZE = 8
+
+
+def _seller_api_activity_datetime(value):
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+        except (TypeError, ValueError):
+            pass
+    return datetime.min
+
+
+def seller_api_client_orders(client_id: str, with_indexes: bool = False) -> list:
+    orders = [
+        (index, order) if with_indexes else order
+        for index, order in enumerate(seller_api_orders)
+        if str(order.get("client_id") or "") == str(client_id)
+    ]
+    return sorted(
+        orders,
+        key=lambda item: _seller_api_activity_datetime(
+            (item[1] if with_indexes else item).get("created_at")
+        ),
+        reverse=True,
+    )
+
+
+def seller_api_client_balance_history(client_id: str) -> list:
+    history = [
+        transaction for transaction in seller_api_transactions
+        if str(transaction.get("client_id") or "") == str(client_id)
+        and str(transaction.get("type") or "").strip().casefold() in {
+            "balance add", "balance remove",
+        }
+    ]
+    return sorted(
+        history,
+        key=lambda item: _seller_api_activity_datetime(item.get("created_at")),
+        reverse=True,
+    )
+
+
+def seller_api_client_username(client: dict) -> str:
+    linked_user_id = seller_api_client_telegram_user_id(client)
+    if not linked_user_id:
+        return "N/A"
+    profile = user_profiles.get(linked_user_id) or user_profiles.get(str(linked_user_id), {})
+    username = str(profile.get("username") or "").strip().lstrip("@")
+    return f"@{username}" if username else "Not available"
+
+
+def seller_api_client_summary(client_id: str) -> dict:
+    client = seller_api_clients.get(str(client_id), {})
+    orders = seller_api_client_orders(client_id)
+    balance_history = seller_api_client_balance_history(client_id)
+    completed_statuses = {"completed", "complete", "success", "successful"}
+    processing_statuses = {
+        "processing", "pending", "pending_support", "pending_manual_delivery",
+        "activation_processing",
+    }
+    failed_statuses = {"failed", "failure", "cancelled", "canceled", "rejected", "refunded"}
+    completed = sum(
+        1 for order in orders
+        if str(order.get("status") or "").strip().casefold() in completed_statuses
+    )
+    processing = sum(
+        1 for order in orders
+        if str(order.get("status") or "").strip().casefold() in processing_statuses
+    )
+    failed = sum(
+        1 for order in orders
+        if str(order.get("status") or "").strip().casefold() in failed_statuses
+    )
+    purchase_transactions = [
+        transaction for transaction in seller_api_transactions
+        if str(transaction.get("client_id") or "") == str(client_id)
+        and str(transaction.get("type") or "").strip().casefold() == "purchase"
+    ]
+    if purchase_transactions:
+        total_spent = sum(
+            abs(safe_decimal(transaction.get("amount")) or Decimal("0"))
+            for transaction in purchase_transactions
+        )
+    else:
+        total_spent = sum(
+            safe_decimal(order.get("total_paid")) or Decimal("0")
+            for order in orders
+            if str(order.get("status") or "").strip().casefold() not in failed_statuses
+        )
+    total_added = sum(
+        safe_decimal(item.get("amount")) or Decimal("0")
+        for item in balance_history
+        if str(item.get("type") or "").strip().casefold() == "balance add"
+    )
+    total_removed = sum(
+        abs(safe_decimal(item.get("amount")) or Decimal("0"))
+        for item in balance_history
+        if str(item.get("type") or "").strip().casefold() == "balance remove"
+    )
+    recent_hits = [
+        stamp for stamp in seller_api_rate_limit_hits.get(str(client_id), [])
+        if now_dt().timestamp() - float(stamp) < 60
+    ]
+    return {
+        "balance": safe_decimal(client.get("wallet_balance")) or Decimal("0"),
+        "total_added": total_added,
+        "total_removed": total_removed,
+        "total_spent": total_spent,
+        "total_orders": len(orders),
+        "completed_orders": completed,
+        "processing_orders": processing,
+        "failed_orders": failed,
+        "last_purchase_at": orders[0].get("created_at") if orders else None,
+        "last_api_request_at": client.get("last_api_request_at"),
+        "rate_limit_hits": len(recent_hits),
+        "rate_limit_max": SELLER_API_RATE_LIMIT_PER_MINUTE,
+    }
+
+
+def seller_api_clients_page(page: int = 0):
+    clients = list(seller_api_clients.items())
+    total_pages = max(1, (len(clients) + SELLER_API_CLIENT_PAGE_SIZE - 1) // SELLER_API_CLIENT_PAGE_SIZE)
+    safe_page = max(0, min(int(page), total_pages - 1))
+    start = safe_page * SELLER_API_CLIENT_PAGE_SIZE
+    return clients[start:start + SELLER_API_CLIENT_PAGE_SIZE], safe_page, total_pages
+
+
+def parse_seller_api_client_page_callback(data: str, prefix: str):
+    payload = str(data or "")[len(prefix):]
+    if "_" in payload:
+        client_id, page_text = payload.rsplit("_", 1)
+        if client_id in seller_api_clients and page_text.isdigit():
+            return client_id, int(page_text)
+    if payload in seller_api_clients:
+        return payload, 0
+    return "", 0
+
+
+def seller_api_clients_keyboard(page: int = 0) -> InlineKeyboardMarkup:
+    page_clients, safe_page, total_pages = seller_api_clients_page(page)
     rows = []
-    for client_id, client in seller_api_clients.items():
+    for client_id, client in page_clients:
         marker = "✅" if _buyer_api_bool_value(client.get("enabled")) else "❌"
         display_name = str(client.get("name") or client_id)
-        if len(display_name) > 36:
-            display_name = display_name[:33] + "..."
+        if len(display_name) > 28:
+            display_name = display_name[:25] + "..."
+        summary = seller_api_client_summary(client_id)
         rows.append([InlineKeyboardButton(
-            f"{marker} {display_name} — {format_money(client.get('wallet_balance', 0))}",
+            f"{marker} {display_name} — {format_money(summary['balance'])} · {summary['total_orders']} orders",
             callback_data=f"reseller_api_client_{client_id}",
         )])
+    navigation = []
+    if safe_page > 0:
+        navigation.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"reseller_api_clients_page_{safe_page - 1}"))
+    if safe_page + 1 < total_pages:
+        navigation.append(InlineKeyboardButton("Next ➡️", callback_data=f"reseller_api_clients_page_{safe_page + 1}"))
+    if navigation:
+        rows.append(navigation)
     rows.extend([
         [InlineKeyboardButton("➕ Add Client", callback_data="reseller_api_add_client")],
         [InlineKeyboardButton("⬅️ Back", callback_data="reseller_api_panel")],
@@ -5521,28 +5717,40 @@ def seller_api_clients_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def render_seller_api_clients() -> str:
+def render_seller_api_clients(page: int = 0) -> str:
     if not seller_api_clients:
         return "👥 <b>SELLER API CLIENTS</b>\n\nNo API clients created yet."
+    page_clients, safe_page, total_pages = seller_api_clients_page(page)
     enabled_count = sum(
         1 for client in seller_api_clients.values()
         if _buyer_api_bool_value(client.get("enabled"))
     )
     total_balance = sum(float(client.get("wallet_balance", 0) or 0) for client in seller_api_clients.values())
-    return (
-        "👥 <b>SELLER API CLIENTS</b>\n\n"
-        f"Total clients: <b>{len(seller_api_clients)}</b>\n"
-        f"Enabled: <b>{enabled_count}</b>\n"
-        f"Combined balance: <b>{format_money(total_balance)}</b>\n\n"
-        "Select a client below."
-    )
+    lines = [
+        "👥 <b>SELLER API CLIENTS</b>", "",
+        f"Total clients: <b>{len(seller_api_clients)}</b>",
+        f"Enabled: <b>{enabled_count}</b>",
+        f"Combined balance: <b>{format_money(total_balance)}</b>",
+        f"Page: <b>{safe_page + 1}/{total_pages}</b>", "",
+    ]
+    for client_id, client in page_clients:
+        summary = seller_api_client_summary(client_id)
+        linked_user_id = seller_api_client_telegram_user_id(client)
+        linked = f"TG {linked_user_id}" if linked_user_id else "Not linked"
+        lines.extend([
+            f"{'✅' if _buyer_api_bool_value(client.get('enabled')) else '❌'} <b>{escape_html(client.get('name') or client_id)}</b>",
+            f"{escape_html(linked)} · {escape_html(seller_api_client_username(client))}",
+            f"Balance {format_money(summary['balance'])} · Spent {format_money(summary['total_spent'])} · Orders {summary['total_orders']}",
+            "",
+        ])
+    return "\n".join(lines)
 
 
 def render_seller_api_client_detail(client_id: str) -> str:
     client = seller_api_clients.get(client_id)
     if not isinstance(client, dict):
         return "❌ <b>API client not found.</b>"
-    client_orders = [order for order in seller_api_orders if order.get("client_id") == client_id]
+    summary = seller_api_client_summary(client_id)
     linked_user_id = seller_api_client_telegram_user_id(client)
     linked_user_text = f"<code>{linked_user_id}</code>" if linked_user_id else "Not linked"
     return (
@@ -5550,11 +5758,16 @@ def render_seller_api_client_detail(client_id: str) -> str:
         f"Name: <b>{escape_html(client.get('name', client_id))}</b>\n"
         f"Client ID: <code>{escape_html(client_id)}</code>\n"
         f"Telegram user ID: {linked_user_text}\n"
+        f"Username: {escape_html(seller_api_client_username(client))}\n"
         f"Status: <b>{'Enabled' if _buyer_api_bool_value(client.get('enabled')) else 'Disabled'}</b>\n"
-        f"Balance: <b>{format_money(client.get('wallet_balance', 0))}</b>\n"
+        f"API balance: <b>{format_money(summary['balance'])}</b>\n"
+        f"Total balance added: <b>{format_money(summary['total_added'])}</b>\n"
+        f"Total balance removed: <b>{format_money(summary['total_removed'])}</b>\n"
+        f"Total spent: <b>{format_money(summary['total_spent'])}</b>\n"
         f"Key fingerprint: <code>{escape_html(seller_api_client_key_fingerprint(client))}</code>\n"
         f"Created: {escape_html(format_dt(client.get('created_at')))}\n"
-        f"Orders: <b>{len(client_orders)}</b>\n"
+        f"Orders: <b>{summary['total_orders']}</b> · Completed: <b>{summary['completed_orders']}</b> · Processing: <b>{summary['processing_orders']}</b>\n"
+        f"Last purchase: {escape_html(format_dt(summary['last_purchase_at']))}\n"
         f"Notes: {escape_html(client.get('notes') or 'None')}"
     )
 
@@ -5563,46 +5776,310 @@ def seller_api_client_keyboard(client_id: str) -> InlineKeyboardMarkup:
     client = seller_api_clients.get(client_id, {})
     toggle_text = "❌ Disable Client" if _buyer_api_bool_value(client.get("enabled")) else "✅ Enable Client"
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📦 View Client Orders", callback_data=f"reseller_api_orders_{client_id}")],
+        [InlineKeyboardButton("📊 Client Summary", callback_data=f"reseller_api_summary_{client_id}")],
+        [InlineKeyboardButton("📦 Purchase History", callback_data=f"reseller_api_orders_{client_id}_0")],
+        [InlineKeyboardButton("💰 Balance History", callback_data=f"reseller_api_balance_history_{client_id}_0")],
+        [InlineKeyboardButton("🧾 Product Summary", callback_data=f"reseller_api_products_summary_{client_id}_0")],
         [InlineKeyboardButton("➕ Add Balance", callback_data=f"reseller_api_add_balance_{client_id}")],
         [InlineKeyboardButton("➖ Remove Balance", callback_data=f"reseller_api_remove_balance_{client_id}")],
+        [InlineKeyboardButton("⬇️ Download Client Report", callback_data=f"reseller_api_report_{client_id}")],
+        [InlineKeyboardButton("🔁 Regenerate Key", callback_data=f"reseller_api_regen_{client_id}")],
         [InlineKeyboardButton(toggle_text, callback_data=f"reseller_api_toggle_client_{client_id}")],
-        [InlineKeyboardButton("🔑 Regenerate API Key", callback_data=f"reseller_api_regen_{client_id}")],
         [InlineKeyboardButton("⬅️ Back", callback_data="reseller_api_clients")],
     ])
 
 
-def render_seller_api_client_orders(client_id: str) -> str:
+def render_seller_api_client_summary(client_id: str) -> str:
     client = seller_api_clients.get(client_id, {})
-    orders = [
-        order for order in seller_api_orders
-        if order.get("client_id") == client_id
-    ][-10:]
+    summary = seller_api_client_summary(client_id)
+    return (
+        "📊 <b>SELLER API CLIENT SUMMARY</b>\n\n"
+        f"Client: <b>{escape_html(client.get('name', client_id))}</b>\n"
+        f"Current API balance: <b>{format_money(summary['balance'])}</b>\n"
+        f"Total balance added: <b>{format_money(summary['total_added'])}</b>\n"
+        f"Total balance removed: <b>{format_money(summary['total_removed'])}</b>\n"
+        f"Total spent: <b>{format_money(summary['total_spent'])}</b>\n"
+        f"Total orders: <b>{summary['total_orders']}</b>\n"
+        f"Completed orders: <b>{summary['completed_orders']}</b>\n"
+        f"Processing/pending orders: <b>{summary['processing_orders']}</b>\n"
+        f"Failed orders recorded: <b>{summary['failed_orders']}</b>\n"
+        f"Last purchase: {escape_html(format_dt(summary['last_purchase_at']))}\n"
+        f"Last API request: {escape_html(format_dt(summary['last_api_request_at']))}\n"
+        f"Rate limit: <b>{summary['rate_limit_hits']}/{summary['rate_limit_max']}</b> requests in current minute\n\n"
+        "<i>Balance adjustment totals are recorded from this update onward.</i>"
+    )
+
+
+def seller_api_client_orders_page(client_id: str, page: int = 0):
+    orders = seller_api_client_orders(client_id, with_indexes=True)
+    total_pages = max(1, (len(orders) + SELLER_API_CLIENT_ORDER_PAGE_SIZE - 1) // SELLER_API_CLIENT_ORDER_PAGE_SIZE)
+    safe_page = max(0, min(int(page), total_pages - 1))
+    start = safe_page * SELLER_API_CLIENT_ORDER_PAGE_SIZE
+    return orders[start:start + SELLER_API_CLIENT_ORDER_PAGE_SIZE], safe_page, total_pages
+
+
+def render_seller_api_client_orders(client_id: str, page: int = 0) -> str:
+    client = seller_api_clients.get(client_id, {})
+    orders, safe_page, total_pages = seller_api_client_orders_page(client_id, page)
     lines = [
         "📦 <b>SELLER API CLIENT ORDERS</b>",
         f"Client: <b>{escape_html(client.get('name', client_id))}</b>",
+        f"Page: <b>{safe_page + 1}/{total_pages}</b>",
         "",
     ]
     if not orders:
         lines.append("No orders found.")
         return "\n".join(lines)
-    for order in reversed(orders):
+    for _, order in orders:
         lines.extend([
             f"<b>{escape_html(order.get('order_code'))}</b> — {escape_html(order.get('status'))}",
-            f"Product: {escape_html(order.get('product_name'))}",
-            f"Quantity: {int(order.get('quantity', 0))} | Total: {format_money(order.get('total_paid', 0))}",
-            f"Delivered: {int(order.get('delivered_count', 0))}",
+            f"{escape_html(format_dt(order.get('created_at')))} · {escape_html(order.get('product_name') or order.get('product_id') or 'Unknown Product')}",
+            f"Quantity: {int(order.get('quantity', 0) or 0)} | Total: {format_money(order.get('total_paid', 0))} | Type: {escape_html(order.get('product_type') or 'unknown')}",
+            f"Customer emails: {int(order.get('customer_email_count', len(order.get('customer_emails') or [])) or 0)}",
+            "",
         ])
-        if order.get("customer_emails"):
-            lines.append("Customer email: " + escape_html(
-                ", ".join(str(email) for email in order.get("customer_emails", []))
-            ))
-        if order.get("upstream_order_codes"):
-            lines.append("Fulfillment reference: " + escape_html(
-                ", ".join(str(code) for code in order.get("upstream_order_codes", []))
-            ))
-        lines.append("")
     return "\n".join(lines)
+
+
+def seller_api_client_orders_keyboard(client_id: str, page: int = 0) -> InlineKeyboardMarkup:
+    orders, safe_page, total_pages = seller_api_client_orders_page(client_id, page)
+    rows = []
+    for order_index, order in orders:
+        label = str(order.get("order_code") or f"Order {order_index + 1}")
+        rows.append([InlineKeyboardButton(
+            f"🔎 {label[:45]}",
+            callback_data=f"reseller_api_order_detail_{order_index}_{safe_page}",
+        )])
+    navigation = []
+    if safe_page > 0:
+        navigation.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"reseller_api_orders_{client_id}_{safe_page - 1}"))
+    if safe_page + 1 < total_pages:
+        navigation.append(InlineKeyboardButton("Next ➡️", callback_data=f"reseller_api_orders_{client_id}_{safe_page + 1}"))
+    if navigation:
+        rows.append(navigation)
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data=f"reseller_api_client_{client_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def render_seller_api_order_detail(order: dict) -> str:
+    customer_emails = [str(value) for value in order.get("customer_emails", []) if str(value).strip()]
+    order_codes = [str(value) for value in order.get("upstream_order_codes", []) if str(value).strip()]
+    return (
+        "🔎 <b>SELLER API ORDER DETAILS</b>\n\n"
+        f"Order ID: <code>{escape_html(order.get('order_code') or 'N/A')}</code>\n"
+        f"Product: <b>{escape_html(order.get('product_name') or order.get('product_id') or 'Unknown Product')}</b>\n"
+        f"Quantity: <b>{int(order.get('quantity', 0) or 0)}</b>\n"
+        f"Unit price: <b>{format_money(order.get('unit_price', 0))}</b>\n"
+        f"Total paid: <b>{format_money(order.get('total_paid', 0))}</b>\n"
+        f"Status: <b>{escape_html(order.get('status') or 'unknown')}</b>\n"
+        f"Date/time: {escape_html(format_dt(order.get('created_at')))}\n"
+        f"Product source: <b>{escape_html(order.get('product_type') or 'unknown')}</b>\n"
+        f"Customer email(s): {escape_html(', '.join(customer_emails) if customer_emails else 'None')}\n"
+        f"Fulfillment reference(s): {escape_html(', '.join(order_codes) if order_codes else 'None')}\n"
+        f"Delivered item count: <b>{int(order.get('delivered_count', 0) or 0)}</b>\n"
+        f"Processing/failure reason: {escape_html(order.get('failure_category') or 'None')}"
+    )
+
+
+def render_seller_api_balance_history(client_id: str, page: int = 0):
+    client = seller_api_clients.get(client_id, {})
+    history = seller_api_client_balance_history(client_id)
+    total_pages = max(1, (len(history) + SELLER_API_CLIENT_ORDER_PAGE_SIZE - 1) // SELLER_API_CLIENT_ORDER_PAGE_SIZE)
+    safe_page = max(0, min(int(page), total_pages - 1))
+    start = safe_page * SELLER_API_CLIENT_ORDER_PAGE_SIZE
+    page_items = history[start:start + SELLER_API_CLIENT_ORDER_PAGE_SIZE]
+    lines = [
+        "💰 <b>SELLER API BALANCE HISTORY</b>",
+        f"Client: <b>{escape_html(client.get('name', client_id))}</b>",
+        f"Page: <b>{safe_page + 1}/{total_pages}</b>", "",
+    ]
+    if not page_items:
+        lines.append("No balance history recorded before this update.")
+    for item in page_items:
+        lines.extend([
+            f"<b>{escape_html(item.get('type') or 'Adjustment')}</b> — {format_money(abs(float(item.get('amount', 0) or 0)))}",
+            f"Before: {format_money(item.get('balance_before', 0))} → After: {format_money(item.get('balance_after', 0))}",
+            f"Admin: <code>{escape_html(item.get('admin_user_id') or 'N/A')}</code> · {escape_html(format_dt(item.get('created_at')))}",
+            f"Note: {escape_html(item.get('note') or 'None')}", "",
+        ])
+    rows = []
+    nav = []
+    if safe_page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"reseller_api_balance_history_{client_id}_{safe_page - 1}"))
+    if safe_page + 1 < total_pages:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"reseller_api_balance_history_{client_id}_{safe_page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data=f"reseller_api_client_{client_id}")])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+def seller_api_client_product_summary(client_id: str) -> list:
+    grouped = {}
+    processing_statuses = {"processing", "pending", "pending_support", "pending_manual_delivery", "activation_processing"}
+    excluded_statuses = {"failed", "failure", "cancelled", "canceled", "rejected", "refunded", "unpaid"}
+    for order in seller_api_client_orders(client_id):
+        status = str(order.get("status") or "").strip().casefold()
+        if status in excluded_statuses:
+            continue
+        product_key = str(order.get("product_id") or order.get("product_name") or "Unknown Product")
+        row = grouped.setdefault(product_key, {
+            "product_name": str(order.get("product_name") or order.get("product_id") or "Unknown Product"),
+            "quantity": 0,
+            "total_spent": Decimal("0"),
+            "completed_orders": 0,
+            "processing_orders": 0,
+            "last_bought_at": None,
+        })
+        quantity = max(0, int(order.get("quantity", 0) or 0))
+        row["quantity"] += quantity
+        row["total_spent"] += safe_decimal(order.get("total_paid")) or Decimal("0")
+        if status in {"completed", "complete", "success", "successful"}:
+            row["completed_orders"] += 1
+        elif status in processing_statuses:
+            row["processing_orders"] += 1
+        created_at = order.get("created_at")
+        if row["last_bought_at"] is None or _seller_api_activity_datetime(created_at) > _seller_api_activity_datetime(row["last_bought_at"]):
+            row["last_bought_at"] = created_at
+    return sorted(grouped.values(), key=lambda item: _seller_api_activity_datetime(item["last_bought_at"]), reverse=True)
+
+
+def render_seller_api_product_summary(client_id: str, page: int = 0):
+    client = seller_api_clients.get(client_id, {})
+    products = seller_api_client_product_summary(client_id)
+    total_pages = max(1, (len(products) + SELLER_API_CLIENT_ORDER_PAGE_SIZE - 1) // SELLER_API_CLIENT_ORDER_PAGE_SIZE)
+    safe_page = max(0, min(int(page), total_pages - 1))
+    start = safe_page * SELLER_API_CLIENT_ORDER_PAGE_SIZE
+    lines = [
+        "🧾 <b>SELLER API PRODUCT SUMMARY</b>",
+        f"Client: <b>{escape_html(client.get('name', client_id))}</b>",
+        f"Page: <b>{safe_page + 1}/{total_pages}</b>", "",
+    ]
+    page_items = products[start:start + SELLER_API_CLIENT_ORDER_PAGE_SIZE]
+    if not page_items:
+        lines.append("No purchases found.")
+    for item in page_items:
+        average = item["total_spent"] / item["quantity"] if item["quantity"] else Decimal("0")
+        lines.extend([
+            f"<b>{escape_html(item['product_name'])}</b>",
+            f"Quantity bought: {item['quantity']} · Total spent: {format_money(item['total_spent'])}",
+            f"Average unit price: {format_money(average)}",
+            f"Completed: {item['completed_orders']} · Processing/pending: {item['processing_orders']}",
+            f"Last bought: {escape_html(format_dt(item['last_bought_at']))}", "",
+        ])
+    rows = []
+    nav = []
+    if safe_page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"reseller_api_products_summary_{client_id}_{safe_page - 1}"))
+    if safe_page + 1 < total_pages:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"reseller_api_products_summary_{client_id}_{safe_page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data=f"reseller_api_client_{client_id}")])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+def build_seller_api_client_report_txt(client_id: str) -> str:
+    client = seller_api_clients.get(client_id, {})
+    summary = seller_api_client_summary(client_id)
+    products = seller_api_client_product_summary(client_id)
+    orders = seller_api_client_orders(client_id)[:25]
+    history = seller_api_client_balance_history(client_id)[:25]
+    lines = [
+        "SELLER API CLIENT REPORT",
+        "========================",
+        f"Generated: {format_dt(now_dt())}",
+        f"Client: {client.get('name', client_id)}",
+        f"Client ID: {client_id}",
+        f"Linked Telegram user ID: {seller_api_client_telegram_user_id(client) or 'Not linked'}",
+        f"Username: {seller_api_client_username(client)}",
+        f"Status: {'Enabled' if _buyer_api_bool_value(client.get('enabled')) else 'Disabled'}",
+        "",
+        "SUMMARY",
+        "-------",
+        f"Current API balance: {format_money(summary['balance'])}",
+        f"Total balance added: {format_money(summary['total_added'])}",
+        f"Total balance removed: {format_money(summary['total_removed'])}",
+        f"Total spent: {format_money(summary['total_spent'])}",
+        f"Total orders: {summary['total_orders']}",
+        f"Completed orders: {summary['completed_orders']}",
+        f"Processing/pending orders: {summary['processing_orders']}",
+        f"Failed orders recorded: {summary['failed_orders']}",
+        f"Last purchase: {format_dt(summary['last_purchase_at'])}",
+        f"Last API request: {format_dt(summary['last_api_request_at'])}",
+        "Balance adjustment totals are recorded from this update onward.",
+        "",
+        "PRODUCT SUMMARY",
+        "---------------",
+    ]
+    if not products:
+        lines.append("No purchases found.")
+    for item in products:
+        average = item["total_spent"] / item["quantity"] if item["quantity"] else Decimal("0")
+        lines.extend([
+            f"Product: {item['product_name']}",
+            f"Quantity bought: {item['quantity']}",
+            f"Total spent: {format_money(item['total_spent'])}",
+            f"Average unit price: {format_money(average)}",
+            f"Completed orders: {item['completed_orders']}",
+            f"Processing/pending orders: {item['processing_orders']}",
+            f"Last bought: {format_dt(item['last_bought_at'])}",
+            "",
+        ])
+    lines.extend(["RECENT ORDERS", "-------------"])
+    if not orders:
+        lines.append("No orders found.")
+    for order in orders:
+        lines.extend([
+            f"Order ID: {order.get('order_code') or 'N/A'}",
+            f"Date: {format_dt(order.get('created_at'))}",
+            f"Product: {order.get('product_name') or order.get('product_id') or 'Unknown Product'}",
+            f"Type: {order.get('product_type') or 'unknown'}",
+            f"Quantity: {int(order.get('quantity', 0) or 0)}",
+            f"Total paid: {format_money(order.get('total_paid', 0))}",
+            f"Status: {order.get('status') or 'unknown'}",
+            f"Customer email count: {int(order.get('customer_email_count', len(order.get('customer_emails') or [])) or 0)}",
+            f"Delivered item count: {int(order.get('delivered_count', 0) or 0)}",
+            "",
+        ])
+    lines.extend(["BALANCE HISTORY", "---------------"])
+    if not history:
+        lines.append("No balance history recorded before this update.")
+    for item in history:
+        lines.extend([
+            f"Date: {format_dt(item.get('created_at'))}",
+            f"Type: {item.get('type') or 'Adjustment'}",
+            f"Amount: {format_money(abs(float(item.get('amount', 0) or 0)))}",
+            f"Balance before: {format_money(item.get('balance_before', 0))}",
+            f"Balance after: {format_money(item.get('balance_after', 0))}",
+            f"Admin user ID: {item.get('admin_user_id') or 'N/A'}",
+            f"Note: {item.get('note') or 'None'}",
+            "",
+        ])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+async def send_seller_api_client_report(bot, admin_chat_id: int, client_id: str) -> bool:
+    client = seller_api_clients.get(client_id)
+    if not isinstance(client, dict):
+        return False
+    document = io.BytesIO(build_seller_api_client_report_txt(client_id).encode("utf-8"))
+    safe_client_id = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(client_id))[:50] or "client"
+    document.name = f"seller_api_client_report_{safe_client_id}.txt"
+    try:
+        await bot.send_document(
+            chat_id=admin_chat_id,
+            document=document,
+            filename=document.name,
+            caption=(
+                "📊 <b>Seller API client report</b>\n"
+                f"Client: {escape_html(client.get('name') or client_id)}"
+            ),
+            parse_mode="HTML",
+        )
+    finally:
+        document.close()
+    return True
 
 
 def render_seller_api_docs() -> str:
@@ -12714,7 +13191,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         client_id = str(state.get("client_id") or "")
         action = str(state.get("balance_action") or "")
         client = seller_api_clients.get(client_id)
-        amount = safe_decimal(text)
+        amount_parts = text.strip().split(maxsplit=1)
+        amount = safe_decimal(amount_parts[0]) if amount_parts else None
+        note = amount_parts[1].strip() if len(amount_parts) > 1 else ""
         if not isinstance(client, dict):
             await update.message.reply_text("❌ API client not found.")
             return
@@ -12725,8 +13204,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if action == "remove" and amount > current_balance:
             await update.message.reply_text("❌ Amount exceeds the client's current balance.")
             return
-        new_balance = current_balance + amount if action == "add" else current_balance - amount
-        client["wallet_balance"] = float(new_balance.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        adjust_seller_api_client_balance(client_id, amount, action, user_id, note)
+        save_bot_state()
         user_state[user_id] = {"step": "reseller_api_client", "client_id": client_id}
         await update.message.reply_text(
             "✅ Client balance updated.\n\n" + render_seller_api_client_detail(client_id),
@@ -13976,6 +14455,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if data.startswith("reseller_api_clients_page_"):
+        try:
+            page = int(data.replace("reseller_api_clients_page_", "", 1))
+        except ValueError:
+            page = 0
+        user_state[user_id] = {"step": "reseller_api_clients"}
+        await send_inline_from_callback(
+            query, render_seller_api_clients(page), seller_api_clients_keyboard(page)
+        )
+        return
+
     if data == "reseller_api_add_client":
         user_state[user_id] = {"step": "reseller_api_add_client_name"}
         await send_inline_from_callback(
@@ -14005,18 +14495,83 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if data.startswith("reseller_api_orders_"):
-        client_id = data.replace("reseller_api_orders_", "", 1)
+    if data.startswith("reseller_api_summary_"):
+        client_id = data.replace("reseller_api_summary_", "", 1)
         if client_id not in seller_api_clients:
             await send_inline_from_callback(query, "❌ <b>API client not found.</b>", seller_api_clients_keyboard())
             return
         await send_inline_from_callback(
             query,
-            render_seller_api_client_orders(client_id),
+            render_seller_api_client_summary(client_id),
             InlineKeyboardMarkup([[
                 InlineKeyboardButton("⬅️ Back", callback_data=f"reseller_api_client_{client_id}")
             ]]),
         )
+        return
+
+    if data.startswith("reseller_api_orders_"):
+        client_id, page = parse_seller_api_client_page_callback(data, "reseller_api_orders_")
+        if client_id not in seller_api_clients:
+            await send_inline_from_callback(query, "❌ <b>API client not found.</b>", seller_api_clients_keyboard())
+            return
+        await send_inline_from_callback(
+            query,
+            render_seller_api_client_orders(client_id, page),
+            seller_api_client_orders_keyboard(client_id, page),
+        )
+        return
+
+    if data.startswith("reseller_api_order_detail_"):
+        payload = data.replace("reseller_api_order_detail_", "", 1)
+        try:
+            order_index_text, page_text = payload.split("_", 1)
+            order_index = int(order_index_text)
+            page = max(0, int(page_text))
+            order = seller_api_orders[order_index]
+        except (ValueError, IndexError, TypeError):
+            await send_inline_from_callback(query, "❌ <b>API order not found.</b>", seller_api_clients_keyboard())
+            return
+        client_id = str(order.get("client_id") or "")
+        if client_id not in seller_api_clients:
+            await send_inline_from_callback(query, "❌ <b>API client not found.</b>", seller_api_clients_keyboard())
+            return
+        await send_inline_from_callback(
+            query,
+            render_seller_api_order_detail(order),
+            InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅️ Back", callback_data=f"reseller_api_orders_{client_id}_{page}")
+            ]]),
+        )
+        return
+
+    if data.startswith("reseller_api_balance_history_"):
+        client_id, page = parse_seller_api_client_page_callback(data, "reseller_api_balance_history_")
+        if client_id not in seller_api_clients:
+            await send_inline_from_callback(query, "❌ <b>API client not found.</b>", seller_api_clients_keyboard())
+            return
+        history_text, history_keyboard = render_seller_api_balance_history(client_id, page)
+        await send_inline_from_callback(query, history_text, history_keyboard)
+        return
+
+    if data.startswith("reseller_api_products_summary_"):
+        client_id, page = parse_seller_api_client_page_callback(data, "reseller_api_products_summary_")
+        if client_id not in seller_api_clients:
+            await send_inline_from_callback(query, "❌ <b>API client not found.</b>", seller_api_clients_keyboard())
+            return
+        summary_text, summary_keyboard = render_seller_api_product_summary(client_id, page)
+        await send_inline_from_callback(query, summary_text, summary_keyboard)
+        return
+
+    if data.startswith("reseller_api_report_"):
+        client_id = data.replace("reseller_api_report_", "", 1)
+        if client_id not in seller_api_clients:
+            await send_inline_from_callback(query, "❌ <b>API client not found.</b>", seller_api_clients_keyboard())
+            return
+        await send_seller_api_client_report(context.bot, query.message.chat_id, client_id)
+        try:
+            await query.answer("Client report sent.")
+        except Exception:
+            pass
         return
 
     if data.startswith("reseller_api_add_balance_") or data.startswith("reseller_api_remove_balance_"):
@@ -14034,7 +14589,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         action_text = "add to" if is_add else "remove from"
         await send_inline_from_callback(
             query,
-            f"💰 Send the USDT amount to {action_text} this client's balance.",
+            f"💰 Send the USDT amount to {action_text} this client's balance.\n\n"
+            "Optional: add a note after the amount.\n"
+            "Example: <code>25.00 Monthly reseller credit</code>",
             InlineKeyboardMarkup([[
                 InlineKeyboardButton("⬅️ Back", callback_data=f"reseller_api_client_{client_id}")
             ]]),
