@@ -5,13 +5,15 @@ import hmac
 import io
 import json
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import random
 import re
+import secrets
 import string
 import requests
 from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP, ROUND_UP
 from datetime import date, datetime, timedelta
+from urllib.parse import parse_qs, urlparse
 
 from telegram import (
     Update,
@@ -71,6 +73,12 @@ REQUIRED_CHANNEL_ENABLED = os.getenv("REQUIRED_CHANNEL_ENABLED", "false").strip(
 BUYER_API_ENABLED = os.getenv("BUYER_API_ENABLED", "false").strip()
 BUYER_API_URL = os.getenv("BUYER_API_URL", "").strip()
 BUYER_API_KEY = os.getenv("BUYER_API_KEY", "").strip()
+
+SELLER_API_ENABLED = os.getenv("SELLER_API_ENABLED", "false").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+SELLER_API_BASE_URL = os.getenv("SELLER_API_BASE_URL", "").strip().rstrip("/")
+SELLER_API_WEBHOOK_SECRET = os.getenv("SELLER_API_WEBHOOK_SECRET", "").strip()
 
 SELLER_API_PROVIDER_SLOTS = ("default", "2", "3", "4", "5")
 
@@ -389,6 +397,18 @@ seller_api_browser_cache = {}
 api_purchase_in_progress = set()
 SELLER_API_BROWSER_CACHE_TTL_SECONDS = 300
 
+seller_api_clients = {}
+seller_api_orders = []
+seller_api_transactions = []
+seller_api_server_settings = {
+    "enabled": True,
+    "next_client_number": 1,
+    "next_order_number": 1,
+}
+seller_api_client_purchase_in_progress = set()
+seller_api_rate_limit_hits = {}
+SELLER_API_RATE_LIMIT_PER_MINUTE = 60
+
 
 def _new_seller_api_auto_refresh_status():
     return {
@@ -589,6 +609,21 @@ def build_state_snapshot():
         "category_order": category_order,
         "shop_order": shop_order,
         "api_product_mappings": api_product_mappings,
+        "seller_api_clients": {
+            str(client_id): {
+                "name": str(client.get("name") or client_id),
+                "api_key_hash": str(client.get("api_key_hash") or ""),
+                "enabled": bool(client.get("enabled")),
+                "wallet_balance": float(client.get("wallet_balance", 0) or 0),
+                "created_at": client.get("created_at"),
+                "notes": str(client.get("notes") or ""),
+            }
+            for client_id, client in seller_api_clients.items()
+            if isinstance(client, dict)
+        },
+        "seller_api_orders": seller_api_orders,
+        "seller_api_transactions": seller_api_transactions,
+        "seller_api_server_settings": seller_api_server_settings,
         "seller_api_auto_refresh": seller_api_auto_refresh,
         "seller_api_provider_status": seller_api_provider_status,
         "sales_report_settings": sales_report_settings,
@@ -665,6 +700,51 @@ def apply_loaded_state(data: dict):
                 safe_mapping = dict(mapping)
                 safe_mapping["provider_id"] = mapping_provider_id(safe_mapping)
                 api_product_mappings[str(api_product_id)] = safe_mapping
+
+    seller_api_clients.clear()
+    loaded_seller_api_clients = data.get("seller_api_clients", {})
+    if isinstance(loaded_seller_api_clients, dict):
+        for client_id, client in loaded_seller_api_clients.items():
+            if not isinstance(client, dict):
+                continue
+            client_id = str(client_id or "").strip()
+            key_hash = str(client.get("api_key_hash") or "").strip().lower()
+            if not client_id or not re.fullmatch(r"[0-9a-f]{64}", key_hash):
+                continue
+            balance = safe_decimal(client.get("wallet_balance"))
+            seller_api_clients[client_id] = {
+                "name": str(client.get("name") or client_id).strip()[:80],
+                "api_key_hash": key_hash,
+                "enabled": _buyer_api_bool_value(client.get("enabled")),
+                "wallet_balance": float(balance) if balance is not None and balance >= 0 else 0.0,
+                "created_at": client.get("created_at") or now_dt(),
+                "notes": str(client.get("notes") or "")[:500],
+            }
+
+    seller_api_orders.clear()
+    loaded_seller_api_orders = data.get("seller_api_orders", [])
+    if isinstance(loaded_seller_api_orders, list):
+        seller_api_orders.extend(
+            order for order in loaded_seller_api_orders if isinstance(order, dict)
+        )
+    seller_api_transactions.clear()
+    loaded_seller_api_transactions = data.get("seller_api_transactions", [])
+    if isinstance(loaded_seller_api_transactions, list):
+        seller_api_transactions.extend(
+            transaction for transaction in loaded_seller_api_transactions
+            if isinstance(transaction, dict)
+        )
+    loaded_seller_api_server_settings = data.get("seller_api_server_settings", {})
+    if isinstance(loaded_seller_api_server_settings, dict):
+        seller_api_server_settings["enabled"] = _buyer_api_bool_value(
+            loaded_seller_api_server_settings.get("enabled", True)
+        )
+        for counter_name in ("next_client_number", "next_order_number"):
+            try:
+                counter_value = int(loaded_seller_api_server_settings.get(counter_name, 1))
+            except (TypeError, ValueError):
+                counter_value = 1
+            seller_api_server_settings[counter_name] = max(1, counter_value)
 
     loaded_auto_refresh = data.get("seller_api_auto_refresh", {})
     if isinstance(loaded_auto_refresh, dict):
@@ -2097,6 +2177,576 @@ def purchase_buyer_api_product(
         "accounts": delivered_items,
         "remaining_stock": remaining_stock,
     }
+
+
+# =========================
+# SELLER API SERVER HELPERS
+# =========================
+SELLER_API_LANGUAGES = {"en", "es", "ru", "tr", "fr", "de"}
+SELLER_API_PRODUCTS_PATH = "/api/telegram-buyer/products"
+SELLER_API_BALANCE_PATH = "/api/telegram-buyer/balance"
+SELLER_API_PURCHASE_PATH = "/api/telegram-buyer/purchase"
+
+
+def seller_api_server_enabled() -> bool:
+    return bool(SELLER_API_ENABLED and seller_api_server_settings.get("enabled", True))
+
+
+def seller_api_hash_key(api_key: str) -> str:
+    return hashlib.sha256(str(api_key or "").strip().encode("utf-8")).hexdigest()
+
+
+def generate_seller_api_key() -> str:
+    return "api_" + secrets.token_urlsafe(32)
+
+
+def create_seller_api_client(name: str, notes: str = ""):
+    clean_name = " ".join(str(name or "").split()).strip()[:80]
+    if not clean_name:
+        raise ValueError("Client name is required.")
+    client_number = int(seller_api_server_settings.get("next_client_number", 1) or 1)
+    while f"client_{client_number}" in seller_api_clients:
+        client_number += 1
+    seller_api_server_settings["next_client_number"] = client_number + 1
+    client_id = f"client_{client_number}"
+    raw_key = generate_seller_api_key()
+    seller_api_clients[client_id] = {
+        "name": clean_name,
+        "api_key_hash": seller_api_hash_key(raw_key),
+        "enabled": True,
+        "wallet_balance": 0.0,
+        "created_at": now_dt(),
+        "notes": str(notes or "").strip()[:500],
+    }
+    return client_id, seller_api_clients[client_id], raw_key
+
+
+def regenerate_seller_api_client_key(client_id: str) -> str:
+    client = seller_api_clients.get(str(client_id or ""))
+    if not isinstance(client, dict):
+        raise ValueError("API client not found.")
+    raw_key = generate_seller_api_key()
+    client["api_key_hash"] = seller_api_hash_key(raw_key)
+    return raw_key
+
+
+def find_seller_api_client_by_key(api_key: str):
+    clean_key = str(api_key or "").strip()
+    if not clean_key:
+        return None, None
+    candidate_hash = seller_api_hash_key(clean_key)
+    for client_id, client in seller_api_clients.items():
+        stored_hash = str((client or {}).get("api_key_hash") or "")
+        if stored_hash and hmac.compare_digest(candidate_hash, stored_hash):
+            return str(client_id), client
+    return None, None
+
+
+def seller_api_client_key_fingerprint(client: dict) -> str:
+    key_hash = str((client or {}).get("api_key_hash") or "")
+    return f"hash:{key_hash[:8]}…" if key_hash else "Not set"
+
+
+def seller_api_rate_limit_allowed(client_id: str) -> bool:
+    now_timestamp = now_dt().timestamp()
+    recent = [
+        timestamp for timestamp in seller_api_rate_limit_hits.get(client_id, [])
+        if now_timestamp - float(timestamp) < 60
+    ]
+    if len(recent) >= SELLER_API_RATE_LIMIT_PER_MINUTE:
+        seller_api_rate_limit_hits[client_id] = recent
+        return False
+    recent.append(now_timestamp)
+    seller_api_rate_limit_hits[client_id] = recent
+    return True
+
+
+def authenticate_seller_api_client(api_key: str):
+    client_id, client = find_seller_api_client_by_key(api_key)
+    if client is None or not _buyer_api_bool_value(client.get("enabled")):
+        return None, None, {"success": False, "error": "invalid_key"}
+    if not seller_api_rate_limit_allowed(client_id):
+        return None, None, {"success": False, "error": "rate_limited"}
+    return client_id, client, None
+
+
+def seller_api_normalize_language(language: str) -> str:
+    language = str(language or "en").strip().lower()
+    return language if language in SELLER_API_LANGUAGES else "en"
+
+
+def _seller_api_plain_details(product: dict, language: str, mapped: bool = False) -> str:
+    language = seller_api_normalize_language(language)
+    translated = (product or {}).get("details_i18n")
+    if language != "en" and isinstance(translated, dict):
+        translated_text = str(translated.get(language) or "").strip()
+        if translated_text:
+            return translated_text
+    details = (product or {}).get("details")
+    if isinstance(details, list):
+        return "\n".join(str(item) for item in details if str(item).strip())
+    if isinstance(details, dict):
+        return str(details.get("text") or "").strip()
+    details_text = str(details or "").strip()
+    if details_text:
+        return details_text
+    rich = (product or {}).get("details_rich")
+    if isinstance(rich, dict):
+        return str(rich.get("text") or "").strip()
+    return ""
+
+
+def _seller_api_product_name(product: dict, language: str, mapped: bool = False) -> str:
+    language = seller_api_normalize_language(language)
+    translated = (product or {}).get("name_i18n")
+    if language != "en" and isinstance(translated, dict):
+        translated_name = str(translated.get(language) or "").strip()
+        if translated_name:
+            return translated_name
+    if mapped:
+        return api_mapping_display_name(product)
+    return str((product or {}).get("name") or "Product").strip() or "Product"
+
+
+def seller_api_public_local_product_id(product_id: str) -> str:
+    product_id = str(product_id or "").strip()
+    if re.fullmatch(r"[A-Za-z0-9._-]{1,40}", product_id):
+        return f"local_{product_id}"
+    return "local_" + hashlib.sha256(product_id.encode("utf-8")).hexdigest()[:24]
+
+
+def seller_api_public_mapped_product_id(mapping: dict) -> str:
+    identity = f"{mapping_provider_id(mapping)}:{str((mapping or {}).get('api_product_id') or '').strip()}"
+    return "mapped_" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+
+
+def seller_api_resolve_product(public_product_id: str):
+    public_product_id = str(public_product_id or "").strip()
+    for product_id, product in PRODUCTS.items():
+        if seller_api_public_local_product_id(product_id) == public_product_id:
+            return "local", str(product_id), product
+    for mapping_key, mapping in api_product_mappings.items():
+        if isinstance(mapping, dict) and seller_api_public_mapped_product_id(mapping) == public_product_id:
+            return "api", str(mapping_key), mapping
+    return None, None, None
+
+
+def seller_api_product_item(product_type: str, internal_id: str, product: dict, language: str):
+    if product_type == "local":
+        price = safe_decimal((product or {}).get("price"))
+        accounts = (product or {}).get("accounts")
+        stock = len(accounts) if isinstance(accounts, list) else 0
+        public_id = seller_api_public_local_product_id(internal_id)
+        requires_email = any(_buyer_api_bool_value((product or {}).get(key)) for key in (
+            "requires_customer_email", "requiresCustomerEmail", "is_slot_product", "isSlotProduct",
+        ))
+    else:
+        if not is_api_shop_mapping_visible(product):
+            return None
+        price = safe_decimal((product or {}).get("selling_price"))
+        stock_value = api_shop_mapping_stock(product)
+        stock = max(0, int(stock_value)) if stock_value is not None else 0
+        public_id = seller_api_public_mapped_product_id(product)
+        requires_email = api_mapping_requires_customer_email(product)
+    if price is None or price <= 0:
+        return None
+    details = _seller_api_plain_details(product, language, mapped=product_type == "api")
+    icon = str((product or {}).get("icon") or "📦").strip() or "📦"
+    return {
+        "_id": public_id,
+        "product_name": _seller_api_product_name(product, language, mapped=product_type == "api"),
+        "description": details,
+        "description_raw": details,
+        "emoji": icon,
+        "walletPricing": float(price),
+        "usdPricing": float(price),
+        "hiddenInBotMenu": False,
+        "isSlotProduct": bool(requires_email),
+        "requiresCustomerEmail": bool(requires_email),
+        "requiresSlotMonths": False,
+        "slotDurations": [],
+        "stats": {"available": stock},
+    }
+
+
+def build_seller_api_product_list(language: str = "en") -> list:
+    language = seller_api_normalize_language(language)
+    products = []
+    seen_public_ids = set()
+    seen_local_ids = set()
+    for product_id in list(product_order) + list(PRODUCTS):
+        product_id = str(product_id)
+        if product_id in seen_local_ids or product_id not in PRODUCTS:
+            continue
+        seen_local_ids.add(product_id)
+        item = seller_api_product_item("local", product_id, PRODUCTS[product_id], language)
+        if item and item["_id"] not in seen_public_ids:
+            products.append(item)
+            seen_public_ids.add(item["_id"])
+    for mapping_key, mapping in api_product_mappings.items():
+        if not isinstance(mapping, dict):
+            continue
+        item = seller_api_product_item("api", str(mapping_key), mapping, language)
+        if item and item["_id"] not in seen_public_ids:
+            products.append(item)
+            seen_public_ids.add(item["_id"])
+    return products
+
+
+def seller_api_validate_webhook_url(webhook_url: str) -> bool:
+    if not webhook_url:
+        return True
+    parsed = urlparse(str(webhook_url).strip())
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def next_seller_api_order_code() -> str:
+    order_number = int(seller_api_server_settings.get("next_order_number", 1) or 1)
+    seller_api_server_settings["next_order_number"] = order_number + 1
+    return f"API_ORDER_{order_number}"
+
+
+def add_seller_api_order_record(
+    client_id: str,
+    product_id: str,
+    product_name: str,
+    product_type: str,
+    quantity: int,
+    unit_price: Decimal,
+    total: Decimal,
+    status: str,
+    customer_emails=None,
+    webhook_url: str = "",
+):
+    order = {
+        "order_code": next_seller_api_order_code(),
+        "client_id": str(client_id),
+        "client_name": str(seller_api_clients.get(client_id, {}).get("name") or client_id),
+        "source": "Seller API",
+        "product_id": str(product_id),
+        "product_name": str(product_name),
+        "product_type": str(product_type),
+        "quantity": int(quantity),
+        "unit_price": float(unit_price),
+        "total_paid": float(total),
+        "status": str(status),
+        "customer_emails": list(customer_emails or []),
+        "webhook_requested": bool(webhook_url),
+        "delivered_count": 0,
+        "created_at": now_dt(),
+        "updated_at": now_dt(),
+    }
+    seller_api_orders.append(order)
+    return order
+
+
+def add_seller_api_transaction_record(client_id: str, order_code: str, amount: Decimal):
+    transaction = {
+        "client_id": str(client_id),
+        "client_name": str(seller_api_clients.get(client_id, {}).get("name") or client_id),
+        "source": "Seller API",
+        "type": "Purchase",
+        "amount": -float(amount),
+        "status": "Completed",
+        "order_code": str(order_code),
+        "created_at": now_dt(),
+    }
+    seller_api_transactions.append(transaction)
+    return transaction
+
+
+def deduct_seller_api_client_balance(client_id: str, total: Decimal) -> Decimal:
+    client = seller_api_clients[client_id]
+    balance = safe_decimal(client.get("wallet_balance")) or Decimal("0")
+    total = Decimal(str(total)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if balance < total:
+        raise ValueError("insufficient_balance")
+    remaining = (balance - total).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    client["wallet_balance"] = float(remaining)
+    return remaining
+
+
+def save_seller_api_state_safely():
+    try:
+        force_save_bot_state()
+    except Exception as exc:
+        print(f"Seller API state save failed safely: {type(exc).__name__}")
+
+
+async def notify_admin_seller_api_sale(bot, client_id: str, order: dict):
+    if bot is None:
+        return
+    client = seller_api_clients.get(client_id, {})
+    email_text = ""
+    if order.get("customer_emails"):
+        email_text = "\n<b>Customer email:</b> " + escape_html(
+            ", ".join(str(email) for email in order.get("customer_emails", []))
+        )
+    text = (
+        "🔌 <b>SELLER API ORDER</b>\n\n"
+        f"<b>Reseller:</b> {escape_html(client.get('name', client_id))} ({escape_html(client_id)})\n"
+        f"<b>Order:</b> <code>{escape_html(order.get('order_code'))}</code>\n"
+        f"<b>Product:</b> {escape_html(order.get('product_name'))}\n"
+        f"<b>Quantity:</b> {int(order.get('quantity', 0))}\n"
+        f"<b>Total:</b> {format_money(order.get('total_paid', 0))}\n"
+        f"<b>Status:</b> {escape_html(order.get('status'))}\n"
+        f"<b>Delivered:</b> {int(order.get('delivered_count', 0))}\n"
+        f"<b>Remaining reseller balance:</b> {format_money(client.get('wallet_balance', 0))}"
+        f"{email_text}"
+    )
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, text, parse_mode="HTML")
+        except Exception as exc:
+            print(f"Seller API admin notification failed safely: {type(exc).__name__}")
+
+
+def _seller_api_extract_customer_emails(customer_email, quantity: int) -> list:
+    emails = parse_customer_emails(str(customer_email or ""))
+    if len(emails) != int(quantity) or not all(is_valid_customer_email(email) for email in emails):
+        return []
+    return emails
+
+
+async def _seller_api_purchase_local(
+    bot,
+    client_id: str,
+    public_product_id: str,
+    internal_product_id: str,
+    product: dict,
+    quantity: int,
+    customer_emails: list,
+    webhook_url: str,
+):
+    accounts = product.get("accounts")
+    if not isinstance(accounts, list) or len(accounts) < quantity:
+        return 409, {"success": False, "error": "out_of_stock"}
+    unit_price = safe_decimal(product.get("price"))
+    if unit_price is None or unit_price <= 0:
+        return 409, {"success": False, "error": "product_unavailable"}
+    total = (unit_price * quantity).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    client_balance = safe_decimal(seller_api_clients[client_id].get("wallet_balance")) or Decimal("0")
+    if client_balance < total:
+        return 402, {"success": False, "error": "insufficient_balance"}
+
+    delivered_stock = list(accounts[:quantity])
+    delivered_items = [format_stock_item_full(item) for item in delivered_stock]
+    current_display_stock = get_display_stock(internal_product_id)
+    remaining_balance = deduct_seller_api_client_balance(client_id, total)
+    del accounts[:quantity]
+    product["display_stock"] = max(0, current_display_stock - quantity)
+    order = add_seller_api_order_record(
+        client_id,
+        public_product_id,
+        str(product.get("name") or internal_product_id),
+        "local",
+        quantity,
+        unit_price,
+        total,
+        "completed",
+        customer_emails,
+        webhook_url,
+    )
+    order["delivered_count"] = len(delivered_items)
+    order["updated_at"] = now_dt()
+    add_seller_api_transaction_record(client_id, order["order_code"], total)
+    save_seller_api_state_safely()
+    await notify_admin_seller_api_sale(bot, client_id, order)
+    return 200, {
+        "success": True,
+        "orderCode": order["order_code"],
+        "accounts": delivered_items,
+        "balance": float(remaining_balance),
+    }
+
+
+async def _seller_api_purchase_mapped(
+    bot,
+    client_id: str,
+    public_product_id: str,
+    mapping: dict,
+    quantity: int,
+    customer_emails: list,
+    webhook_url: str,
+):
+    if not is_api_shop_mapping_visible(mapping):
+        return 409, {"success": False, "error": "product_unavailable"}
+    known_stock = api_shop_mapping_stock(mapping)
+    if known_stock is not None and quantity > known_stock:
+        return 409, {"success": False, "error": "out_of_stock"}
+    unit_price = safe_decimal(mapping.get("selling_price"))
+    if unit_price is None or unit_price <= 0:
+        return 409, {"success": False, "error": "product_unavailable"}
+    total = (unit_price * quantity).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    client_balance = safe_decimal(seller_api_clients[client_id].get("wallet_balance")) or Decimal("0")
+    if client_balance < total:
+        return 402, {"success": False, "error": "insufficient_balance"}
+    provider_id = mapping_provider_id(mapping)
+    try:
+        provider = get_seller_api_provider(provider_id)
+    except BuyerAPIError:
+        provider = None
+    if not provider or not provider.get("enabled") or not provider.get("configured"):
+        return 409, {"success": False, "error": "product_unavailable"}
+
+    remaining_balance = deduct_seller_api_client_balance(client_id, total)
+    order = add_seller_api_order_record(
+        client_id,
+        public_product_id,
+        api_mapping_display_name(mapping),
+        "api",
+        quantity,
+        unit_price,
+        total,
+        "processing",
+        customer_emails,
+        webhook_url,
+    )
+    add_seller_api_transaction_record(client_id, order["order_code"], total)
+    save_seller_api_state_safely()
+
+    delivered_items = []
+    upstream_order_codes = []
+    errors = []
+    remaining_stock_values = []
+    if customer_emails:
+        attempts = [(1, email) for email in customer_emails]
+    else:
+        attempts = [(quantity, None)]
+    for attempt_quantity, email in attempts:
+        try:
+            result = await asyncio.to_thread(
+                purchase_buyer_api_product,
+                mapping.get("api_product_id"),
+                attempt_quantity,
+                email,
+                provider_id,
+            )
+            delivered_items.extend(str(item) for item in result.get("accounts", []))
+            if result.get("order_code"):
+                upstream_order_codes.append(str(result.get("order_code")))
+            if result.get("remaining_stock") is not None:
+                remaining_stock_values.append(int(result.get("remaining_stock")))
+        except BuyerAPIError as exc:
+            errors.append(str(getattr(exc, "category", None) or "upstream_unavailable"))
+            if getattr(exc, "order_code", None):
+                upstream_order_codes.append(str(exc.order_code))
+        except Exception:
+            errors.append("upstream_unavailable")
+
+    completed = not errors and len(delivered_items) >= quantity
+    order["status"] = "completed" if completed else "processing"
+    order["delivered_count"] = len(delivered_items)
+    order["upstream_order_codes"] = upstream_order_codes
+    if errors:
+        order["failure_category"] = errors[0]
+    order["updated_at"] = now_dt()
+    if remaining_stock_values:
+        mapping["last_stock"] = max(0, remaining_stock_values[-1])
+    elif known_stock is not None:
+        mapping["last_stock"] = max(0, int(known_stock) - quantity)
+    save_seller_api_state_safely()
+    await notify_admin_seller_api_sale(bot, client_id, order)
+
+    response = {
+        "success": True,
+        "orderCode": order["order_code"],
+        "status": order["status"],
+        "balance": float(remaining_balance),
+    }
+    if delivered_items:
+        response["accounts"] = delivered_items
+    if completed:
+        return 200, response
+    response["message"] = "Order received and processing"
+    return 200, response
+
+
+async def process_seller_api_client_purchase(bot, client_id: str, payload: dict):
+    if client_id in seller_api_client_purchase_in_progress:
+        return 409, {"success": False, "error": "purchase_in_progress"}
+    seller_api_client_purchase_in_progress.add(client_id)
+    try:
+        public_product_id = str(payload.get("product_id") or "").strip()
+        try:
+            raw_quantity = payload.get("quantity", 1)
+            quantity = 0 if isinstance(raw_quantity, bool) else int(raw_quantity)
+        except (TypeError, ValueError):
+            quantity = 0
+        if not public_product_id or quantity < 1 or quantity > 100:
+            return 400, {"success": False, "error": "invalid_request"}
+        product_type, internal_id, product = seller_api_resolve_product(public_product_id)
+        if product is None:
+            return 404, {"success": False, "error": "product_not_found"}
+        if product_type == "api" and not is_api_shop_mapping_visible(product):
+            return 409, {"success": False, "error": "product_unavailable"}
+        requires_email = (
+            api_mapping_requires_customer_email(product)
+            if product_type == "api" else
+            any(_buyer_api_bool_value(product.get(key)) for key in (
+                "requires_customer_email", "requiresCustomerEmail", "is_slot_product", "isSlotProduct",
+            ))
+        )
+        if requires_email and quantity > 10:
+            return 400, {"success": False, "error": "maximum_slot_quantity_10"}
+        customer_emails = []
+        if requires_email:
+            customer_emails = _seller_api_extract_customer_emails(
+                payload.get("customer_email"), quantity
+            )
+            if not customer_emails:
+                return 400, {"success": False, "error": "customer_email_required"}
+        webhook_url = str(payload.get("webhook_url") or "").strip()
+        if not seller_api_validate_webhook_url(webhook_url):
+            return 400, {"success": False, "error": "invalid_webhook_url"}
+        if product_type == "local":
+            return await _seller_api_purchase_local(
+                bot, client_id, public_product_id, internal_id, product,
+                quantity, customer_emails, webhook_url,
+            )
+        return await _seller_api_purchase_mapped(
+            bot, client_id, public_product_id, product,
+            quantity, customer_emails, webhook_url,
+        )
+    finally:
+        seller_api_client_purchase_in_progress.discard(client_id)
+
+
+async def handle_seller_api_get_request(path: str, query_params: dict):
+    if not seller_api_server_enabled():
+        return 503, {"success": False, "error": "service_unavailable"}
+    api_key = str((query_params.get("key") or [""])[0]).strip()
+    client_id, client, auth_error = authenticate_seller_api_client(api_key)
+    if auth_error:
+        status_code = 429 if auth_error["error"] == "rate_limited" else 401
+        return status_code, auth_error
+    if path == SELLER_API_BALANCE_PATH:
+        balance = float(client.get("wallet_balance", 0.0) or 0.0)
+        return 200, {
+            "success": True,
+            "balance": round(balance, 2),
+            "balanceText": f"{balance:.2f} USDT",
+            "walletCurrency": "USDT",
+        }
+    if path == SELLER_API_PRODUCTS_PATH:
+        language = str((query_params.get("lang") or ["en"])[0])
+        return 200, {
+            "success": True,
+            "products": build_seller_api_product_list(language),
+        }
+    return 404, {"success": False, "error": "not_found"}
+
+
+async def handle_seller_api_purchase_request(bot, payload: dict):
+    if not seller_api_server_enabled():
+        return 503, {"success": False, "error": "service_unavailable"}
+    if not isinstance(payload, dict):
+        return 400, {"success": False, "error": "invalid_request"}
+    client_id, _, auth_error = authenticate_seller_api_client(payload.get("key"))
+    if auth_error:
+        status_code = 429 if auth_error["error"] == "rate_limited" else 401
+        return status_code, auth_error
+    return await process_seller_api_client_purchase(bot, client_id, payload)
 
 
 def _safe_buyer_api_error_body(response, provider_id: str = "default") -> str:
@@ -4527,11 +5177,161 @@ def admin_menu() -> ReplyKeyboardMarkup:
         ["👥 User Details", "📊 Analytics"],
         ["📊 Sales Reports"],
         ["🎨 Dashboard Emojis"],
-        ["🔌 Seller APIs"],
+        ["🔌 Seller APIs", "🔌 Seller API"],
         ["📢 Broadcast"],
         ["🚪 Exit Admin"],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
+def seller_api_server_effective_status_text() -> str:
+    if not SELLER_API_ENABLED:
+        return "Disabled by SELLER_API_ENABLED"
+    if not seller_api_server_settings.get("enabled", True):
+        return "Disabled in admin panel"
+    return "Enabled"
+
+
+def render_seller_api_server_panel() -> str:
+    return (
+        "🔌 <b>SELLER API SERVER</b>\n\n"
+        f"Status: <b>{escape_html(seller_api_server_effective_status_text())}</b>\n"
+        f"Environment master: <b>{'Enabled' if SELLER_API_ENABLED else 'Disabled'}</b>\n"
+        f"Admin switch: <b>{'Enabled' if seller_api_server_settings.get('enabled', True) else 'Disabled'}</b>\n"
+        f"API clients: <b>{len(seller_api_clients)}</b>\n"
+        f"Orders: <b>{len(seller_api_orders)}</b>\n"
+        f"Rate limit: <b>{SELLER_API_RATE_LIMIT_PER_MINUTE}/minute/client</b>\n\n"
+        "Credentials are stored as hashes only. Upstream provider credentials are never exposed."
+    )
+
+
+def seller_api_server_keyboard() -> InlineKeyboardMarkup:
+    toggle_text = (
+        "❌ Disable Seller API"
+        if seller_api_server_settings.get("enabled", True) else
+        "✅ Enable Seller API"
+    )
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(toggle_text, callback_data="reseller_api_toggle")],
+        [InlineKeyboardButton("👥 API Clients", callback_data="reseller_api_clients")],
+        [InlineKeyboardButton("➕ Add Client", callback_data="reseller_api_add_client")],
+        [InlineKeyboardButton("📖 API Docs / Endpoint Info", callback_data="reseller_api_docs")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="reseller_api_back")],
+    ])
+
+
+def seller_api_clients_keyboard() -> InlineKeyboardMarkup:
+    rows = []
+    for client_id, client in seller_api_clients.items():
+        marker = "✅" if _buyer_api_bool_value(client.get("enabled")) else "❌"
+        display_name = str(client.get("name") or client_id)
+        if len(display_name) > 36:
+            display_name = display_name[:33] + "..."
+        rows.append([InlineKeyboardButton(
+            f"{marker} {display_name} — {format_money(client.get('wallet_balance', 0))}",
+            callback_data=f"reseller_api_client_{client_id}",
+        )])
+    rows.extend([
+        [InlineKeyboardButton("➕ Add Client", callback_data="reseller_api_add_client")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="reseller_api_panel")],
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+def render_seller_api_clients() -> str:
+    if not seller_api_clients:
+        return "👥 <b>SELLER API CLIENTS</b>\n\nNo API clients created yet."
+    enabled_count = sum(
+        1 for client in seller_api_clients.values()
+        if _buyer_api_bool_value(client.get("enabled"))
+    )
+    total_balance = sum(float(client.get("wallet_balance", 0) or 0) for client in seller_api_clients.values())
+    return (
+        "👥 <b>SELLER API CLIENTS</b>\n\n"
+        f"Total clients: <b>{len(seller_api_clients)}</b>\n"
+        f"Enabled: <b>{enabled_count}</b>\n"
+        f"Combined balance: <b>{format_money(total_balance)}</b>\n\n"
+        "Select a client below."
+    )
+
+
+def render_seller_api_client_detail(client_id: str) -> str:
+    client = seller_api_clients.get(client_id)
+    if not isinstance(client, dict):
+        return "❌ <b>API client not found.</b>"
+    client_orders = [order for order in seller_api_orders if order.get("client_id") == client_id]
+    return (
+        "👤 <b>SELLER API CLIENT</b>\n\n"
+        f"Name: <b>{escape_html(client.get('name', client_id))}</b>\n"
+        f"Client ID: <code>{escape_html(client_id)}</code>\n"
+        f"Status: <b>{'Enabled' if _buyer_api_bool_value(client.get('enabled')) else 'Disabled'}</b>\n"
+        f"Balance: <b>{format_money(client.get('wallet_balance', 0))}</b>\n"
+        f"Key fingerprint: <code>{escape_html(seller_api_client_key_fingerprint(client))}</code>\n"
+        f"Created: {escape_html(format_dt(client.get('created_at')))}\n"
+        f"Orders: <b>{len(client_orders)}</b>\n"
+        f"Notes: {escape_html(client.get('notes') or 'None')}"
+    )
+
+
+def seller_api_client_keyboard(client_id: str) -> InlineKeyboardMarkup:
+    client = seller_api_clients.get(client_id, {})
+    toggle_text = "❌ Disable Client" if _buyer_api_bool_value(client.get("enabled")) else "✅ Enable Client"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📦 View Client Orders", callback_data=f"reseller_api_orders_{client_id}")],
+        [InlineKeyboardButton("➕ Add Balance", callback_data=f"reseller_api_add_balance_{client_id}")],
+        [InlineKeyboardButton("➖ Remove Balance", callback_data=f"reseller_api_remove_balance_{client_id}")],
+        [InlineKeyboardButton(toggle_text, callback_data=f"reseller_api_toggle_client_{client_id}")],
+        [InlineKeyboardButton("🔑 Regenerate API Key", callback_data=f"reseller_api_regen_{client_id}")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="reseller_api_clients")],
+    ])
+
+
+def render_seller_api_client_orders(client_id: str) -> str:
+    client = seller_api_clients.get(client_id, {})
+    orders = [
+        order for order in seller_api_orders
+        if order.get("client_id") == client_id
+    ][-10:]
+    lines = [
+        "📦 <b>SELLER API CLIENT ORDERS</b>",
+        f"Client: <b>{escape_html(client.get('name', client_id))}</b>",
+        "",
+    ]
+    if not orders:
+        lines.append("No orders found.")
+        return "\n".join(lines)
+    for order in reversed(orders):
+        lines.extend([
+            f"<b>{escape_html(order.get('order_code'))}</b> — {escape_html(order.get('status'))}",
+            f"Product: {escape_html(order.get('product_name'))}",
+            f"Quantity: {int(order.get('quantity', 0))} | Total: {format_money(order.get('total_paid', 0))}",
+            f"Delivered: {int(order.get('delivered_count', 0))}",
+        ])
+        if order.get("customer_emails"):
+            lines.append("Customer email: " + escape_html(
+                ", ".join(str(email) for email in order.get("customer_emails", []))
+            ))
+        if order.get("upstream_order_codes"):
+            lines.append("Fulfillment reference: " + escape_html(
+                ", ".join(str(code) for code in order.get("upstream_order_codes", []))
+            ))
+        lines.append("")
+    return "\n".join(lines)
+
+
+def render_seller_api_docs() -> str:
+    base_url = SELLER_API_BASE_URL or PUBLIC_BASE_URL or "https://your-domain.example"
+    return (
+        "📖 <b>SELLER API ENDPOINTS</b>\n\n"
+        f"Products: <code>GET {escape_html(base_url + SELLER_API_PRODUCTS_PATH)}?key=API_KEY&amp;lang=en</code>\n"
+        f"Balance: <code>GET {escape_html(base_url + SELLER_API_BALANCE_PATH)}?key=API_KEY</code>\n"
+        f"Purchase: <code>POST {escape_html(base_url + SELLER_API_PURCHASE_PATH)}</code>\n\n"
+        "Purchase JSON fields:\n"
+        "<code>key, product_id, quantity, lang, customer_email, webhook_url</code>\n\n"
+        "Supported languages: en, es, ru, tr, fr, de\n"
+        "Webhook URLs are validated and recorded, but outbound webhook delivery is not enabled in this phase.\n"
+        "API keys are shown once when created or regenerated."
+    )
 
 
 def _seller_api_status_value(value, fallback: str = "Never") -> str:
@@ -10888,8 +11688,29 @@ class NowPaymentsWebhookHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _run_bot_coroutine(self, coroutine, timeout_seconds: int = 30):
+        if app_loop is None:
+            coroutine.close()
+            return 503, {"success": False, "error": "service_unavailable"}
+        future = asyncio.run_coroutine_threadsafe(coroutine, app_loop)
+        try:
+            return future.result(timeout=timeout_seconds)
+        except TimeoutError:
+            return 504, {"success": False, "error": "request_timeout"}
+        except Exception as exc:
+            print(f"Seller API request failed safely: {type(exc).__name__}")
+            return 500, {"success": False, "error": "internal_error"}
+
     def do_GET(self):
-        clean_path = self.path.split("?")[0]
+        parsed_url = urlparse(self.path)
+        clean_path = parsed_url.path
+        if clean_path in {SELLER_API_PRODUCTS_PATH, SELLER_API_BALANCE_PATH}:
+            status_code, payload = self._run_bot_coroutine(
+                handle_seller_api_get_request(clean_path, parse_qs(parsed_url.query)),
+                timeout_seconds=30,
+            )
+            self._send_json(status_code, payload)
+            return
         if clean_path == "/cryptomus_d7a0b5fb.html":
             self._send_text(200, "cryptomus=d7a0b5fb", "text/html; charset=utf-8")
         elif clean_path == "/":
@@ -10909,11 +11730,27 @@ class NowPaymentsWebhookHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         clean_path = self.path.split("?")[0]
-        raw = self.rfile.read(int(self.headers.get("Content-Length", "0") or "0"))
+        content_length = int(self.headers.get("Content-Length", "0") or "0")
+        if clean_path == SELLER_API_PURCHASE_PATH and content_length > 65536:
+            self._send_json(413, {"success": False, "error": "request_too_large"})
+            return
+        raw = self.rfile.read(content_length)
         try:
             payload = json.loads(raw.decode("utf-8") or "{}")
         except Exception:
-            self._send_json(400, {"ok": False, "error": "invalid json"})
+            if clean_path == SELLER_API_PURCHASE_PATH:
+                self._send_json(400, {"success": False, "error": "invalid_json"})
+            else:
+                self._send_json(400, {"ok": False, "error": "invalid json"})
+            return
+
+        if clean_path == SELLER_API_PURCHASE_PATH:
+            bot = app_instance.bot if app_instance is not None else None
+            status_code, response_payload = self._run_bot_coroutine(
+                handle_seller_api_purchase_request(bot, payload),
+                timeout_seconds=330,
+            )
+            self._send_json(status_code, response_payload)
             return
 
         if clean_path == CRYPTOMUS_WEBHOOK_PATH:
@@ -10958,7 +11795,7 @@ def start_nowpayments_webhook_server():
     port = int(os.getenv("PORT", "8080"))
 
     def run_server():
-        server = HTTPServer(("0.0.0.0", port), NowPaymentsWebhookHandler)
+        server = ThreadingHTTPServer(("0.0.0.0", port), NowPaymentsWebhookHandler)
         print(f"✅ Payment webhook server listening on port {port}, NOWPayments {NOWPAYMENTS_WEBHOOK_PATH}, Cryptomus {CRYPTOMUS_WEBHOOK_PATH}")
         server.serve_forever()
 
@@ -11442,7 +12279,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        if text in {"🔌 Seller API", "🔌 Seller APIs"}:
+        if text == "🔌 Seller API":
+            user_state[user_id] = {"step": "reseller_api_admin"}
+            await update.message.reply_text(
+                render_seller_api_server_panel(),
+                reply_markup=seller_api_server_keyboard(),
+                parse_mode="HTML",
+            )
+            return
+
+        if text == "🔌 Seller APIs":
             user_state[user_id] = {"step": "seller_api_admin"}
             await update.message.reply_text(
                 "🔌 <b>SELLER API TEST PANEL</b>",
@@ -11505,6 +12351,50 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "✅ Automatic report time updated.\n\n" + render_sales_report_auto_panel(),
             reply_markup=sales_report_auto_keyboard(),
+            parse_mode="HTML",
+        )
+        return
+
+    if step == "reseller_api_add_client_name" and is_admin(user_id):
+        clean_name = " ".join(text.split()).strip()
+        if not clean_name or len(clean_name) > 80:
+            await update.message.reply_text("❌ Client name must be between 1 and 80 characters.")
+            return
+        client_id, client, raw_key = create_seller_api_client(clean_name)
+        user_state[user_id] = {"step": "reseller_api_client", "client_id": client_id}
+        await update.message.reply_text(
+            "✅ <b>SELLER API CLIENT CREATED</b>\n\n"
+            f"Client: <b>{escape_html(client['name'])}</b>\n"
+            f"Client ID: <code>{escape_html(client_id)}</code>\n\n"
+            "⚠️ <b>Copy this API key now. It will not be shown again.</b>\n"
+            f"<code>{escape_html(raw_key)}</code>\n\n"
+            "Only its SHA-256 hash is saved.",
+            reply_markup=seller_api_client_keyboard(client_id),
+            parse_mode="HTML",
+        )
+        return
+
+    if step == "reseller_api_balance_input" and is_admin(user_id):
+        client_id = str(state.get("client_id") or "")
+        action = str(state.get("balance_action") or "")
+        client = seller_api_clients.get(client_id)
+        amount = safe_decimal(text)
+        if not isinstance(client, dict):
+            await update.message.reply_text("❌ API client not found.")
+            return
+        if amount is None or amount <= 0 or amount > Decimal("1000000"):
+            await update.message.reply_text("❌ Enter a valid amount greater than 0 and no more than 1,000,000.")
+            return
+        current_balance = safe_decimal(client.get("wallet_balance")) or Decimal("0")
+        if action == "remove" and amount > current_balance:
+            await update.message.reply_text("❌ Amount exceeds the client's current balance.")
+            return
+        new_balance = current_balance + amount if action == "add" else current_balance - amount
+        client["wallet_balance"] = float(new_balance.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        user_state[user_id] = {"step": "reseller_api_client", "client_id": client_id}
+        await update.message.reply_text(
+            "✅ Client balance updated.\n\n" + render_seller_api_client_detail(client_id),
+            reply_markup=seller_api_client_keyboard(client_id),
             parse_mode="HTML",
         )
         return
@@ -12710,6 +13600,139 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "sales_report_back":
+        user_state[user_id] = {"step": "admin_main"}
+        await send_inline_from_callback(query, "⬅️ Back to admin menu.", close_keyboard())
+        return
+
+    # ========= SELLER API SERVER ADMIN =========
+    if data.startswith("reseller_api_") and not is_admin(user_id):
+        await send_inline_from_callback(query, "❌ <b>You are not allowed.</b>", close_keyboard())
+        return
+
+    if data == "reseller_api_panel":
+        user_state[user_id] = {"step": "reseller_api_admin"}
+        await send_inline_from_callback(
+            query, render_seller_api_server_panel(), seller_api_server_keyboard()
+        )
+        return
+
+    if data == "reseller_api_toggle":
+        if not SELLER_API_ENABLED:
+            await send_inline_from_callback(
+                query,
+                "⚠️ <b>Seller API is disabled by environment configuration.</b>\n\n"
+                "Set <code>SELLER_API_ENABLED=true</code> before enabling it here.",
+                seller_api_server_keyboard(),
+            )
+            return
+        seller_api_server_settings["enabled"] = not bool(
+            seller_api_server_settings.get("enabled", True)
+        )
+        await send_inline_from_callback(
+            query, render_seller_api_server_panel(), seller_api_server_keyboard()
+        )
+        return
+
+    if data == "reseller_api_clients":
+        user_state[user_id] = {"step": "reseller_api_clients"}
+        await send_inline_from_callback(
+            query, render_seller_api_clients(), seller_api_clients_keyboard()
+        )
+        return
+
+    if data == "reseller_api_add_client":
+        user_state[user_id] = {"step": "reseller_api_add_client_name"}
+        await send_inline_from_callback(
+            query,
+            "➕ <b>ADD SELLER API CLIENT</b>\n\nSend the reseller/client name.",
+            InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="reseller_api_panel")]]),
+        )
+        return
+
+    if data == "reseller_api_docs":
+        await send_inline_from_callback(
+            query,
+            render_seller_api_docs(),
+            InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="reseller_api_panel")]]),
+        )
+        return
+
+    if data.startswith("reseller_api_toggle_client_"):
+        client_id = data.replace("reseller_api_toggle_client_", "", 1)
+        client = seller_api_clients.get(client_id)
+        if not isinstance(client, dict):
+            await send_inline_from_callback(query, "❌ <b>API client not found.</b>", seller_api_clients_keyboard())
+            return
+        client["enabled"] = not _buyer_api_bool_value(client.get("enabled"))
+        await send_inline_from_callback(
+            query, render_seller_api_client_detail(client_id), seller_api_client_keyboard(client_id)
+        )
+        return
+
+    if data.startswith("reseller_api_orders_"):
+        client_id = data.replace("reseller_api_orders_", "", 1)
+        if client_id not in seller_api_clients:
+            await send_inline_from_callback(query, "❌ <b>API client not found.</b>", seller_api_clients_keyboard())
+            return
+        await send_inline_from_callback(
+            query,
+            render_seller_api_client_orders(client_id),
+            InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅️ Back", callback_data=f"reseller_api_client_{client_id}")
+            ]]),
+        )
+        return
+
+    if data.startswith("reseller_api_add_balance_") or data.startswith("reseller_api_remove_balance_"):
+        is_add = data.startswith("reseller_api_add_balance_")
+        prefix = "reseller_api_add_balance_" if is_add else "reseller_api_remove_balance_"
+        client_id = data.replace(prefix, "", 1)
+        if client_id not in seller_api_clients:
+            await send_inline_from_callback(query, "❌ <b>API client not found.</b>", seller_api_clients_keyboard())
+            return
+        user_state[user_id] = {
+            "step": "reseller_api_balance_input",
+            "client_id": client_id,
+            "balance_action": "add" if is_add else "remove",
+        }
+        action_text = "add to" if is_add else "remove from"
+        await send_inline_from_callback(
+            query,
+            f"💰 Send the USDT amount to {action_text} this client's balance.",
+            InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅️ Back", callback_data=f"reseller_api_client_{client_id}")
+            ]]),
+        )
+        return
+
+    if data.startswith("reseller_api_regen_"):
+        client_id = data.replace("reseller_api_regen_", "", 1)
+        client = seller_api_clients.get(client_id)
+        if not isinstance(client, dict):
+            await send_inline_from_callback(query, "❌ <b>API client not found.</b>", seller_api_clients_keyboard())
+            return
+        raw_key = regenerate_seller_api_client_key(client_id)
+        await send_inline_from_callback(
+            query,
+            "🔑 <b>API KEY REGENERATED</b>\n\n"
+            "The old key is now invalid. Copy this new key now; it will not be shown again.\n\n"
+            f"<code>{escape_html(raw_key)}</code>\n\nOnly its SHA-256 hash is saved.",
+            seller_api_client_keyboard(client_id),
+        )
+        return
+
+    if data.startswith("reseller_api_client_"):
+        client_id = data.replace("reseller_api_client_", "", 1)
+        if client_id not in seller_api_clients:
+            await send_inline_from_callback(query, "❌ <b>API client not found.</b>", seller_api_clients_keyboard())
+            return
+        user_state[user_id] = {"step": "reseller_api_client", "client_id": client_id}
+        await send_inline_from_callback(
+            query, render_seller_api_client_detail(client_id), seller_api_client_keyboard(client_id)
+        )
+        return
+
+    if data == "reseller_api_back":
         user_state[user_id] = {"step": "admin_main"}
         await send_inline_from_callback(query, "⬅️ Back to admin menu.", close_keyboard())
         return
