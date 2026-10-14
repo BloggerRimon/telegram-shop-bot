@@ -409,6 +409,11 @@ seller_api_client_purchase_in_progress = set()
 seller_api_rate_limit_hits = {}
 SELLER_API_RATE_LIMIT_PER_MINUTE = 60
 
+# Every confirmed wallet top-up, regardless of provider or confirmation path,
+# must pass through this registry while holding the same in-process lock.
+credited_topups = {}
+topup_credit_lock = threading.RLock()
+
 
 def _new_seller_api_auto_refresh_status():
     return {
@@ -626,6 +631,7 @@ def build_state_snapshot():
         "seller_api_orders": seller_api_orders,
         "seller_api_transactions": seller_api_transactions,
         "seller_api_server_settings": seller_api_server_settings,
+        "credited_topups": credited_topups,
         "seller_api_auto_refresh": seller_api_auto_refresh,
         "seller_api_provider_status": seller_api_provider_status,
         "sales_report_settings": sales_report_settings,
@@ -744,6 +750,12 @@ def apply_loaded_state(data: dict):
             transaction for transaction in loaded_seller_api_transactions
             if isinstance(transaction, dict)
         )
+    credited_topups.clear()
+    loaded_credited_topups = data.get("credited_topups", {})
+    if isinstance(loaded_credited_topups, dict):
+        for credit_key, credit in loaded_credited_topups.items():
+            if isinstance(credit, dict) and str(credit_key or "").strip():
+                credited_topups[str(credit_key)] = dict(credit)
     loaded_seller_api_server_settings = data.get("seller_api_server_settings", {})
     if isinstance(loaded_seller_api_server_settings, dict):
         seller_api_server_settings["enabled"] = _buyer_api_bool_value(
@@ -898,8 +910,8 @@ _save_lock = threading.Lock()
 _save_timer = None
 
 
-def _save_bot_state_now():
-    """Actually write current bot state to storage. Runs in a background thread."""
+def _save_bot_state_now_unlocked():
+    """Write the current bot state while the caller owns the state-write lock."""
     try:
         state = build_state_snapshot()
 
@@ -918,6 +930,12 @@ def _save_bot_state_now():
         os.replace(tmp_file, BOT_STATE_FILE)
     except Exception as e:
         print("⚠️ Failed to save bot state:", e)
+
+
+def _save_bot_state_now():
+    """Serialize snapshots so an older background write cannot replace a credit save."""
+    with topup_credit_lock:
+        _save_bot_state_now_unlocked()
 
 
 def _save_bot_state_worker():
@@ -4154,6 +4172,244 @@ def find_tx_by_id(tx_id: int):
         if tx["id"] == tx_id:
             return tx
     return None
+
+
+TOPUP_COMPLETED_STATUSES = {"completed", "credited"}
+TOPUP_PENDING_STATUSES = {
+    "waiting manual confirmation", "checking txid", "pending auto check",
+    "awaiting blockchain match", "pending", "waiting",
+}
+
+
+def build_topup_idempotency_keys(
+    provider: str,
+    user_id: int,
+    amount,
+    payment_id: str = "",
+    order_id: str = "",
+    internal_deposit_id=None,
+    tx_hash: str = "",
+    network: str = "",
+    record: dict = None,
+) -> list:
+    provider_key = re.sub(r"[^a-z0-9_-]+", "_", str(provider or "unknown").strip().casefold()) or "unknown"
+    keys = []
+    for label, value in (
+        ("payment", payment_id),
+        ("order", order_id),
+        ("deposit", internal_deposit_id),
+    ):
+        clean_value = str(value or "").strip()
+        if clean_value:
+            keys.append(f"{provider_key}:{label}:{clean_value}")
+    clean_tx_hash = str(tx_hash or "").strip().casefold()
+    if clean_tx_hash:
+        keys.append(f"tx:{clean_tx_hash}")
+    if not keys:
+        created_at = str((record or {}).get("created_at") or "").strip()
+        amount_text = str(Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        fallback_source = "|".join((provider_key, str(int(user_id)), amount_text, str(network or ""), created_at))
+        keys.append("fallback:" + hashlib.sha256(fallback_source.encode("utf-8")).hexdigest())
+    return list(dict.fromkeys(keys))
+
+
+def topup_idempotency_fingerprint(idempotency_key: str) -> str:
+    return hashlib.sha256(str(idempotency_key or "").encode("utf-8")).hexdigest()[:12]
+
+
+def _credited_topup_for_keys(keys: list):
+    wanted = set(keys)
+    for credit_key, credit in credited_topups.items():
+        aliases = set(str(value) for value in (credit or {}).get("idempotency_aliases", []) if value)
+        aliases.add(str(credit_key))
+        if wanted.intersection(aliases):
+            return str(credit_key), credit
+    return None, None
+
+
+def _completed_topup_transaction_for_keys(user_id: int, keys: list, identifiers: dict):
+    wanted = set(keys)
+    for tx in reversed(all_transactions):
+        if int(tx.get("user_id", 0) or 0) != int(user_id) or tx.get("type") != "Deposit":
+            continue
+        if str(tx.get("status") or "").strip().casefold() not in TOPUP_COMPLETED_STATUSES:
+            continue
+        meta = tx.get("meta") if isinstance(tx.get("meta"), dict) else {}
+        stored_keys = {str(meta.get("idempotency_key") or "")}
+        stored_keys.update(str(value) for value in meta.get("idempotency_aliases", []) if value)
+        if wanted.intersection(stored_keys):
+            return tx
+        comparisons = (
+            ("payment_id", identifiers.get("payment_id")),
+            ("order_id", identifiers.get("order_id")),
+            ("txid", identifiers.get("tx_hash")),
+            ("internal_deposit_id", identifiers.get("internal_deposit_id")),
+        )
+        if any(value not in (None, "") and str(meta.get(field) or "") == str(value) for field, value in comparisons):
+            return tx
+        if identifiers.get("internal_deposit_id") not in (None, "") and str(tx.get("id")) == str(identifiers["internal_deposit_id"]):
+            return tx
+    return None
+
+
+def _pending_topup_transaction(user_id: int, amount: Decimal, internal_deposit_id=None, allow_amount_match: bool = False):
+    if internal_deposit_id not in (None, ""):
+        tx = find_tx_by_id(int(internal_deposit_id))
+        if tx and int(tx.get("user_id", 0)) == int(user_id) and tx.get("type") == "Deposit":
+            return tx
+    if allow_amount_match:
+        for tx in reversed(all_transactions):
+            tx_amount = safe_decimal(tx.get("amount"))
+            if (
+                int(tx.get("user_id", 0) or 0) == int(user_id)
+                and tx.get("type") == "Deposit"
+                and str(tx.get("status") or "").strip().casefold() in TOPUP_PENDING_STATUSES
+                and tx_amount is not None
+                and tx_amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) == amount
+            ):
+                return tx
+    return None
+
+
+def apply_confirmed_topup_credit(
+    user_id: int,
+    amount,
+    provider: str,
+    credited_by: str,
+    *,
+    record: dict = None,
+    payment_id: str = "",
+    order_id: str = "",
+    internal_deposit_id=None,
+    tx_hash: str = "",
+    network: str = "",
+    transaction_meta: dict = None,
+    allow_pending_amount_match: bool = False,
+) -> dict:
+    """Credit one confirmed top-up exactly once across all confirmation paths."""
+    clean_user_id = int(user_id)
+    clean_amount = Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if clean_amount <= 0:
+        raise ValueError("invalid_topup_amount")
+    identifiers = {
+        "payment_id": str(payment_id or "").strip(),
+        "order_id": str(order_id or "").strip(),
+        "internal_deposit_id": internal_deposit_id,
+        "tx_hash": str(tx_hash or "").strip(),
+    }
+    keys = build_topup_idempotency_keys(
+        provider, clean_user_id, clean_amount,
+        payment_id=identifiers["payment_id"],
+        order_id=identifiers["order_id"],
+        internal_deposit_id=internal_deposit_id,
+        tx_hash=identifiers["tx_hash"],
+        network=network,
+        record=record,
+    )
+    canonical_key = keys[0]
+
+    with topup_credit_lock:
+        existing_key, existing_credit = _credited_topup_for_keys(keys)
+        if existing_credit is not None:
+            return {
+                "credited": False,
+                "already_credited": True,
+                "idempotency_key": existing_key,
+                "record": existing_credit,
+            }
+
+        completed_tx = _completed_topup_transaction_for_keys(clean_user_id, keys, identifiers)
+        record_status = str((record or {}).get("payment_status") or (record or {}).get("status") or "").strip().casefold()
+        legacy_completed = bool((record or {}).get("credit_applied") or (record or {}).get("credited_at"))
+        legacy_completed = legacy_completed or record_status in TOPUP_COMPLETED_STATUSES
+        if completed_tx is not None or legacy_completed:
+            before = float(user_wallet.get(clean_user_id, 0.0) or 0.0)
+            legacy_record = {
+                "idempotency_key": canonical_key,
+                "idempotency_aliases": keys,
+                "idempotency_fingerprint": topup_idempotency_fingerprint(canonical_key),
+                "user_id": clean_user_id,
+                "amount": float(clean_amount),
+                "provider": str(provider or "Unknown"),
+                "network": str(network or ""),
+                "internal_deposit_id": internal_deposit_id,
+                "tx_hash": identifiers["tx_hash"],
+                "credited_at": (record or {}).get("credited_at") or (completed_tx or {}).get("updated_at") or now_dt(),
+                "credited_by": "legacy_status_guard",
+                "wallet_balance_before": before,
+                "wallet_balance_after": before,
+                "transaction_id": (completed_tx or {}).get("id"),
+            }
+            credited_topups[canonical_key] = legacy_record
+            force_save_bot_state()
+            return {
+                "credited": False,
+                "already_credited": True,
+                "idempotency_key": canonical_key,
+                "record": legacy_record,
+            }
+
+        before = Decimal(str(user_wallet.get(clean_user_id, 0.0) or 0.0)).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        after = (before + clean_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        credited_at = now_dt()
+        meta = dict(transaction_meta or {})
+        meta.update({
+            "provider": str(provider or "Unknown"),
+            "network": str(network or ""),
+            "payment_id": identifiers["payment_id"],
+            "order_id": identifiers["order_id"],
+            "internal_deposit_id": internal_deposit_id,
+            "txid": identifiers["tx_hash"],
+            "idempotency_key": canonical_key,
+            "idempotency_aliases": keys,
+            "idempotency_fingerprint": topup_idempotency_fingerprint(canonical_key),
+            "credited_by": str(credited_by or "unknown"),
+            "credited_at": credited_at,
+        })
+        transaction = _pending_topup_transaction(
+            clean_user_id,
+            clean_amount,
+            internal_deposit_id=internal_deposit_id,
+            allow_amount_match=allow_pending_amount_match,
+        )
+        user_wallet[clean_user_id] = float(after)
+        if transaction is None:
+            transaction = add_transaction_record(clean_user_id, "Deposit", float(clean_amount), "Completed", meta)
+        else:
+            set_tx_status(transaction, "Completed")
+            transaction.setdefault("meta", {}).update(meta)
+        credit_record = {
+            "idempotency_key": canonical_key,
+            "idempotency_aliases": keys,
+            "idempotency_fingerprint": topup_idempotency_fingerprint(canonical_key),
+            "user_id": clean_user_id,
+            "amount": float(clean_amount),
+            "provider": str(provider or "Unknown"),
+            "network": str(network or ""),
+            "internal_deposit_id": internal_deposit_id,
+            "tx_hash": identifiers["tx_hash"],
+            "credited_at": credited_at,
+            "credited_by": str(credited_by or "unknown"),
+            "wallet_balance_before": float(before),
+            "wallet_balance_after": float(after),
+            "transaction_id": transaction.get("id"),
+        }
+        credited_topups[canonical_key] = credit_record
+        if isinstance(record, dict):
+            record["credit_applied"] = True
+            record["credited_at"] = credit_record["credited_at"]
+            record["credit_idempotency_fingerprint"] = credit_record["idempotency_fingerprint"]
+            record["payment_status"] = "completed"
+        force_save_bot_state()
+        return {
+            "credited": True,
+            "already_credited": False,
+            "idempotency_key": canonical_key,
+            "record": credit_record,
+            "transaction": transaction,
+        }
 
 
 def escape_html(text: str) -> str:
@@ -9326,12 +9582,23 @@ def render_all_deposits_text() -> str:
 
     lines = ["💳 <b>ALL DEPOSITS</b>\n"]
     for tx in reversed(deposits[-50:]):
+        meta = tx.get("meta") if isinstance(tx.get("meta"), dict) else {}
+        credit_fingerprint = str(meta.get("idempotency_fingerprint") or "").strip()
+        credit_note = ""
+        if credit_fingerprint:
+            credit_note = (
+                f"\nCredit: <b>credited once</b>"
+                f"\nCredit reference: <code>{escape_html(credit_fingerprint)}</code>"
+                f"\nCredited at: {escape_html(format_dt(meta.get('credited_at')))}"
+                f"\nCredited by: {escape_html(meta.get('credited_by') or 'unknown')}"
+            )
         lines.append(
             f"\n<b>TX#{tx['id']}</b>\n"
             f"User: {tx['user_id']}\n"
             f"Amount: {format_money(tx['amount'])}\n"
             f"Status: <b>{tx['status']}</b>\n"
             f"Date: {format_dt(tx.get('created_at'))}"
+            f"{credit_note}"
         )
     return "\n".join(lines)
 
@@ -11390,21 +11657,21 @@ async def process_wallet_purchase(update_or_query, context: ContextTypes.DEFAULT
 
 
 async def finalize_verified_deposit(bot, user_id: int, amount: float, txid: str):
+    record = pending_crypto_deposits.get(user_id, {})
+    result = apply_confirmed_topup_credit(
+        user_id,
+        amount,
+        "Blockchain",
+        "manual_txid_verify",
+        record=record,
+        tx_hash=txid,
+        network=record.get("network", ""),
+        transaction_meta={"auto_verified": False},
+        allow_pending_amount_match=True,
+    )
+    if not result["credited"]:
+        return result
     used_txids.add(txid)
-    user_wallet[user_id] = user_wallet.get(user_id, 0) + amount
-
-    for tx in reversed(user_transactions.get(user_id, [])):
-        if tx["type"] == "Deposit" and tx["status"] == "Checking TXID" and tx["amount"] == amount:
-            set_tx_status(tx, "Completed")
-            tx["meta"]["txid"] = txid
-            break
-
-    for tx in reversed(all_transactions):
-        if tx["user_id"] == user_id and tx["type"] == "Deposit" and tx["status"] == "Checking TXID" and tx["amount"] == amount:
-            set_tx_status(tx, "Completed")
-            tx["meta"]["txid"] = txid
-            break
-
     pending_crypto_deposits.pop(user_id, None)
 
     await bot.send_message(
@@ -11416,6 +11683,7 @@ async def finalize_verified_deposit(bot, user_id: int, amount: float, txid: str)
         ),
         parse_mode="HTML",
     )
+    return result
 
 
 async def finalize_verified_order(bot, user_id: int, product_id: str, qty: int, total: float, txid: str):
@@ -11539,16 +11807,24 @@ async def confirm_manual_deposit(context: ContextTypes.DEFAULT_TYPE, tx_id: int)
     tx = find_tx_by_id(tx_id)
     if not tx:
         return False, "Deposit record not found."
-    if tx["type"] != "Deposit" or tx["status"] != "Waiting Manual Confirmation":
+    if tx["type"] != "Deposit":
+        return False, "Deposit record is invalid."
+    if str(tx.get("status") or "").strip().casefold() in TOPUP_COMPLETED_STATUSES:
+        return False, "Payment already confirmed. Wallet was already updated."
+    if tx["status"] != "Waiting Manual Confirmation":
         return False, "Deposit is no longer pending."
 
-    set_tx_status(tx, "Completed")
-    for user_tx in user_transactions.get(tx["user_id"], []):
-        if user_tx["id"] == tx_id:
-            set_tx_status(user_tx, "Completed")
-            break
-
-    user_wallet[tx["user_id"]] = user_wallet.get(tx["user_id"], 0) + tx["amount"]
+    result = apply_confirmed_topup_credit(
+        tx["user_id"],
+        tx["amount"],
+        "Manual Admin",
+        "admin_manual_confirm",
+        record=tx,
+        internal_deposit_id=tx_id,
+        transaction_meta={"admin_confirmed": True},
+    )
+    if not result["credited"]:
+        return False, "Payment already confirmed. Wallet was already updated."
 
     await context.bot.send_message(
         chat_id=tx["user_id"],
@@ -11590,14 +11866,26 @@ async def reject_manual_deposit(context: ContextTypes.DEFAULT_TYPE, tx_id: int):
 async def finalize_auto_deposit_record(record: dict):
     user_id = record["user_id"]
     amount = float(record["usd_amount"])
-    wc.complete_deposit_record(
-        record,
-        user_wallet,
-        add_transaction_record=add_transaction_record,
-        set_tx_status=set_tx_status,
-        user_transactions=user_transactions,
-        all_transactions=all_transactions,
+    result = apply_confirmed_topup_credit(
+        user_id,
+        amount,
+        "Blockchain Auto",
+        "auto_detect",
+        record=record,
+        tx_hash=record.get("matched_txid", ""),
+        network=record.get("network", ""),
+        transaction_meta={
+            "crypto_amount": record.get("crypto_amount"),
+            "auto_verified": True,
+            "scan_meta": record.get("last_scan_meta", {}),
+        },
+        allow_pending_amount_match=True,
     )
+    if not result["credited"]:
+        return result
+    record["auto_verified"] = True
+    wc.set_pending_status(record, "completed", "Deposit completed automatically.")
+    wc.pending_crypto_deposits.pop(user_id, None)
     await app_instance.bot.send_message(
         chat_id=user_id,
         text=(
@@ -11607,6 +11895,7 @@ async def finalize_auto_deposit_record(record: dict):
         ),
         parse_mode="HTML",
     )
+    return result
 
 
 async def finalize_auto_order_record(record: dict):
@@ -11825,10 +12114,28 @@ def find_latest_cryptomus_record(user_id: int, kind: str = None):
     return records[-1]
 
 
-async def finalize_cryptomus_record(record: dict, payload: dict = None):
+def has_completed_cryptomus_payment(user_id: int, kind: str, payment_id: str = "") -> bool:
+    wanted_payment_id = str(payment_id or "").strip()
+    return any(
+        int(record.get("user_id", 0) or 0) == int(user_id)
+        and record.get("kind") == kind
+        and (
+            not wanted_payment_id
+            or str(record.get("uuid") or record.get("payment_id") or "").strip() == wanted_payment_id
+        )
+        and (
+            str(record.get("uuid") or record.get("payment_id")) in CRYPTOMUS_PROCESSED
+            or bool(record.get("credit_applied"))
+            or str(record.get("payment_status") or "").strip().casefold() in TOPUP_COMPLETED_STATUSES
+        )
+        for record in CRYPTOMUS_PAYMENTS.values()
+    )
+
+
+async def finalize_cryptomus_record(record: dict, payload: dict = None, credited_by: str = "provider_callback"):
     uuid = str(record.get("uuid") or record.get("payment_id"))
     if uuid in CRYPTOMUS_PROCESSED:
-        return
+        return {"credited": False, "already_credited": True} if record.get("kind") == "deposit" else None
 
     user_id = int(record["user_id"])
     amount = float(record["usd_amount"])
@@ -11840,23 +12147,27 @@ async def finalize_cryptomus_record(record: dict, payload: dict = None):
         txid = uuid
 
     if kind == "deposit":
-        user_wallet[user_id] = user_wallet.get(user_id, 0.0) + amount
-        add_transaction_record(
+        credit_result = apply_confirmed_topup_credit(
             user_id,
-            "Deposit",
             amount,
-            "Completed",
-            {"provider": "Cryptomus", "payment_id": uuid, "txid": txid},
+            "Cryptomus",
+            credited_by,
+            record=record,
+            payment_id=uuid,
+            order_id=record.get("order_id", ""),
+            tx_hash=txid,
+            network=record.get("network", ""),
         )
-        await app_instance.bot.send_message(
-            chat_id=user_id,
-            text=(
-                f"🎉 <b>{t(user_id, 'payment_verified')}</b>\n\n"
-                f"{t(user_id, 'amount_added', amount=format_money(amount))}\n"
-                f"{get_wallet_balance_text(user_id)}"
-            ),
-            parse_mode="HTML",
-        )
+        if credit_result["credited"]:
+            await app_instance.bot.send_message(
+                chat_id=user_id,
+                text=(
+                    f"🎉 <b>{t(user_id, 'payment_verified')}</b>\n\n"
+                    f"{t(user_id, 'amount_added', amount=format_money(amount))}\n"
+                    f"{get_wallet_balance_text(user_id)}"
+                ),
+                parse_mode="HTML",
+            )
 
     elif kind == "order":
         product_id = record.get("product_id")
@@ -11896,6 +12207,7 @@ async def finalize_cryptomus_record(record: dict, payload: dict = None):
     record["completed_at"] = datetime.utcnow().isoformat()
     save_cryptomus_pending()
     save_bot_state()
+    return credit_result if kind == "deposit" else None
 
 
 async def handle_cryptomus_webhook(payload: dict):
@@ -11919,7 +12231,7 @@ async def handle_cryptomus_webhook(payload: dict):
     save_cryptomus_pending()
 
     if is_cryptomus_success_status(status):
-        await finalize_cryptomus_record(record, payload)
+        await finalize_cryptomus_record(record, payload, "callback")
     elif is_cryptomus_failed_status(status):
         user_id = int(record.get("user_id", 0))
         await app_instance.bot.send_message(
@@ -11937,7 +12249,14 @@ async def run_cryptomus_manual_verify(query, user_id: int, kind: str):
 
     record = find_latest_cryptomus_record(user_id, kind)
     if not record:
-        await query.message.reply_text(f"❌ {t(user_id, 'no_pending_payment')}")
+        if kind == "deposit" and has_completed_cryptomus_payment(
+            user_id,
+            kind,
+            state.get("crypto_payment_id", ""),
+        ):
+            await query.message.reply_text("Payment already confirmed. Wallet was already updated.")
+        else:
+            await query.message.reply_text(f"❌ {t(user_id, 'no_pending_payment')}")
         return
 
     state["verify_in_progress"] = True
@@ -11951,7 +12270,9 @@ async def run_cryptomus_manual_verify(query, user_id: int, kind: str):
         save_cryptomus_pending()
 
         if is_cryptomus_success_status(status):
-            await finalize_cryptomus_record(record, result)
+            credit_result = await finalize_cryptomus_record(record, result, "manual_verify")
+            if kind == "deposit" and credit_result and credit_result.get("already_credited"):
+                await query.message.reply_text("Payment already confirmed. Wallet was already updated.")
         elif is_cryptomus_failed_status(status):
             await query.message.reply_text(
                 f"❌ Payment status: {status}\n\nPlease create a new payment request or contact live support: {SUPPORT_USERNAME}"
@@ -12241,10 +12562,28 @@ def find_latest_nowpayments_record(user_id: int, kind: str = None):
     return records[-1]
 
 
-async def finalize_nowpayments_record(record: dict, payload: dict = None):
+def has_completed_nowpayments_payment(user_id: int, kind: str, payment_id: str = "") -> bool:
+    wanted_payment_id = str(payment_id or "").strip()
+    return any(
+        int(record.get("user_id", 0) or 0) == int(user_id)
+        and record.get("kind") == kind
+        and (
+            not wanted_payment_id
+            or str(record.get("payment_id") or "").strip() == wanted_payment_id
+        )
+        and (
+            str(record.get("payment_id")) in NOWPAYMENTS_PROCESSED
+            or bool(record.get("credit_applied"))
+            or str(record.get("payment_status") or "").strip().casefold() in TOPUP_COMPLETED_STATUSES
+        )
+        for record in NOWPAYMENTS_PAYMENTS.values()
+    )
+
+
+async def finalize_nowpayments_record(record: dict, payload: dict = None, credited_by: str = "provider_callback"):
     payment_id = str(record.get("payment_id"))
     if payment_id in NOWPAYMENTS_PROCESSED:
-        return
+        return {"credited": False, "already_credited": True} if record.get("kind") == "deposit" else None
 
     user_id = int(record["user_id"])
     amount = float(record["usd_amount"])
@@ -12256,23 +12595,27 @@ async def finalize_nowpayments_record(record: dict, payload: dict = None):
         txid = payment_id
 
     if kind == "deposit":
-        user_wallet[user_id] = user_wallet.get(user_id, 0.0) + amount
-        add_transaction_record(
+        credit_result = apply_confirmed_topup_credit(
             user_id,
-            "Deposit",
             amount,
-            "Completed",
-            {"provider": "NOWPayments", "payment_id": payment_id, "txid": txid},
+            "NOWPayments",
+            credited_by,
+            record=record,
+            payment_id=payment_id,
+            order_id=record.get("order_id", ""),
+            tx_hash=txid,
+            network=record.get("network", ""),
         )
-        await app_instance.bot.send_message(
-            chat_id=user_id,
-            text=(
-                f"🎉 <b>{t(user_id, 'payment_verified')}</b>\n\n"
-                f"{t(user_id, 'amount_added', amount=format_money(amount))}\n"
-                f"{get_wallet_balance_text(user_id)}"
-            ),
-            parse_mode="HTML",
-        )
+        if credit_result["credited"]:
+            await app_instance.bot.send_message(
+                chat_id=user_id,
+                text=(
+                    f"🎉 <b>{t(user_id, 'payment_verified')}</b>\n\n"
+                    f"{t(user_id, 'amount_added', amount=format_money(amount))}\n"
+                    f"{get_wallet_balance_text(user_id)}"
+                ),
+                parse_mode="HTML",
+            )
 
     elif kind == "order":
         product_id = record.get("product_id")
@@ -12312,6 +12655,7 @@ async def finalize_nowpayments_record(record: dict, payload: dict = None):
     record["completed_at"] = datetime.utcnow().isoformat()
     save_nowpayments_pending()
     save_bot_state()
+    return credit_result if kind == "deposit" else None
 
 
 async def handle_nowpayments_ipn(payload: dict):
@@ -12335,7 +12679,7 @@ async def handle_nowpayments_ipn(payload: dict):
     save_nowpayments_pending()
 
     if is_nowpayments_success_status(status):
-        await finalize_nowpayments_record(record, payload)
+        await finalize_nowpayments_record(record, payload, "callback")
     elif is_nowpayments_failed_status(status):
         user_id = int(record.get("user_id", 0))
         await app_instance.bot.send_message(
@@ -12353,7 +12697,14 @@ async def run_nowpayments_manual_verify(query, user_id: int, kind: str):
 
     record = find_latest_nowpayments_record(user_id, kind)
     if not record:
-        await query.message.reply_text(f"❌ {t(user_id, 'no_pending_payment')}")
+        if kind == "deposit" and has_completed_nowpayments_payment(
+            user_id,
+            kind,
+            state.get("crypto_payment_id", ""),
+        ):
+            await query.message.reply_text("Payment already confirmed. Wallet was already updated.")
+        else:
+            await query.message.reply_text(f"❌ {t(user_id, 'no_pending_payment')}")
         return
 
     state["verify_in_progress"] = True
@@ -12366,7 +12717,9 @@ async def run_nowpayments_manual_verify(query, user_id: int, kind: str):
         save_nowpayments_pending()
 
         if is_nowpayments_success_status(status):
-            await finalize_nowpayments_record(record, status_payload)
+            credit_result = await finalize_nowpayments_record(record, status_payload, "manual_verify")
+            if kind == "deposit" and credit_result and credit_result.get("already_credited"):
+                await query.message.reply_text("Payment already confirmed. Wallet was already updated.")
         elif is_nowpayments_failed_status(status):
             await query.message.reply_text(
                 f"❌ Payment status: {status}\n\nPlease create a new payment request or contact live support: {SUPPORT_USERNAME}"
@@ -14303,9 +14656,11 @@ async def run_simple_verify_flow(query, context, user_id: int, record_kind: str)
             else:
                 record = wc.get_user_pending_deposit(user_id)
                 if record:
-                    await finalize_auto_deposit_record(record)
-                amount = user_state.get(user_id, {}).get("amount", 0)
-                await query.message.reply_text(f"🎉 {t(user_id, 'payment_verified')} {t(user_id, 'amount_added', amount=format_money(amount))}")
+                    credit_result = await finalize_auto_deposit_record(record)
+                    if credit_result and credit_result.get("already_credited"):
+                        await query.message.reply_text("Payment already confirmed. Wallet was already updated.")
+                else:
+                    await query.message.reply_text("Payment already confirmed. Wallet was already updated.")
         else:
             await query.message.reply_text(
                 f"⌛ {t(user_id, 'no_pending_payment')} {t(user_id, 'try_again')}\n\n"
