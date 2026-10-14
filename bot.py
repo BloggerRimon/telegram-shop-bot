@@ -4271,6 +4271,109 @@ def _pending_topup_transaction(user_id: int, amount: Decimal, internal_deposit_i
     return None
 
 
+def shorten_topup_reference(value, head: int = 10, tail: int = 8) -> str:
+    clean_value = str(value or "").strip()
+    if not clean_value:
+        return "N/A"
+    if len(clean_value) <= head + tail + 3:
+        return clean_value
+    return f"{clean_value[:head]}...{clean_value[-tail:]}"
+
+
+def topup_credit_source_label(credited_by: str) -> str:
+    labels = {
+        "manual_txid_verify": "Manual TXID",
+        "admin_manual_confirm": "Admin Confirm",
+        "auto_detect": "Auto-detect",
+        "manual_verify": "Manual Verify",
+        "callback": "Provider callback",
+        "provider_callback": "Provider callback",
+        "retry": "Retry verification",
+    }
+    clean_source = str(credited_by or "unknown").strip()
+    return labels.get(clean_source, clean_source.replace("_", " ").title() or "Unknown")
+
+
+async def notify_admin_topup_credit(bot, credit_record: dict):
+    """Notify admins about one newly applied credit without exposing secrets."""
+    try:
+        user_id = int(credit_record.get("user_id", 0) or 0)
+        profile = get_user_profile(user_id)
+        username = str(profile.get("username") or "").strip().lstrip("@")
+        first_name = str(profile.get("first_name") or "").strip()
+        last_name = str(profile.get("last_name") or "").strip()
+        display_name = " ".join(part for part in (first_name, last_name) if part).strip()
+        if not display_name:
+            display_name = f"@{username}" if username else "Unknown User"
+        username_text = f"@{username}" if username else "N/A"
+        provider = str(credit_record.get("provider") or "Unknown")
+        source = topup_credit_source_label(credit_record.get("credited_by"))
+        network = str(credit_record.get("network") or "").strip() or "N/A"
+        internal_reference = shorten_topup_reference(
+            credit_record.get("internal_deposit_id")
+            or credit_record.get("order_id")
+            or "N/A"
+        )
+        payment_id = shorten_topup_reference(credit_record.get("payment_id"))
+        tx_hash = shorten_topup_reference(credit_record.get("tx_hash"))
+        fingerprint = str(credit_record.get("idempotency_fingerprint") or "N/A")
+        text = (
+            "💰 <b>Wallet Top-up Confirmed</b>\n\n"
+            f"<b>User:</b> {escape_html(display_name)}\n"
+            f"<b>Username:</b> {escape_html(username_text)}\n"
+            f"<b>Telegram user ID:</b> <code>{user_id}</code>\n"
+            f"<b>Amount credited:</b> {format_money(credit_record.get('amount', 0))}\n"
+            f"<b>Provider / source:</b> {escape_html(provider)} / {escape_html(source)}\n"
+            f"<b>Network:</b> {escape_html(network)}\n"
+            f"<b>Previous wallet balance:</b> {format_money(credit_record.get('wallet_balance_before', 0))}\n"
+            f"<b>New wallet balance:</b> {format_money(credit_record.get('wallet_balance_after', 0))}\n"
+            f"<b>Internal reference:</b> <code>{escape_html(internal_reference)}</code>\n"
+            f"<b>Provider payment ID:</b> <code>{escape_html(payment_id)}</code>\n"
+            f"<b>TX hash:</b> <code>{escape_html(tx_hash)}</code>\n"
+            f"<b>Credit fingerprint:</b> <code>{escape_html(fingerprint)}</code>\n"
+            f"<b>Credited time:</b> {escape_html(format_dt(credit_record.get('credited_at')))}"
+        )
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(
+                    chat_id=admin_id,
+                    text=text,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
+            except Exception as exc:
+                print(f"Top-up credit admin alert failed for admin_id={admin_id}: {type(exc).__name__}")
+    except Exception as exc:
+        print(f"Top-up credit admin alert preparation failed: {type(exc).__name__}")
+
+
+def schedule_admin_topup_credit_alert(credit_record: dict):
+    """Schedule the alert after persistence; notification failures never roll back credit."""
+    coroutine = None
+    try:
+        application = app_instance
+        bot = getattr(application, "bot", None)
+        if application is None or bot is None:
+            print("Top-up credit admin alert skipped: bot application is unavailable.")
+            return
+        coroutine = notify_admin_topup_credit(bot, dict(credit_record))
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+        if running_loop is not None:
+            application.create_task(coroutine)
+        elif app_loop is not None and app_loop.is_running():
+            asyncio.run_coroutine_threadsafe(coroutine, app_loop)
+        else:
+            coroutine.close()
+            print("Top-up credit admin alert skipped: bot event loop is unavailable.")
+    except Exception as exc:
+        if coroutine is not None:
+            coroutine.close()
+        print(f"Top-up credit admin alert scheduling failed: {type(exc).__name__}")
+
+
 def apply_confirmed_topup_credit(
     user_id: int,
     amount,
@@ -4389,6 +4492,8 @@ def apply_confirmed_topup_credit(
             "provider": str(provider or "Unknown"),
             "network": str(network or ""),
             "internal_deposit_id": internal_deposit_id,
+            "payment_id": identifiers["payment_id"],
+            "order_id": identifiers["order_id"],
             "tx_hash": identifiers["tx_hash"],
             "credited_at": credited_at,
             "credited_by": str(credited_by or "unknown"),
@@ -4403,6 +4508,7 @@ def apply_confirmed_topup_credit(
             record["credit_idempotency_fingerprint"] = credit_record["idempotency_fingerprint"]
             record["payment_status"] = "completed"
         force_save_bot_state()
+        schedule_admin_topup_credit_alert(credit_record)
         return {
             "credited": True,
             "already_credited": False,
