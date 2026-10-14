@@ -1446,7 +1446,7 @@ USER_TRANSLATIONS["en"].update({
     "api_key_existing": "Already generated. Regenerate to get a new key.",
     "api_key_revoked": "Revoked. Generate a new key to restore API access.",
     "api_key_status": "Status", "api_balance": "API Balance",
-    "api_balance_note": "This API balance is separate from your Telegram shop wallet. Contact admin to add API balance.",
+    "api_balance_note": "Your API uses the same balance as your shop wallet. Deposits and purchases are shared. Deposit once and use the balance in both bot and API.",
     "api_base_url": "Base URL", "api_base_missing": "Base URL is not configured. Please contact admin.",
     "api_endpoints": "Endpoints", "api_list_products": "List products", "api_check_balance": "Check balance",
     "api_place_order": "Place order", "api_auth": "Authentication",
@@ -1466,7 +1466,7 @@ USER_TRANSLATIONS["es"].update({
     "api_key_existing": "Ya generada. Regenera para obtener una clave nueva.",
     "api_key_revoked": "Revocada. Genera una clave nueva para restaurar el acceso.",
     "api_key_status": "Estado", "api_balance": "Saldo API",
-    "api_balance_note": "Este saldo API está separado de tu cartera de la tienda. Contacta al administrador para añadir saldo API.",
+    "api_balance_note": "Tu API usa el mismo saldo que tu cartera de la tienda. Los depósitos y las compras se comparten. Deposita una vez y usa el saldo en el bot y la API.",
     "api_base_url": "URL base", "api_base_missing": "La URL base no está configurada. Contacta al administrador.",
     "api_endpoints": "Endpoints", "api_list_products": "Listar productos", "api_check_balance": "Consultar saldo",
     "api_place_order": "Realizar pedido", "api_auth": "Autenticación",
@@ -1486,7 +1486,7 @@ USER_TRANSLATIONS["ru"].update({
     "api_key_existing": "Ключ уже создан. Создайте новый, чтобы получить другое значение.",
     "api_key_revoked": "Ключ отозван. Создайте новый ключ для восстановления доступа.",
     "api_key_status": "Статус", "api_balance": "Баланс API",
-    "api_balance_note": "Баланс API отделён от кошелька магазина. Обратитесь к администратору для пополнения.",
+    "api_balance_note": "API использует тот же баланс, что и кошелёк магазина. Пополнения и покупки общие. Пополните один раз и используйте баланс в боте и API.",
     "api_base_url": "Базовый URL", "api_base_missing": "Базовый URL не настроен. Обратитесь к администратору.",
     "api_endpoints": "Эндпоинты", "api_list_products": "Список товаров", "api_check_balance": "Проверить баланс",
     "api_place_order": "Оформить заказ", "api_auth": "Авторизация",
@@ -1506,7 +1506,7 @@ USER_TRANSLATIONS["tr"].update({
     "api_key_existing": "Zaten oluşturuldu. Yeni anahtar almak için yeniden oluşturun.",
     "api_key_revoked": "İptal edildi. API erişimini geri açmak için yeni anahtar oluşturun.",
     "api_key_status": "Durum", "api_balance": "API Bakiyesi",
-    "api_balance_note": "API bakiyesi Telegram mağaza cüzdanınızdan ayrıdır. Bakiye eklemek için yöneticiyle iletişime geçin.",
+    "api_balance_note": "API'niz mağaza cüzdanınızla aynı bakiyeyi kullanır. Yatırımlar ve satın alımlar ortaktır. Bir kez yatırın, bakiyeyi botta ve API'de kullanın.",
     "api_base_url": "Temel URL", "api_base_missing": "Temel URL yapılandırılmamış. Yöneticiyle iletişime geçin.",
     "api_endpoints": "Uç noktalar", "api_list_products": "Ürünleri listele", "api_check_balance": "Bakiye kontrol et",
     "api_place_order": "Sipariş ver", "api_auth": "Kimlik doğrulama",
@@ -1526,7 +1526,7 @@ USER_TRANSLATIONS["fr"].update({
     "api_key_existing": "Déjà générée. Régénérez-la pour obtenir une nouvelle clé.",
     "api_key_revoked": "Révoquée. Générez une nouvelle clé pour rétablir l'accès.",
     "api_key_status": "Statut", "api_balance": "Solde API",
-    "api_balance_note": "Ce solde API est distinct du portefeuille de la boutique. Contactez l'administrateur pour l'alimenter.",
+    "api_balance_note": "Votre API utilise le même solde que le portefeuille de la boutique. Les dépôts et achats sont partagés. Déposez une fois et utilisez le solde dans le bot et l'API.",
     "api_base_url": "URL de base", "api_base_missing": "L'URL de base n'est pas configurée. Contactez l'administrateur.",
     "api_endpoints": "Points de terminaison", "api_list_products": "Lister les produits", "api_check_balance": "Vérifier le solde",
     "api_place_order": "Passer une commande", "api_auth": "Authentification",
@@ -1546,7 +1546,7 @@ USER_TRANSLATIONS["de"].update({
     "api_key_existing": "Bereits erstellt. Erstelle einen neuen Schlüssel, um ihn erneut zu erhalten.",
     "api_key_revoked": "Widerrufen. Erstelle einen neuen Schlüssel, um den Zugriff wiederherzustellen.",
     "api_key_status": "Status", "api_balance": "API-Guthaben",
-    "api_balance_note": "Dieses API-Guthaben ist vom Shop-Wallet getrennt. Kontaktiere den Administrator zum Aufladen.",
+    "api_balance_note": "Deine API verwendet dasselbe Guthaben wie dein Shop-Wallet. Einzahlungen und Käufe werden geteilt. Einmal einzahlen und das Guthaben im Bot und in der API nutzen.",
     "api_base_url": "Basis-URL", "api_base_missing": "Die Basis-URL ist nicht konfiguriert. Kontaktiere den Administrator.",
     "api_endpoints": "Endpunkte", "api_list_products": "Produkte auflisten", "api_check_balance": "Guthaben prüfen",
     "api_place_order": "Bestellung aufgeben", "api_auth": "Authentifizierung",
@@ -2358,6 +2358,29 @@ def seller_api_client_telegram_user_id(client: dict):
     return user_id if user_id > 0 else None
 
 
+def seller_api_client_uses_shared_wallet(client: dict) -> bool:
+    return seller_api_client_telegram_user_id(client) is not None
+
+
+def seller_api_client_legacy_balance(client: dict) -> Decimal:
+    return (safe_decimal((client or {}).get("wallet_balance")) or Decimal("0")).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+
+
+def seller_api_client_active_balance(client: dict) -> Decimal:
+    linked_user_id = seller_api_client_telegram_user_id(client)
+    if linked_user_id is not None:
+        return (safe_decimal(user_wallet.get(linked_user_id, 0.0)) or Decimal("0")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+    return seller_api_client_legacy_balance(client)
+
+
+def seller_api_client_wallet_mode(client: dict) -> str:
+    return "Shared Telegram Wallet" if seller_api_client_uses_shared_wallet(client) else "Separate API Balance"
+
+
 def find_seller_api_client_by_user_id(user_id: int):
     try:
         wanted_user_id = int(user_id)
@@ -2663,17 +2686,35 @@ def add_seller_api_transaction_record(client_id: str, order_code: str, amount: D
         "created_at": now_dt(),
     }
     seller_api_transactions.append(transaction)
+    client = seller_api_clients.get(str(client_id), {})
+    linked_user_id = seller_api_client_telegram_user_id(client)
+    if linked_user_id is not None:
+        add_transaction_record(
+            linked_user_id,
+            "Seller API Purchase",
+            float(amount),
+            "Completed",
+            {
+                "source": "Seller API",
+                "client_id": str(client_id),
+                "order_code": str(order_code),
+            },
+        )
     return transaction
 
 
 def deduct_seller_api_client_balance(client_id: str, total: Decimal) -> Decimal:
     client = seller_api_clients[client_id]
-    balance = safe_decimal(client.get("wallet_balance")) or Decimal("0")
+    linked_user_id = seller_api_client_telegram_user_id(client)
+    balance = seller_api_client_active_balance(client)
     total = Decimal(str(total)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     if balance < total:
         raise ValueError("insufficient_balance")
     remaining = (balance - total).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    client["wallet_balance"] = float(remaining)
+    if linked_user_id is not None:
+        user_wallet[linked_user_id] = float(remaining)
+    else:
+        client["wallet_balance"] = float(remaining)
     return remaining
 
 
@@ -2693,14 +2734,16 @@ def adjust_seller_api_client_balance(
     clean_amount = Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     if clean_amount <= 0:
         raise ValueError("invalid_amount")
-    before = (safe_decimal(client.get("wallet_balance")) or Decimal("0")).quantize(
-        Decimal("0.01"), rounding=ROUND_HALF_UP
-    )
+    linked_user_id = seller_api_client_telegram_user_id(client)
+    before = seller_api_client_active_balance(client)
     if clean_action == "remove" and clean_amount > before:
         raise ValueError("insufficient_balance")
     after = before + clean_amount if clean_action == "add" else before - clean_amount
     after = after.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    client["wallet_balance"] = float(after)
+    if linked_user_id is not None:
+        user_wallet[linked_user_id] = float(after)
+    else:
+        client["wallet_balance"] = float(after)
     seller_api_transactions.append({
         "client_id": str(client_id),
         "client_name": str(client.get("name") or client_id),
@@ -2711,9 +2754,27 @@ def adjust_seller_api_client_balance(
         "note": str(note or "").strip()[:500],
         "balance_before": float(before),
         "balance_after": float(after),
+        "wallet_mode": seller_api_client_wallet_mode(client),
+        "telegram_user_id": linked_user_id,
         "status": "Completed",
         "created_at": now_dt(),
     })
+    if linked_user_id is not None:
+        add_transaction_record(
+            linked_user_id,
+            "Seller API Admin Balance Add" if clean_action == "add" else "Seller API Admin Balance Remove",
+            float(clean_amount),
+            "Completed",
+            {
+                "source": "Seller API Admin",
+                "client_id": str(client_id),
+                "admin_user_id": int(admin_user_id),
+                "action": clean_action,
+                "balance_before": float(before),
+                "balance_after": float(after),
+                "note": str(note or "").strip()[:500],
+            },
+        )
     return after
 
 
@@ -2742,7 +2803,7 @@ async def notify_admin_seller_api_sale(bot, client_id: str, order: dict):
         f"<b>Total:</b> {format_money(order.get('total_paid', 0))}\n"
         f"<b>Status:</b> {escape_html(order.get('status'))}\n"
         f"<b>Delivered:</b> {int(order.get('delivered_count', 0))}\n"
-        f"<b>Remaining reseller balance:</b> {format_money(client.get('wallet_balance', 0))}"
+        f"<b>Remaining reseller balance:</b> {format_money(seller_api_client_active_balance(client))}"
         f"{email_text}"
     )
     for admin_id in ADMIN_IDS:
@@ -2776,7 +2837,7 @@ async def _seller_api_purchase_local(
     if unit_price is None or unit_price <= 0:
         return 409, {"success": False, "error": "product_unavailable"}
     total = (unit_price * quantity).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    client_balance = safe_decimal(seller_api_clients[client_id].get("wallet_balance")) or Decimal("0")
+    client_balance = seller_api_client_active_balance(seller_api_clients[client_id])
     if client_balance < total:
         return 402, {"success": False, "error": "insufficient_balance"}
 
@@ -2829,7 +2890,7 @@ async def _seller_api_purchase_mapped(
     if unit_price is None or unit_price <= 0:
         return 409, {"success": False, "error": "product_unavailable"}
     total = (unit_price * quantity).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    client_balance = safe_decimal(seller_api_clients[client_id].get("wallet_balance")) or Decimal("0")
+    client_balance = seller_api_client_active_balance(seller_api_clients[client_id])
     if client_balance < total:
         return 402, {"success": False, "error": "insufficient_balance"}
     provider_id = mapping_provider_id(mapping)
@@ -2972,7 +3033,7 @@ async def handle_seller_api_get_request(path: str, query_params: dict):
         status_code = 429 if auth_error["error"] == "rate_limited" else 401
         return status_code, auth_error
     if path == SELLER_API_BALANCE_PATH:
-        balance = float(client.get("wallet_balance", 0.0) or 0.0)
+        balance = float(seller_api_client_active_balance(client))
         return 200, {
             "success": True,
             "balance": round(balance, 2),
@@ -6018,7 +6079,9 @@ def seller_api_client_summary(client_id: str) -> dict:
         if now_dt().timestamp() - float(stamp) < 60
     ]
     return {
-        "balance": safe_decimal(client.get("wallet_balance")) or Decimal("0"),
+        "balance": seller_api_client_active_balance(client),
+        "legacy_separate_balance": seller_api_client_legacy_balance(client),
+        "wallet_mode": seller_api_client_wallet_mode(client),
         "total_added": total_added,
         "total_removed": total_removed,
         "total_spent": total_spent,
@@ -6087,7 +6150,7 @@ def render_seller_api_clients(page: int = 0) -> str:
         1 for client in seller_api_clients.values()
         if _buyer_api_bool_value(client.get("enabled"))
     )
-    total_balance = sum(float(client.get("wallet_balance", 0) or 0) for client in seller_api_clients.values())
+    total_balance = sum(float(seller_api_client_active_balance(client)) for client in seller_api_clients.values())
     lines = [
         "👥 <b>SELLER API CLIENTS</b>", "",
         f"Total clients: <b>{len(seller_api_clients)}</b>",
@@ -6115,22 +6178,47 @@ def render_seller_api_client_detail(client_id: str) -> str:
     summary = seller_api_client_summary(client_id)
     linked_user_id = seller_api_client_telegram_user_id(client)
     linked_user_text = f"<code>{linked_user_id}</code>" if linked_user_id else "Not linked"
+    legacy_balance = seller_api_client_legacy_balance(client)
+    shared_explanation = ""
+    if linked_user_id is not None:
+        shared_explanation = (
+            "\n<i>This client uses the linked user's Telegram wallet balance.</i>"
+        )
+        if legacy_balance != Decimal("0"):
+            shared_explanation += (
+                "\n⚠️ <b>Legacy separate API balance exists: "
+                f"{format_money(legacy_balance)}.</b> This balance is retained for manual reconciliation "
+                "and is not used while the client is linked."
+            )
+    if linked_user_id is not None:
+        balance_lines = (
+            f"Wallet mode: <b>{escape_html(summary['wallet_mode'])}</b>\n"
+            f"Current balance source: <b>{format_money(summary['balance'])}</b>\n"
+            f"Telegram wallet balance: <b>{format_money(summary['balance'])}</b>\n"
+        )
+    else:
+        balance_lines = (
+            f"Wallet mode: <b>{escape_html(summary['wallet_mode'])}</b>\n"
+            f"Current balance source: <b>{format_money(summary['balance'])}</b>\n"
+            f"Separate API balance: <b>{format_money(summary['balance'])}</b>\n"
+        )
     return (
         "👤 <b>SELLER API CLIENT</b>\n\n"
         f"Name: <b>{escape_html(client.get('name', client_id))}</b>\n"
         f"Client ID: <code>{escape_html(client_id)}</code>\n"
         f"Telegram user ID: {linked_user_text}\n"
         f"Username: {escape_html(seller_api_client_username(client))}\n"
+        f"Key fingerprint: <code>{escape_html(seller_api_client_key_fingerprint(client))}</code>\n"
         f"Status: <b>{'Enabled' if _buyer_api_bool_value(client.get('enabled')) else 'Disabled'}</b>\n"
-        f"API balance: <b>{format_money(summary['balance'])}</b>\n"
+        f"{balance_lines}"
         f"Total balance added: <b>{format_money(summary['total_added'])}</b>\n"
         f"Total balance removed: <b>{format_money(summary['total_removed'])}</b>\n"
         f"Total spent: <b>{format_money(summary['total_spent'])}</b>\n"
-        f"Key fingerprint: <code>{escape_html(seller_api_client_key_fingerprint(client))}</code>\n"
         f"Created: {escape_html(format_dt(client.get('created_at')))}\n"
         f"Orders: <b>{summary['total_orders']}</b> · Completed: <b>{summary['completed_orders']}</b> · Processing: <b>{summary['processing_orders']}</b>\n"
         f"Last purchase: {escape_html(format_dt(summary['last_purchase_at']))}\n"
         f"Notes: {escape_html(client.get('notes') or 'None')}"
+        f"{shared_explanation}"
     )
 
 
@@ -6157,7 +6245,13 @@ def render_seller_api_client_summary(client_id: str) -> str:
     return (
         "📊 <b>SELLER API CLIENT SUMMARY</b>\n\n"
         f"Client: <b>{escape_html(client.get('name', client_id))}</b>\n"
-        f"Current API balance: <b>{format_money(summary['balance'])}</b>\n"
+        f"Wallet mode: <b>{escape_html(summary['wallet_mode'])}</b>\n"
+        f"Current balance: <b>{format_money(summary['balance'])}</b>\n"
+        + (
+            f"Legacy separate API balance: <b>{format_money(summary['legacy_separate_balance'])}</b>\n"
+            if seller_api_client_uses_shared_wallet(client) and summary["legacy_separate_balance"] != Decimal("0")
+            else ""
+        ) +
         f"Total balance added: <b>{format_money(summary['total_added'])}</b>\n"
         f"Total balance removed: <b>{format_money(summary['total_removed'])}</b>\n"
         f"Total spent: <b>{format_money(summary['total_spent'])}</b>\n"
@@ -6347,19 +6441,23 @@ def build_seller_api_client_report_txt(client_id: str) -> str:
     products = seller_api_client_product_summary(client_id)
     orders = seller_api_client_orders(client_id)[:25]
     history = seller_api_client_balance_history(client_id)[:25]
+    linked_user_id = seller_api_client_telegram_user_id(client)
+    legacy_balance = seller_api_client_legacy_balance(client)
     lines = [
         "SELLER API CLIENT REPORT",
         "========================",
         f"Generated: {format_dt(now_dt())}",
         f"Client: {client.get('name', client_id)}",
         f"Client ID: {client_id}",
-        f"Linked Telegram user ID: {seller_api_client_telegram_user_id(client) or 'Not linked'}",
+        f"Linked Telegram user ID: {linked_user_id or 'Not linked'}",
         f"Username: {seller_api_client_username(client)}",
+        f"Key fingerprint: {seller_api_client_key_fingerprint(client)}",
         f"Status: {'Enabled' if _buyer_api_bool_value(client.get('enabled')) else 'Disabled'}",
+        f"Wallet mode: {summary['wallet_mode']}",
         "",
         "SUMMARY",
         "-------",
-        f"Current API balance: {format_money(summary['balance'])}",
+        f"Current balance: {format_money(summary['balance'])}",
         f"Total balance added: {format_money(summary['total_added'])}",
         f"Total balance removed: {format_money(summary['total_removed'])}",
         f"Total spent: {format_money(summary['total_spent'])}",
@@ -6374,6 +6472,10 @@ def build_seller_api_client_report_txt(client_id: str) -> str:
         "PRODUCT SUMMARY",
         "---------------",
     ]
+    if linked_user_id is not None:
+        lines.insert(10, "This client uses the linked user's Telegram wallet balance.")
+        if legacy_balance != Decimal("0"):
+            lines.insert(11, f"WARNING: Legacy separate API balance retained: {format_money(legacy_balance)} (not active).")
     if not products:
         lines.append("No purchases found.")
     for item in products:
@@ -6454,6 +6556,8 @@ def render_seller_api_docs() -> str:
         "Purchase JSON fields:\n"
         "<code>key, product_id, quantity, lang, customer_email, webhook_url</code>\n\n"
         "Supported languages: en, es, ru, tr, fr, de\n"
+        "Linked Telegram clients use one shared shop/API wallet: deposit once and use the balance in both bot and API.\n"
+        "Unlinked clients continue to use their separate API balance.\n"
         "Webhook URLs are validated and recorded, but outbound webhook delivery is not enabled in this phase.\n"
         "API keys are shown once when created or regenerated."
     )
@@ -8913,7 +9017,7 @@ def render_user_seller_api_key_text(user_id: int, client: dict, raw_key: str = N
     client = client or {}
     enabled = _buyer_api_bool_value(client.get("enabled"))
     status_text = t(user_id, "api_enabled" if enabled else "api_disabled")
-    balance = safe_decimal(client.get("wallet_balance")) or Decimal("0")
+    balance = seller_api_client_active_balance(client)
     base_url = seller_api_user_base_url()
     if raw_key:
         key_text = (
@@ -13659,7 +13763,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if amount is None or amount <= 0 or amount > Decimal("1000000"):
             await update.message.reply_text("❌ Enter a valid amount greater than 0 and no more than 1,000,000.")
             return
-        current_balance = safe_decimal(client.get("wallet_balance")) or Decimal("0")
+        current_balance = seller_api_client_active_balance(client)
         if action == "remove" and amount > current_balance:
             await update.message.reply_text("❌ Amount exceeds the client's current balance.")
             return
@@ -15048,11 +15152,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "balance_action": "add" if is_add else "remove",
         }
         action_text = "add to" if is_add else "remove from"
+        client = seller_api_clients[client_id]
+        shared_warning = ""
+        if seller_api_client_uses_shared_wallet(client):
+            shared_warning = (
+                "\n\n⚠️ <b>This client uses shared Telegram wallet.</b> "
+                "This balance adjustment will update the user's main wallet."
+            )
         await send_inline_from_callback(
             query,
             f"💰 Send the USDT amount to {action_text} this client's balance.\n\n"
             "Optional: add a note after the amount.\n"
-            "Example: <code>25.00 Monthly reseller credit</code>",
+            "Example: <code>25.00 Monthly reseller credit</code>"
+            f"{shared_warning}",
             InlineKeyboardMarkup([[
                 InlineKeyboardButton("⬅️ Back", callback_data=f"reseller_api_client_{client_id}")
             ]]),
