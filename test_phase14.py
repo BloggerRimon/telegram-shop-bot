@@ -107,10 +107,13 @@ class Phase14CoreTests(Phase14StateMixin, unittest.TestCase):
         self.assertIsNotNone(item)
         self.assertEqual(item["stats"]["available"], 1)
 
-    def test_manual_product_is_labeled_and_excluded_from_seller_api(self):
+    def test_manual_product_details_hide_delivery_notice_and_seller_api_excludes_it(self):
         page = bot.render_product_details("manual", self.user_id)
-        self.assertIn("Manual Delivery", page)
-        self.assertIn("delivered manually after payment", page)
+        self.assertNotIn("Manual Delivery", page)
+        self.assertNotIn("delivered manually after payment", page)
+        self.assertIn("Made to order", page)
+        self.assertIn("5.00", page)
+        self.assertIn("10", page)
         self.assertIsNone(bot.seller_api_product_item("local", "manual", bot.PRODUCTS["manual"], "en"))
 
     def test_my_order_support_link_contains_owned_order_context(self):
@@ -444,15 +447,19 @@ class Phase14AsyncTests(Phase14StateMixin, unittest.IsolatedAsyncioTestCase):
         }
         query = SimpleNamespace()
         context = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
+        send_inline = AsyncMock()
         with (
             patch.object(bot, "save_bot_state_strict"),
-            patch.object(bot, "send_inline_from_callback", new=AsyncMock()),
+            patch.object(bot, "send_inline_from_callback", new=send_inline),
             patch.object(bot, "notify_admin_manual_order", new=AsyncMock(return_value=1)) as notify,
         ):
             await bot.process_manual_wallet_purchase(query, context, self.user_id, nonce)
             await bot.process_manual_wallet_purchase(query, context, self.user_id, nonce)
         self.assertEqual(notify.await_count, 1)
         self.assertEqual(bot.user_wallet[self.user_id], 5.0)
+        success_message = send_inline.await_args_list[0].args[1]
+        self.assertIn(f"Order ID:</b> #{bot.all_orders[0]['id']}", success_message)
+        self.assertIn("contact our support team with your Order ID", success_message)
 
     async def test_concurrent_admin_notification_attempts_send_once(self):
         order = self.buy_manual("notify-concurrent")["order"]

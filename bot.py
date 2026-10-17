@@ -9879,22 +9879,13 @@ def render_product_details(product_id: str, user_id: int = None) -> str:
     duration_line = f"<b>{t(user_id, 'duration')}:</b> {duration}\n" if duration else ""
     bulk_offers = render_bulk_pricing_offers(product, user_id)
     bulk_section = f"{bulk_offers}\n\n" if bulk_offers else ""
-    manual_notice = ""
-    if is_manual_delivery_product(product):
-        instructions = str(product.get("support_instructions") or "").strip()
-        instruction_line = f"\n{escape_html(instructions)}" if instructions else ""
-        manual_notice = (
-            "\n🤝 <b>Manual Delivery</b>\n"
-            "This product is delivered manually after payment. Please contact Support with your Order ID."
-            f"{instruction_line}\n"
-        )
     return (
         f"📦 <b>{t(user_id, 'product_details')}</b>\n\n"
         f"<b>{t(user_id, 'name')}:</b> {escape_html(localized_product_name(product, user_id))}\n"
         f"{duration_line}"
         f"<b>{t(user_id, 'price')}:</b> {format_product_price_for_user(product_id, user_id)}\n"
         f"<b>{t(user_id, 'stock')}:</b> {stock} {t(user_id, 'pcs')}\n\n"
-        f"{detail_lines}\n{manual_notice}\n"
+        f"{detail_lines}\n\n"
         f"{bulk_section}"
         f"<b>{t(user_id, 'choose_quantity')}:</b>"
     )
