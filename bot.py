@@ -13,7 +13,7 @@ import string
 import requests
 from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP, ROUND_UP
 from datetime import date, datetime, timedelta
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from telegram import (
     Update,
@@ -413,6 +413,30 @@ SELLER_API_RATE_LIMIT_PER_MINUTE = 60
 # must pass through this registry while holding the same in-process lock.
 credited_topups = {}
 topup_credit_lock = threading.RLock()
+
+# Manual-fulfilment wallet changes and order transitions are serialized separately
+# from Telegram callback handling.  Durable references stored on the order make
+# both purchase and refund operations idempotent across callback retries/restarts.
+manual_order_lock = threading.RLock()
+manual_admin_notification_in_progress = set()
+manual_refund_notification_in_progress = set()
+MANUAL_DELIVERY = "manual"
+AUTOMATIC_DELIVERY = "automatic"
+MANUAL_AWAITING_STATUS = "Awaiting Manual Delivery"
+MANUAL_PROCESSING_STATUS = "Processing"
+MANUAL_DELIVERED_STATUS = "Delivered"
+MANUAL_REFUNDED_STATUS = "Cancelled & Refunded"
+MANUAL_REFUND_ERROR_STATUS = "Cancellation Refund Persistence Error"
+
+
+def product_delivery_type(product_or_id) -> str:
+    product = PRODUCTS.get(product_or_id, {}) if isinstance(product_or_id, str) else (product_or_id or {})
+    value = str(product.get("delivery_type") or AUTOMATIC_DELIVERY).strip().lower()
+    return MANUAL_DELIVERY if value == MANUAL_DELIVERY else AUTOMATIC_DELIVERY
+
+
+def is_manual_delivery_product(product_or_id) -> bool:
+    return product_delivery_type(product_or_id) == MANUAL_DELIVERY
 
 
 def _new_seller_api_auto_refresh_status():
@@ -964,6 +988,23 @@ def save_bot_state():
 def force_save_bot_state():
     """Use only for rare critical shutdown/manual cases where immediate save is needed."""
     _save_bot_state_now()
+
+
+def save_bot_state_strict():
+    """Synchronously persist critical wallet/order mutations and propagate errors."""
+    with topup_credit_lock:
+        state = build_state_snapshot()
+        if USE_DATABASE:
+            if db is None:
+                raise RuntimeError("DATABASE_URL is set but database.py could not be imported")
+            db.save_state(_json_safe(state))
+            return
+        tmp_file = BOT_STATE_FILE + ".phase14.tmp"
+        with open(tmp_file, "w", encoding="utf-8") as file_obj:
+            json.dump(_json_safe(state), file_obj, ensure_ascii=False, indent=2)
+            file_obj.flush()
+            os.fsync(file_obj.fileno())
+        os.replace(tmp_file, BOT_STATE_FILE)
 
 
 def load_bot_state():
@@ -2555,7 +2596,7 @@ def seller_api_public_mapped_product_id(mapping: dict) -> str:
 def seller_api_resolve_product(public_product_id: str):
     public_product_id = str(public_product_id or "").strip()
     for product_id, product in PRODUCTS.items():
-        if seller_api_public_local_product_id(product_id) == public_product_id:
+        if not is_manual_delivery_product(product) and seller_api_public_local_product_id(product_id) == public_product_id:
             return "local", str(product_id), product
     for mapping_key, mapping in api_product_mappings.items():
         if isinstance(mapping, dict) and seller_api_public_mapped_product_id(mapping) == public_product_id:
@@ -2565,6 +2606,11 @@ def seller_api_resolve_product(public_product_id: str):
 
 def seller_api_product_item(product_type: str, internal_id: str, product: dict, language: str):
     if product_type == "local":
+        # The current Seller API contract promises immediate credentials and a
+        # completed response, so manual-fulfilment listings are intentionally
+        # unavailable through that API.
+        if is_manual_delivery_product(product):
+            return None
         price = safe_decimal((product or {}).get("price"))
         accounts = (product or {}).get("accounts")
         stock = len(accounts) if isinstance(accounts, list) else 0
@@ -4211,6 +4257,265 @@ def add_transaction_record(user_id: int, tx_type: str, amount: float, status: st
     return tx
 
 
+def _manual_order_by_purchase_reference(reference: str):
+    reference = str(reference or "").strip()
+    if not reference:
+        return None
+    return next(
+        (order for order in all_orders if isinstance(order, dict) and order.get("purchase_reference") == reference),
+        None,
+    )
+
+
+def _sync_manual_order_to_user(order: dict) -> None:
+    """Keep the separately deserialized customer order copy identical."""
+    user_id = int(order.get("user_id"))
+    order_id = str(order.get("id"))
+    for user_order in user_orders.get(user_id, []):
+        if isinstance(user_order, dict) and str(user_order.get("id")) == order_id:
+            if user_order is not order:
+                user_order.clear()
+                user_order.update(order)
+            return
+
+
+def _sync_transaction_to_user(transaction: dict) -> None:
+    """Keep the separately deserialized customer transaction copy identical."""
+    user_id = int(transaction.get("user_id"))
+    transaction_id = str(transaction.get("id"))
+    for user_transaction in user_transactions.get(user_id, []):
+        if isinstance(user_transaction, dict) and str(user_transaction.get("id")) == transaction_id:
+            if user_transaction is not transaction:
+                user_transaction.clear()
+                user_transaction.update(transaction)
+            return
+
+
+def create_paid_manual_order(
+    user_id: int,
+    product_id: str,
+    qty: int,
+    purchase_reference: str,
+    expected_total=None,
+) -> dict:
+    """Atomically charge the normal Telegram wallet and persist a paid manual order."""
+    with manual_order_lock, topup_credit_lock:
+        existing = _manual_order_by_purchase_reference(purchase_reference)
+        if existing:
+            if existing.get("status") == "Payment Persistence Error":
+                return {"ok": False, "error": "This payment is in an auditable persistence-error state. Please contact Support; it will not be charged again.", "order": existing}
+            return {"ok": True, "duplicate": True, "order": existing}
+        product = PRODUCTS.get(product_id)
+        if not product or not is_manual_delivery_product(product):
+            return {"ok": False, "error": "Product is not available for manual delivery."}
+        try:
+            qty = int(qty)
+        except (TypeError, ValueError):
+            qty = 0
+        if qty <= 0:
+            return {"ok": False, "error": "Invalid quantity."}
+        available = get_display_stock(product_id)
+        if available < qty:
+            return {"ok": False, "error": f"Only {available} units are currently available."}
+        try:
+            unit_price, total = calculate_order_total(product_id, qty, user_id)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "This product has an invalid price."}
+        paid_amount = float(Decimal(str(total)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        if expected_total is not None:
+            confirmed_amount = Decimal(str(expected_total)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            if Decimal(str(paid_amount)) != confirmed_amount:
+                return {"ok": False, "error": "The product price changed before confirmation. Please review the updated price and try again."}
+        current_balance = float(user_wallet.get(user_id, 0.0))
+        if current_balance + 1e-9 < paid_amount:
+            return {"ok": False, "error": "Wallet balance is not enough."}
+
+        order_id = get_next_order_id()
+        tx = add_transaction_record(
+            user_id,
+            "Wallet Purchase",
+            paid_amount,
+            "Completed",
+            {"product_id": product_id, "qty": qty, "manual_delivery": True, "order_id": order_id},
+        )
+        order = {
+            "id": order_id,
+            "user_id": user_id,
+            "original_wallet_user_id": user_id,
+            "product_id": product_id,
+            "product": str(product.get("name") or product_id),
+            "qty": qty,
+            "unit_price": float(unit_price),
+            "total": paid_amount,
+            "original_amount_paid": paid_amount,
+            "status": MANUAL_AWAITING_STATUS,
+            "payment_status": "Paid",
+            "delivery_status": MANUAL_AWAITING_STATUS,
+            "delivery_type": MANUAL_DELIVERY,
+            "payment_type": "Wallet",
+            "wallet_transaction_id": tx["id"],
+            "wallet_transaction_reference": f"TX-{tx['id']}",
+            "purchase_reference": str(purchase_reference),
+            "stock_consumed_qty": qty,
+            "stock_restored": False,
+            "support_instructions": str(product.get("support_instructions") or "").strip(),
+            "created_at": now_dt(),
+            "updated_at": now_dt(),
+        }
+        user_orders.setdefault(user_id, []).append(order)
+        all_orders.append(order)
+        user_wallet[user_id] = round(current_balance - paid_amount, 2)
+        product["display_stock"] = max(0, available - qty)
+        try:
+            save_bot_state_strict()
+        except Exception as exc:
+            order["status"] = "Payment Persistence Error"
+            order["delivery_status"] = "Payment Persistence Error"
+            order["payment_status"] = "Payment Persistence Unconfirmed"
+            tx["status"] = "Persistence Unconfirmed"
+            tx["updated_at"] = now_dt()
+            order["persistence_error"] = f"{type(exc).__name__}: {exc}"[:500]
+            order["updated_at"] = now_dt()
+            return {"ok": False, "error": "Payment state could not be safely persisted. Please contact Support with the purchase reference.", "order": order}
+        return {"ok": True, "duplicate": False, "order": order}
+
+
+def update_manual_order_status(order_id: int, new_status: str, admin_id: int) -> tuple:
+    with manual_order_lock, topup_credit_lock:
+        if not is_admin(admin_id):
+            return False, "Administrator authorization required."
+        order = find_order_by_id(order_id)
+        if not order or order.get("delivery_type") != MANUAL_DELIVERY:
+            return False, "Manual order not found."
+        current = str(order.get("status") or "")
+        if current in {MANUAL_DELIVERED_STATUS, MANUAL_REFUNDED_STATUS}:
+            return False, "This order can no longer be changed through the ordinary flow."
+        allowed = {
+            MANUAL_PROCESSING_STATUS: {MANUAL_AWAITING_STATUS, MANUAL_PROCESSING_STATUS},
+            MANUAL_DELIVERED_STATUS: {MANUAL_AWAITING_STATUS, MANUAL_PROCESSING_STATUS},
+        }
+        if current not in allowed.get(new_status, set()):
+            return False, "That fulfillment transition is not allowed."
+        old_status = current
+        order["status"] = new_status
+        order["delivery_status"] = new_status
+        order["fulfilled_by_admin_id"] = int(admin_id)
+        order["fulfilled_at"] = now_dt()
+        order["updated_at"] = now_dt()
+        _sync_manual_order_to_user(order)
+        try:
+            save_bot_state_strict()
+        except Exception as exc:
+            order["status"] = old_status
+            order["delivery_status"] = old_status
+            order["fulfillment_persistence_error"] = f"{type(exc).__name__}: {exc}"[:500]
+            _sync_manual_order_to_user(order)
+            return False, "The status could not be safely persisted."
+        return True, f"Order marked {new_status}."
+
+
+def cancel_manual_order_with_refund(order_id: int, admin_id: int) -> dict:
+    """Refund a paid, undelivered manual order exactly once using its recorded amount."""
+    with manual_order_lock, topup_credit_lock:
+        if not is_admin(admin_id):
+            return {"ok": False, "error": "Administrator authorization required."}
+        order = find_order_by_id(order_id)
+        if not order or order.get("delivery_type") != MANUAL_DELIVERY:
+            return {"ok": False, "error": "Manual order not found."}
+        if str(order.get("status") or "") == MANUAL_DELIVERED_STATUS:
+            return {"ok": False, "error": "Delivered orders cannot be cancelled through this flow."}
+        if order.get("payment_status") != "Paid" and not order.get("refund_transaction_reference"):
+            return {"ok": False, "error": "Only a paid manual order can be refunded."}
+
+        user_id = int(order.get("original_wallet_user_id", order.get("user_id")))
+        amount = float(order.get("original_amount_paid", order.get("total", 0)) or 0)
+        if amount <= 0:
+            return {"ok": False, "error": "The original paid amount is invalid; no refund was applied."}
+        recorded_refund_reference = str(order.get("refund_transaction_reference") or "").strip()
+        refund_reference = recorded_refund_reference or f"MRF-{order_id}-{order.get('wallet_transaction_id', 'NA')}"
+        existing_tx = next(
+            (
+                tx for tx in all_transactions
+                if isinstance(tx, dict)
+                and isinstance(tx.get("meta"), dict)
+                and tx["meta"].get("refund_reference") == refund_reference
+            ),
+            None,
+        )
+        if str(order.get("status") or "") == MANUAL_REFUNDED_STATUS and existing_tx:
+            _sync_transaction_to_user(existing_tx)
+            _sync_manual_order_to_user(order)
+            return {"ok": True, "duplicate": True, "order": order, "balance": float(user_wallet.get(user_id, 0.0))}
+
+        if recorded_refund_reference and existing_tx is None:
+            order["status"] = MANUAL_REFUND_ERROR_STATUS
+            order["delivery_status"] = MANUAL_REFUND_ERROR_STATUS
+            order["payment_status"] = "Refund Recovery Required"
+            order["refund_persistence_error"] = "Durable refund reference exists but its wallet transaction is missing; automatic credit blocked."
+            order["updated_at"] = now_dt()
+            _sync_manual_order_to_user(order)
+            try:
+                save_bot_state_strict()
+            except Exception:
+                pass
+            return {"ok": False, "error": "Refund reference exists without its transaction. Automatic retry was blocked to prevent duplicate credit.", "order": order}
+
+        # A durable/in-memory refund reference means the credit was already
+        # applied; retries only finalize persistence and never add it again.
+        if existing_tx is None:
+            user_wallet[user_id] = round(float(user_wallet.get(user_id, 0.0)) + amount, 2)
+            existing_tx = add_transaction_record(
+                user_id,
+                "Manual Order Refund",
+                amount,
+                "Completed",
+                {
+                    "order_id": order_id,
+                    "refund_reference": refund_reference,
+                    "original_wallet_transaction_id": order.get("wallet_transaction_id"),
+                    "refunded_by_admin_id": int(admin_id),
+                },
+            )
+        order["refund_transaction_id"] = existing_tx["id"]
+        existing_tx["status"] = "Completed"
+        existing_tx["updated_at"] = now_dt()
+        order["refund_transaction_reference"] = refund_reference
+        order["refunded_amount"] = amount
+        order["refunded_by_admin_id"] = int(admin_id)
+        order["refunded_at"] = order.get("refunded_at") or now_dt()
+        order["payment_status"] = "Refunded"
+        order["delivery_status"] = MANUAL_REFUNDED_STATUS
+        order["status"] = MANUAL_REFUNDED_STATUS
+        order["updated_at"] = now_dt()
+        product = PRODUCTS.get(str(order.get("product_id") or ""))
+        if not order.get("stock_restored") and isinstance(product, dict):
+            consumed_qty = max(0, int(order.get("stock_consumed_qty", order.get("qty", 0)) or 0))
+            product["display_stock"] = max(0, get_display_stock(order["product_id"])) + consumed_qty
+            order["stock_restored"] = True
+            order["stock_restored_qty"] = consumed_qty
+            order["stock_restored_at"] = now_dt()
+        _sync_transaction_to_user(existing_tx)
+        _sync_manual_order_to_user(order)
+        try:
+            save_bot_state_strict()
+        except Exception as exc:
+            order["status"] = MANUAL_REFUND_ERROR_STATUS
+            order["delivery_status"] = MANUAL_REFUND_ERROR_STATUS
+            order["payment_status"] = "Refund Persistence Unconfirmed"
+            existing_tx["status"] = "Persistence Unconfirmed"
+            existing_tx["updated_at"] = now_dt()
+            order["refund_persistence_error"] = f"{type(exc).__name__}: {exc}"[:500]
+            order["updated_at"] = now_dt()
+            _sync_transaction_to_user(existing_tx)
+            _sync_manual_order_to_user(order)
+            try:
+                save_bot_state_strict()
+            except Exception:
+                pass
+            return {"ok": False, "error": "Refund persistence could not be confirmed. The order is in an auditable recovery state; do not issue a separate refund.", "order": order}
+        return {"ok": True, "duplicate": False, "order": order, "balance": float(user_wallet.get(user_id, 0.0))}
+
+
 def set_order_status(order_obj: dict, new_status: str):
     order_obj["status"] = new_status
     order_obj["updated_at"] = now_dt()
@@ -4892,7 +5197,7 @@ def get_user_total_deposit(user_id: int) -> float:
 def get_user_total_order_spent(user_id: int) -> float:
     total = 0.0
     for order in user_orders.get(user_id, []):
-        if order["status"] == "Completed":
+        if order["status"] in {"Completed", MANUAL_DELIVERED_STATUS}:
             total += float(order["total"])
     return total
 
@@ -4900,7 +5205,7 @@ def get_user_total_order_spent(user_id: int) -> float:
 def get_user_completed_orders_count(user_id: int) -> int:
     count = 0
     for order in user_orders.get(user_id, []):
-        if order["status"] == "Completed":
+        if order["status"] in {"Completed", MANUAL_DELIVERED_STATUS}:
             count += 1
     return count
 
@@ -4908,7 +5213,7 @@ def get_user_completed_orders_count(user_id: int) -> int:
 def get_user_pending_orders_count(user_id: int) -> int:
     count = 0
     for order in user_orders.get(user_id, []):
-        if order["status"] == "Waiting Manual Confirmation":
+        if order["status"] in {"Waiting Manual Confirmation", MANUAL_AWAITING_STATUS, MANUAL_PROCESSING_STATUS}:
             count += 1
     return count
 
@@ -8227,7 +8532,9 @@ def buy_qty_keyboard(product_id: str, styled: bool = True, user_id: int = None) 
     menu_style = "danger" if styled else None
     tiers = get_bulk_pricing_tiers(PRODUCTS.get(product_id, {}))
     if tiers:
-        stock = min(get_display_stock(product_id), get_product_stock(product_id))
+        stock = get_display_stock(product_id)
+        if not is_manual_delivery_product(product_id):
+            stock = min(stock, get_product_stock(product_id))
         quick_quantities = [1] if stock >= 1 else []
         for tier in tiers:
             if tier["min_qty"] <= stock and tier["min_qty"] not in quick_quantities:
@@ -8320,6 +8627,8 @@ def admin_products_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("💲 Edit Price", callback_data="admin_edit_price_menu")],
         [InlineKeyboardButton("📅 Edit Month", callback_data="admin_edit_month_menu")],
         [InlineKeyboardButton("📝 Edit Details", callback_data="admin_edit_details_menu")],
+        [InlineKeyboardButton("🚚 Edit Delivery Type", callback_data="admin_edit_delivery_type_menu")],
+        [InlineKeyboardButton("💬 Edit Support Instructions", callback_data="admin_edit_support_menu")],
         [InlineKeyboardButton("🌐 Edit Translations", callback_data="admin_product_i18n_menu")],
         [InlineKeyboardButton("📌 Edit Delivery Guide", callback_data="admin_edit_delivery_guide_menu")],
         [InlineKeyboardButton("😀 Edit Icon", callback_data="admin_edit_icon_menu")],
@@ -8501,6 +8810,7 @@ def admin_promo_keyboard() -> InlineKeyboardMarkup:
 
 def admin_orders_keyboard() -> InlineKeyboardMarkup:
     rows = [
+        [InlineKeyboardButton("🤝 Manual Delivery Orders", callback_data="manual_fulfill_list_pending_0")],
         [InlineKeyboardButton("📋 View All Orders", callback_data="orders_view_all")],
         [InlineKeyboardButton("⏳ Pending Manual Orders", callback_data="orders_view_pending_manual")],
         [InlineKeyboardButton("✅ Completed Orders", callback_data="orders_view_completed")],
@@ -8613,6 +8923,134 @@ def admin_product_select_keyboard(action_prefix: str) -> InlineKeyboardMarkup:
         ])
     rows.append([InlineKeyboardButton("⬅️ Back", callback_data="admin_products_back")])
     return InlineKeyboardMarkup(rows)
+
+
+MANUAL_ORDERS_PAGE_SIZE = 6
+
+
+def manual_delivery_orders(status_filter: str = "pending") -> list:
+    orders = [order for order in all_orders if isinstance(order, dict) and order.get("delivery_type") == MANUAL_DELIVERY]
+    groups = {
+        "pending": {MANUAL_AWAITING_STATUS},
+        "processing": {MANUAL_PROCESSING_STATUS},
+        "delivered": {MANUAL_DELIVERED_STATUS},
+        "refunded": {MANUAL_REFUNDED_STATUS, MANUAL_REFUND_ERROR_STATUS},
+        "all": None,
+    }
+    statuses = groups.get(status_filter, groups["pending"])
+    if statuses is not None:
+        orders = [order for order in orders if order.get("status") in statuses]
+    return list(reversed(orders))
+
+
+def render_manual_orders_page(status_filter: str, page: int = 0) -> tuple:
+    orders = manual_delivery_orders(status_filter)
+    pages = max(1, (len(orders) + MANUAL_ORDERS_PAGE_SIZE - 1) // MANUAL_ORDERS_PAGE_SIZE)
+    page = max(0, min(int(page), pages - 1))
+    title = status_filter.replace("_", " ").title()
+    return (
+        "🤝 <b>MANUAL DELIVERY ORDERS</b>\n\n"
+        f"Filter: <b>{escape_html(title)}</b>\n"
+        f"Orders: <b>{len(orders)}</b> | Page <b>{page + 1}/{pages}</b>",
+        orders,
+        page,
+        pages,
+    )
+
+
+def manual_orders_page_keyboard(status_filter: str, page: int = 0) -> InlineKeyboardMarkup:
+    _, orders, page, pages = render_manual_orders_page(status_filter, page)
+    start = page * MANUAL_ORDERS_PAGE_SIZE
+    rows = []
+    for order in orders[start:start + MANUAL_ORDERS_PAGE_SIZE]:
+        rows.append([InlineKeyboardButton(
+            f"#{order['id']} {order.get('product', 'Product')} • {format_money(order.get('original_amount_paid', order.get('total', 0)))}",
+            callback_data=f"manual_fulfill_view_{order['id']}_{status_filter}_{page}",
+        )])
+    rows.extend([
+        [
+            InlineKeyboardButton("⏳ Pending", callback_data="manual_fulfill_list_pending_0"),
+            InlineKeyboardButton("⚙️ Processing", callback_data="manual_fulfill_list_processing_0"),
+        ],
+        [
+            InlineKeyboardButton("✅ Delivered", callback_data="manual_fulfill_list_delivered_0"),
+            InlineKeyboardButton("❌ Refunded", callback_data="manual_fulfill_list_refunded_0"),
+        ],
+        [InlineKeyboardButton("📋 All Manual Order History", callback_data="manual_fulfill_list_all_0")],
+    ])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"manual_fulfill_list_{status_filter}_{page - 1}"))
+    if page + 1 < pages:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"manual_fulfill_list_{status_filter}_{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton("⬅️ Orders Admin", callback_data="orders_back")])
+    return InlineKeyboardMarkup(rows)
+
+
+def render_manual_order_admin_detail(order: dict) -> str:
+    profile = user_profiles.get(order.get("user_id"), {})
+    username = profile.get("username") or "No username"
+    refund_line = ""
+    if order.get("refund_transaction_reference"):
+        refund_line = f"\nRefund Reference: <code>{escape_html(order['refund_transaction_reference'])}</code>"
+    return (
+        "🤝 <b>MANUAL ORDER DETAILS</b>\n\n"
+        f"Order ID: <b>#{order.get('id')}</b>\n"
+        f"Customer ID: <code>{order.get('user_id')}</code>\n"
+        f"Username: @{escape_html(str(username).lstrip('@'))}\n"
+        f"Product: <b>{escape_html(order.get('product', 'N/A'))}</b>\n"
+        f"Quantity: {order.get('qty', 1)}\n"
+        f"Original Amount Paid: <b>{format_money(order.get('original_amount_paid', order.get('total', 0)))}</b>\n"
+        f"Date/Time: {escape_html(format_dt(order.get('created_at')))}\n"
+        f"Payment Status: <b>{escape_html(order.get('payment_status', 'N/A'))}</b>\n"
+        f"Fulfillment Status: <b>{escape_html(order.get('status', 'N/A'))}</b>\n"
+        f"Wallet Transaction: <code>{escape_html(order.get('wallet_transaction_reference', 'N/A'))}</code>"
+        f"{refund_line}"
+    )
+
+
+def manual_order_fulfillment_keyboard(order: dict, status_filter: str, page: int) -> InlineKeyboardMarkup:
+    rows = []
+    status = order.get("status")
+    if status == MANUAL_AWAITING_STATUS:
+        rows.append([InlineKeyboardButton("⚙️ Mark Processing", callback_data=f"manual_fulfill_processing_{order['id']}")])
+    if status in {MANUAL_AWAITING_STATUS, MANUAL_PROCESSING_STATUS}:
+        rows.append([InlineKeyboardButton("✅ Mark Delivered", callback_data=f"manual_fulfill_delivered_{order['id']}")])
+        rows.append([InlineKeyboardButton("❌ Cancel Order & Auto Refund", callback_data=f"manual_fulfill_cancel_{order['id']}")])
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data=f"manual_fulfill_list_{status_filter}_{page}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def delivery_type_keyboard(prefix: str, back_callback: str = "admin_products_back") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚡ Automatic Delivery", callback_data=f"{prefix}_automatic")],
+        [InlineKeyboardButton("🤝 Manual Delivery", callback_data=f"{prefix}_manual")],
+        [InlineKeyboardButton("⬅️ Back", callback_data=back_callback)],
+    ])
+
+
+def manual_purchase_confirm_keyboard(nonce: str, user_id: int = None) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Confirm Wallet Purchase", callback_data=f"manual_buy_confirm_{nonce}")],
+        [InlineKeyboardButton(f"⬅️ {t(user_id, 'back')}", callback_data="back_shop_cards")],
+    ])
+
+
+def manual_purchase_success_keyboard(user_id: int = None, order: dict = None) -> InlineKeyboardMarkup:
+    support_url = SUPPORT_URL
+    if isinstance(order, dict):
+        support_message = (
+            f"Manual order #{order.get('id')} | {order.get('product', 'Product')} | "
+            f"Purchase reference: {order.get('purchase_reference', 'N/A')}"
+        )
+        support_url = f"{SUPPORT_URL}?text={quote(support_message)}"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💬 Contact Support", url=support_url)],
+        [InlineKeyboardButton("📦 My Orders", callback_data="user_orders_page_0")],
+        [InlineKeyboardButton("🏠 Main Menu", callback_data="user_back_to_dashboard")],
+    ])
 
 
 def sales_reports_keyboard() -> InlineKeyboardMarkup:
@@ -9106,6 +9544,10 @@ def format_order_status(status) -> str:
         "pending_manual_delivery": "Pending Manual Delivery",
         "pending_auto": "Pending Auto",
         "processing": "Processing",
+        "awaiting_manual_delivery": "Awaiting Manual Delivery",
+        "delivered": "Delivered",
+        "cancelled_refunded": "Cancelled & Refunded",
+        "cancellation_refund_persistence_error": "Refund Persistence Error",
         "rejected": "Rejected",
         "cancelled": "Cancelled",
         "canceled": "Cancelled",
@@ -9116,8 +9558,14 @@ def format_order_status(status) -> str:
 
 def localized_order_status(user_id: int, status) -> str:
     normalized = str(status or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized == "delivered":
+        return "Delivered"
     if normalized == "completed":
         return t(user_id, "completed")
+    if normalized == "awaiting_manual_delivery":
+        return "Awaiting Manual Delivery"
+    if normalized == "cancelled_refunded":
+        return "Cancelled & Refunded"
     if normalized in {"pending", "pending_manual", "pending_support", "pending_manual_delivery", "pending_auto"}:
         return t(user_id, "pending")
     if normalized == "processing":
@@ -9168,6 +9616,7 @@ def _order_price_type(order: dict) -> str:
 
 def _order_payment_reference(order: dict) -> str:
     reference_keys = (
+        "wallet_transaction_reference",
         "payment_reference",
         "transaction_reference",
         "transaction_id",
@@ -9274,6 +9723,20 @@ def render_user_order_details(user_id: int, order_id) -> str:
         if delivered_lines
         else f"🔐 <b>{t(user_id, 'account_details')}:</b> N/A"
     )
+    refund_section = ""
+    if order.get("refund_transaction_reference"):
+        refund_section = (
+            f"\n<b>Refunded:</b> {format_money(order.get('refunded_amount', 0))}\n"
+            f"<b>Refund Reference:</b> <code>{value(order.get('refund_transaction_reference'))}</code>\n"
+        )
+    manual_section = ""
+    if order.get("delivery_type") == MANUAL_DELIVERY:
+        instructions = str(order.get("support_instructions") or "").strip()
+        manual_section = (
+            "\n🤝 <b>Manual Delivery:</b> Contact Support with this Order ID."
+            + (f"\n{escape_html(instructions)}" if instructions else "")
+            + "\n"
+        )
     return (
         f"📦 <b>{t(user_id, 'order_details').upper()}</b>\n\n"
         f"<b>{t(user_id, 'order_id')}:</b> #{value(order.get('id'))}\n"
@@ -9286,15 +9749,25 @@ def render_user_order_details(user_id: int, order_id) -> str:
         f"<b>{t(user_id, 'status')}:</b> {value(localized_order_status(user_id, order.get('status')))}\n"
         f"<b>{t(user_id, 'date_time')}:</b> {value(_order_date_text(order))}\n"
         f"<b>{t(user_id, 'payment_reference')}:</b> <code>{value(_order_payment_reference(order))}</code>\n\n"
+        f"{refund_section}{manual_section}"
         f"{delivered_section}\n\n"
         f"{details_section}"
     )
 
 
-def user_order_details_keyboard(page: int = 0, user_id: int = None) -> InlineKeyboardMarkup:
+def user_order_details_keyboard(page: int = 0, user_id: int = None, order: dict = None) -> InlineKeyboardMarkup:
     page = max(0, page)
+    support_url = SUPPORT_URL
+    if isinstance(order, dict):
+        reference = _order_payment_reference(order) or order.get("purchase_reference") or "N/A"
+        support_message = (
+            f"Order #{order.get('id')} | {order.get('product', 'Product')} | "
+            f"Payment reference: {reference}"
+        )
+        separator = "&" if "?" in SUPPORT_URL else "?"
+        support_url = f"{SUPPORT_URL}{separator}text={quote(support_message)}"
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"💬 {t(user_id, 'contact_support')}", url=SUPPORT_URL)],
+        [InlineKeyboardButton(f"💬 {t(user_id, 'contact_support')}", url=support_url)],
         [InlineKeyboardButton(f"⬅️ {t(user_id, 'back_to_orders')}", callback_data=f"user_orders_page_{page}")],
         [InlineKeyboardButton(f"🏠 {t(user_id, 'back_to_menu')}", callback_data="user_back_to_dashboard")],
     ])
@@ -9406,13 +9879,22 @@ def render_product_details(product_id: str, user_id: int = None) -> str:
     duration_line = f"<b>{t(user_id, 'duration')}:</b> {duration}\n" if duration else ""
     bulk_offers = render_bulk_pricing_offers(product, user_id)
     bulk_section = f"{bulk_offers}\n\n" if bulk_offers else ""
+    manual_notice = ""
+    if is_manual_delivery_product(product):
+        instructions = str(product.get("support_instructions") or "").strip()
+        instruction_line = f"\n{escape_html(instructions)}" if instructions else ""
+        manual_notice = (
+            "\n🤝 <b>Manual Delivery</b>\n"
+            "This product is delivered manually after payment. Please contact Support with your Order ID."
+            f"{instruction_line}\n"
+        )
     return (
         f"📦 <b>{t(user_id, 'product_details')}</b>\n\n"
         f"<b>{t(user_id, 'name')}:</b> {escape_html(localized_product_name(product, user_id))}\n"
         f"{duration_line}"
         f"<b>{t(user_id, 'price')}:</b> {format_product_price_for_user(product_id, user_id)}\n"
         f"<b>{t(user_id, 'stock')}:</b> {stock} {t(user_id, 'pcs')}\n\n"
-        f"{detail_lines}\n\n"
+        f"{detail_lines}\n{manual_notice}\n"
         f"{bulk_section}"
         f"<b>{t(user_id, 'choose_quantity')}:</b>"
     )
@@ -9421,6 +9903,10 @@ def render_buy_summary(product_id: str, qty: int, wallet_balance: float, user_id
     product = PRODUCTS[product_id]
     unit_price, total = calculate_order_total(product_id, qty, user_id)
     remaining = wallet_balance - total
+    manual_checkout_note = (
+        "🤝 <b>Manual Delivery:</b> Delivery is not instant. Contact Support with the Order ID after payment.\n"
+        if is_manual_delivery_product(product) else ""
+    )
     if wallet_balance >= total:
         return (
             f"🛒 <b>{t(user_id, 'order_summary').upper()}</b>\n\n"
@@ -9431,6 +9917,7 @@ def render_buy_summary(product_id: str, qty: int, wallet_balance: float, user_id
             f"<b>{t(user_id, 'wallet')}:</b> {format_money(wallet_balance)}\n"
             f"<b>{t(user_id, 'remaining_balance')}:</b> {format_money(remaining)}\n\n"
             f"✅ <b>{t(user_id, 'enough_balance')}</b>\n"
+            f"{manual_checkout_note}"
             f"{t(user_id, 'checkout_wallet_note')}"
         )
 
@@ -9521,7 +10008,8 @@ def render_admin_products_list() -> str:
             f"Month: {product['month']}\n"
             f"Price: {format_money(product['price'])}\n"
             f"Display Stock: {get_display_stock(product_id)} pcs\n"
-            f"Real Stock: {get_product_stock(product_id)} pcs"
+            f"Real Stock: {get_product_stock(product_id)} pcs\n"
+            f"Delivery: <b>{'Manual Delivery' if is_manual_delivery_product(product) else 'Automatic Delivery'}</b>"
         )
     return "\n".join(lines)
 
@@ -9581,7 +10069,10 @@ def render_admin_add_product_preview(user_id: int) -> str:
         f"<b>Name:</b> {temp.get('name', '')}\n"
         f"<b>Month:</b> {temp.get('month', '')}\n"
         f"<b>Price:</b> {format_money(float(temp.get('price', 0)))}\n"
-        f"<b>Display Stock:</b> {int(temp.get('display_stock', 0))}\n\n"
+        f"<b>Category:</b> {escape_html(CATEGORIES.get(temp.get('category_id'), {}).get('name', DEFAULT_CATEGORY_NAME))}\n"
+        f"<b>Delivery:</b> {'Manual Delivery' if temp.get('delivery_type') == MANUAL_DELIVERY else 'Automatic Delivery'}\n"
+        f"<b>Display Stock:</b> {int(temp.get('display_stock', 0))}\n"
+        f"<b>Support Instructions:</b> {escape_html(temp.get('support_instructions') or 'Default support link')}\n\n"
         f"<b>Details:</b>\n{details_text}\n\n"
         "Confirm add product?"
     )
@@ -9882,8 +10373,8 @@ def render_analytics() -> str:
     total_users = len(all_users)
     total_wallet_balance = sum(user_wallet.values()) if user_wallet else 0.0
 
-    completed_orders = [o for o in all_orders if o["status"] == "Completed"]
-    pending_orders = [o for o in all_orders if o["status"] == "Waiting Manual Confirmation"]
+    completed_orders = [o for o in all_orders if o["status"] in {"Completed", MANUAL_DELIVERED_STATUS}]
+    pending_orders = [o for o in all_orders if o["status"] in {"Waiting Manual Confirmation", MANUAL_AWAITING_STATUS, MANUAL_PROCESSING_STATUS}]
 
     completed_deposits = [t for t in all_transactions if t["type"] == "Deposit" and t["status"] == "Completed"]
     pending_deposits = [t for t in all_transactions if t["type"] == "Deposit" and t["status"] == "Waiting Manual Confirmation"]
@@ -9924,7 +10415,7 @@ SALES_REPORT_COMPLETED_STATUSES = {
 }
 SALES_REPORT_PENDING_STATUSES = {
     "pending_support", "pending_manual_delivery", "paid_pending_support",
-    "activation_processing", "pending_activation",
+    "activation_processing", "pending_activation", "awaiting_manual_delivery", "processing",
 }
 def render_sales_reports_panel() -> str:
     return (
@@ -13445,6 +13936,95 @@ async def handle_category_icon_message(update: Update, user_id: int, step: str) 
     return True
 
 
+async def notify_admin_manual_order(bot, order: dict):
+    profile = user_profiles.get(order.get("user_id"), {})
+    username = profile.get("username") or "No username"
+    text = (
+        "🤝 <b>NEW PAID MANUAL ORDER</b>\n\n"
+        f"<b>Order ID:</b> #{order['id']}\n"
+        f"<b>Customer:</b> <code>{order['user_id']}</code> (@{escape_html(str(username).lstrip('@'))})\n"
+        f"<b>Product:</b> {escape_html(order['product'])}\n"
+        f"<b>Quantity:</b> {order['qty']}\n"
+        f"<b>Amount Paid:</b> {format_money(order['original_amount_paid'])}\n"
+        f"<b>Status:</b> {MANUAL_AWAITING_STATUS}\n"
+        f"<b>Wallet Reference:</b> <code>{escape_html(order['wallet_transaction_reference'])}</code>\n\n"
+        "No product credentials are included. Fulfil through Support."
+    )
+    notified_count = 0
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, text, parse_mode="HTML")
+            notified_count += 1
+        except Exception as exc:
+            print(f"Manual order admin notification failed safely: {type(exc).__name__}")
+    return notified_count
+
+
+async def ensure_manual_order_admin_notification(bot, order: dict) -> None:
+    notification_key = str(order.get("id"))
+    with manual_order_lock:
+        if order.get("admin_notification_sent_at") or notification_key in manual_admin_notification_in_progress:
+            return
+        manual_admin_notification_in_progress.add(notification_key)
+    try:
+        notified_count = await notify_admin_manual_order(bot, order)
+        if not notified_count:
+            return
+        with manual_order_lock, topup_credit_lock:
+            order["admin_notification_sent_at"] = now_dt()
+            order["admin_notification_count"] = int(notified_count)
+            order["updated_at"] = now_dt()
+            _sync_manual_order_to_user(order)
+            try:
+                save_bot_state_strict()
+            except Exception as exc:
+                order["admin_notification_persistence_error"] = f"{type(exc).__name__}: {exc}"[:500]
+    finally:
+        with manual_order_lock:
+            manual_admin_notification_in_progress.discard(notification_key)
+
+
+async def process_manual_wallet_purchase(query, context, user_id: int, nonce: str):
+    state = user_state.get(user_id, {})
+    if state.get("step") != "manual_purchase_confirm" or state.get("manual_purchase_nonce") != nonce:
+        existing = _manual_order_by_purchase_reference(f"manual-wallet:{user_id}:{nonce}")
+        if existing and existing.get("status") != "Payment Persistence Error":
+            await ensure_manual_order_admin_notification(context.bot, existing)
+            await send_inline_from_callback(
+                query,
+                f"✅ <b>Payment already received.</b>\n\nOrder ID: <b>#{existing['id']}</b>\nStatus: ⏳ {escape_html(existing['status'])}",
+                manual_purchase_success_keyboard(user_id, existing),
+            )
+        else:
+            await send_inline_from_callback(query, "❌ This purchase confirmation has expired.", user_back_to_menu_keyboard(user_id=user_id))
+        return False
+    product_id = state.get("product_id")
+    qty = state.get("qty")
+    reference = f"manual-wallet:{user_id}:{nonce}"
+    result = create_paid_manual_order(user_id, product_id, qty, reference, expected_total=state.get("expected_total"))
+    user_state[user_id] = {"step": "main"}
+    if not result.get("ok"):
+        await send_inline_from_callback(
+            query,
+            f"❌ <b>Purchase not completed.</b>\n\n{escape_html(result.get('error', 'Please contact Support.'))}\nReference: <code>{escape_html(reference)}</code>",
+            user_back_to_menu_keyboard(user_id=user_id),
+        )
+        return False
+    order = result["order"]
+    await ensure_manual_order_admin_notification(context.bot, order)
+    await send_inline_from_callback(
+        query,
+        "✅ <b>Payment Successful!</b>\n\n"
+        f"<b>Product:</b> {escape_html(order['product'])}\n"
+        f"<b>Order ID:</b> #{order['id']}\n"
+        f"<b>Amount Paid:</b> {format_money(order['original_amount_paid'])}\n"
+        f"<b>Status:</b> ⏳ {MANUAL_AWAITING_STATUS}\n\n"
+        "Your payment has been received. This product requires manual delivery. Please contact our support team with your Order ID.",
+        manual_purchase_success_keyboard(user_id, order),
+    )
+    return True
+
+
 async def handle_dashboard_emoji_message(update: Update, user_id: int) -> bool:
     if not is_admin(user_id):
         return False
@@ -14081,9 +14661,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if step == "admin_add_product_name":
         admin_temp[user_id]["name"] = text
-        user_state[user_id] = {"step": "admin_add_product_month"}
-        await update.message.reply_text("🆕 <b>Add Product</b>\n\nNow send product month.", reply_markup=admin_menu(), parse_mode="HTML")
-        await update.message.reply_text("Cancel if needed.", reply_markup=admin_cancel_keyboard(), parse_mode="HTML")
+        user_state[user_id] = {"step": "admin_add_product_category"}
+        await update.message.reply_text(
+            "🆕 <b>Add Product</b>\n\nSelect the product category.",
+            reply_markup=category_select_keyboard("admin_add_category"),
+            parse_mode="HTML",
+        )
         return
 
     if step == "admin_add_product_month":
@@ -14131,6 +14714,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ <b>Please send at least one detail line.</b>", parse_mode="HTML")
             return
         admin_temp[user_id]["details"] = details
+        if admin_temp[user_id].get("delivery_type") == MANUAL_DELIVERY:
+            user_state[user_id] = {"step": "admin_add_product_support"}
+            await update.message.reply_text(
+                "💬 <b>Optional Support Instructions</b>\n\nSend custom instructions, or send <code>skip</code> to use the normal Support link.",
+                reply_markup=admin_cancel_keyboard(),
+                parse_mode="HTML",
+            )
+        else:
+            admin_temp[user_id]["support_instructions"] = ""
+            user_state[user_id] = {"step": "admin_add_product_confirm"}
+            await update.message.reply_text(render_admin_add_product_preview(user_id), reply_markup=admin_confirm_add_product_keyboard(), parse_mode="HTML")
+        return
+
+    if step == "admin_add_product_support":
+        admin_temp[user_id]["support_instructions"] = "" if text.strip().casefold() == "skip" else text.strip()
         user_state[user_id] = {"step": "admin_add_product_confirm"}
         await update.message.reply_text(render_admin_add_product_preview(user_id), reply_markup=admin_confirm_add_product_keyboard(), parse_mode="HTML")
         return
@@ -14271,6 +14869,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💸 Minimum quantity: <b>{int(min_qty)}+</b>\n\nNow send the unit price.",
             parse_mode="HTML",
         )
+        return
+
+    if step == "admin_edit_support_input":
+        product_id = admin_temp.get(user_id, {}).get("selected_product_id")
+        if product_id not in PRODUCTS or not is_manual_delivery_product(product_id):
+            reset_admin_temp(user_id)
+            await update.message.reply_text("❌ Manual product not found.", reply_markup=admin_products_keyboard())
+            return
+        PRODUCTS[product_id]["support_instructions"] = "" if text.strip().casefold() == "clear" else text.strip()
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "admin_products"}
+        await update.message.reply_text("✅ <b>Support instructions updated.</b>", reply_markup=admin_products_keyboard(), parse_mode="HTML")
         return
 
     if step == "admin_bulk_unit_price_input":
@@ -14701,6 +15311,31 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML",
             )
             return
+        if is_manual_delivery_product(product_id):
+            if user_wallet[user_id] < total:
+                await update.message.reply_text(
+                    render_buy_summary(product_id, qty, user_wallet[user_id], user_id),
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton(f"💳 {t(user_id, 'top_up')}", callback_data="user_dashboard_topup")],
+                        [InlineKeyboardButton(f"⬅️ {t(user_id, 'back')}", callback_data="back_shop_cards")],
+                    ]),
+                    parse_mode="HTML",
+                )
+                return
+            nonce = secrets.token_urlsafe(9)
+            user_state[user_id] = {
+                "step": "manual_purchase_confirm",
+                "product_id": product_id,
+                "qty": qty,
+                "expected_total": total,
+                "manual_purchase_nonce": nonce,
+            }
+            await update.message.reply_text(
+                render_buy_summary(product_id, qty, user_wallet[user_id], user_id),
+                reply_markup=manual_purchase_confirm_keyboard(nonce, user_id),
+                parse_mode="HTML",
+            )
+            return
         if user_wallet[user_id] >= total:
             await process_wallet_purchase(update, context, user_id, product_id, qty, total)
             user_state[user_id] = {"step": "main"}
@@ -14901,6 +15536,29 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ensure_user(user_id, query.from_user)
 
     if data == "noop":
+        return
+
+    if data.startswith("manual_fulfill_") and not is_admin(user_id):
+        await send_inline_from_callback(query, "❌ <b>You are not allowed.</b>", close_keyboard())
+        return
+
+    phase14_product_admin_callback = (
+        data in {
+            "admin_add_product",
+            "admin_confirm_add_product",
+            "admin_edit_delivery_type_menu",
+            "admin_edit_support_menu",
+        }
+        or data.startswith((
+            "admin_add_delivery_",
+            "admin_add_category_",
+            "admin_pick_delivery_type_",
+            "admin_set_delivery_",
+            "admin_pick_support_",
+        ))
+    )
+    if phase14_product_admin_callback and not is_admin(user_id):
+        await send_inline_from_callback(query, "❌ <b>You are not allowed.</b>", close_keyboard())
         return
 
     # ========= ADMIN SALES REPORTS =========
@@ -16440,12 +17098,35 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "admin_add_product":
         reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "admin_add_product_delivery_type"}
+        await send_inline_from_callback(
+            query,
+            "🆕 <b>Add Product</b>\n\nFirst choose the delivery type. Existing products default to Automatic Delivery.",
+            delivery_type_keyboard("admin_add_delivery"),
+        )
+        return
+
+    if data.startswith("admin_add_delivery_"):
+        delivery_type = data.replace("admin_add_delivery_", "", 1)
+        if delivery_type not in {AUTOMATIC_DELIVERY, MANUAL_DELIVERY}:
+            return
+        admin_temp[user_id]["delivery_type"] = delivery_type
         user_state[user_id] = {"step": "admin_add_product_icon"}
         await send_inline_from_callback(
             query,
-            "🆕 <b>Add Product</b>\n\nFirst send product icon/emoji.\nExample: 📊",
+            "🆕 <b>Add Product</b>\n\nSend product icon/emoji.\nExample: 📊",
             admin_cancel_keyboard(),
         )
+        return
+
+    if data.startswith("admin_add_category_"):
+        category_id = data.replace("admin_add_category_", "", 1)
+        if category_id not in CATEGORIES:
+            await send_inline_from_callback(query, "❌ Category not found.", admin_products_keyboard())
+            return
+        admin_temp[user_id]["category_id"] = category_id
+        user_state[user_id] = {"step": "admin_add_product_month"}
+        await send_inline_from_callback(query, "🆕 <b>Add Product</b>\n\nNow send product duration/month (or N/A).", admin_cancel_keyboard())
         return
 
     if data == "admin_edit_name_menu":
@@ -16488,6 +17169,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reset_admin_temp(user_id)
         user_state[user_id] = {"step": "admin_edit_display_stock_pick"}
         await send_inline_from_callback(query, "📦 <b>Edit Display Stock</b>\n\nSelect a product below.", admin_product_select_keyboard("admin_pick_display_stock"))
+        return
+
+    if data == "admin_edit_delivery_type_menu":
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "admin_edit_delivery_type_pick"}
+        await send_inline_from_callback(query, "🚚 <b>Edit Delivery Type</b>\n\nSelect a product.", admin_product_select_keyboard("admin_pick_delivery_type"))
+        return
+
+    if data == "admin_edit_support_menu":
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "admin_edit_support_pick"}
+        await send_inline_from_callback(query, "💬 <b>Edit Support Instructions</b>\n\nSelect a manual product.", admin_product_select_keyboard("admin_pick_support"))
         return
 
     if data == "admin_product_i18n_menu":
@@ -17070,6 +17763,45 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_inline_from_callback(query, f"↕️ <b>Reorder Product</b>\n\nSelected: {PRODUCTS[product_id]['name']}", admin_reorder_selected_keyboard(product_id))
         return
 
+    if data.startswith("admin_pick_delivery_type_"):
+        product_id = data.replace("admin_pick_delivery_type_", "", 1)
+        if product_id not in PRODUCTS:
+            return
+        admin_temp[user_id]["selected_product_id"] = product_id
+        user_state[user_id] = {"step": "admin_edit_delivery_type"}
+        await send_inline_from_callback(
+            query,
+            f"🚚 <b>Edit Delivery Type</b>\n\nProduct: <b>{escape_html(PRODUCTS[product_id]['name'])}</b>\nCurrent: <b>{'Manual Delivery' if is_manual_delivery_product(product_id) else 'Automatic Delivery'}</b>",
+            delivery_type_keyboard("admin_set_delivery"),
+        )
+        return
+
+    if data.startswith("admin_set_delivery_"):
+        delivery_type = data.replace("admin_set_delivery_", "", 1)
+        product_id = admin_temp.get(user_id, {}).get("selected_product_id")
+        if product_id not in PRODUCTS or delivery_type not in {AUTOMATIC_DELIVERY, MANUAL_DELIVERY}:
+            return
+        PRODUCTS[product_id]["delivery_type"] = delivery_type
+        if delivery_type == MANUAL_DELIVERY:
+            PRODUCTS[product_id].setdefault("support_instructions", "")
+        reset_admin_temp(user_id)
+        await send_inline_from_callback(query, "✅ <b>Delivery type updated.</b>", admin_products_keyboard())
+        return
+
+    if data.startswith("admin_pick_support_"):
+        product_id = data.replace("admin_pick_support_", "", 1)
+        if product_id not in PRODUCTS or not is_manual_delivery_product(product_id):
+            await send_inline_from_callback(query, "❌ Select a Manual Delivery product.", admin_products_keyboard())
+            return
+        admin_temp[user_id]["selected_product_id"] = product_id
+        user_state[user_id] = {"step": "admin_edit_support_input"}
+        await send_inline_from_callback(
+            query,
+            "💬 <b>Edit Support Instructions</b>\n\nSend the new instructions, or <code>clear</code> to use the normal Support link.",
+            admin_cancel_keyboard(),
+        )
+        return
+
     if data.startswith("admin_pick_api_reorder_"):
         mapping = find_api_shop_mapping(data.replace("admin_pick_api_reorder_", "", 1))
         if not mapping:
@@ -17124,7 +17856,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "name": temp["name"],
             "icon": temp.get("icon", "📦"),
             "icon_custom_emoji_id": temp.get("icon_custom_emoji_id"),
-            "category_id": DEFAULT_CATEGORY_ID,
+            "category_id": temp.get("category_id", DEFAULT_CATEGORY_ID),
+            "delivery_type": temp.get("delivery_type", AUTOMATIC_DELIVERY),
+            "support_instructions": str(temp.get("support_instructions") or ""),
             "month": temp["month"],
             "price": float(temp["price"]),
             "details": list(temp["details"]),
@@ -17458,11 +18192,119 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_user_orders_message(
             query,
             render_user_order_details(user_id, order_id),
-            user_order_details_keyboard(page, user_id),
+            user_order_details_keyboard(page, user_id, order),
         )
         return
 
     # ========= ORDERS ADMIN =========
+    if data.startswith("manual_fulfill_list_"):
+        match = re.fullmatch(r"manual_fulfill_list_(pending|processing|delivered|refunded|all)_(\d+)", data)
+        if not match:
+            return
+        status_filter, page_text = match.groups()
+        text, _, page, _ = render_manual_orders_page(status_filter, int(page_text))
+        await send_inline_from_callback(query, text, manual_orders_page_keyboard(status_filter, page))
+        return
+
+    if data.startswith("manual_fulfill_view_"):
+        match = re.fullmatch(r"manual_fulfill_view_(\d+)_(pending|processing|delivered|refunded|all)_(\d+)", data)
+        if not match:
+            return
+        order_id, status_filter, page = int(match.group(1)), match.group(2), int(match.group(3))
+        order = find_order_by_id(order_id)
+        if not order or order.get("delivery_type") != MANUAL_DELIVERY:
+            await send_inline_from_callback(query, "❌ Manual order not found.", admin_orders_keyboard())
+            return
+        await send_inline_from_callback(query, render_manual_order_admin_detail(order), manual_order_fulfillment_keyboard(order, status_filter, page))
+        return
+
+    if data.startswith("manual_fulfill_processing_") or data.startswith("manual_fulfill_delivered_"):
+        delivered = data.startswith("manual_fulfill_delivered_")
+        order_id = int(data.rsplit("_", 1)[1])
+        new_status = MANUAL_DELIVERED_STATUS if delivered else MANUAL_PROCESSING_STATUS
+        ok, message = update_manual_order_status(order_id, new_status, user_id)
+        order = find_order_by_id(order_id)
+        if ok and order:
+            try:
+                await context.bot.send_message(
+                    order["user_id"],
+                    f"📦 <b>Order Update</b>\n\nOrder ID: <b>#{order_id}</b>\nProduct: {escape_html(order['product'])}\nStatus: <b>{new_status}</b>",
+                    parse_mode="HTML",
+                    reply_markup=user_order_details_keyboard(0, order["user_id"], order),
+                )
+            except Exception as exc:
+                print(f"Manual order status notification failed safely: {type(exc).__name__}")
+        await send_inline_from_callback(query, ("✅ " if ok else "❌ ") + f"<b>{escape_html(message)}</b>", manual_orders_page_keyboard("processing" if not delivered else "delivered", 0))
+        return
+
+    if data.startswith("manual_fulfill_cancel_"):
+        order_id = int(data.rsplit("_", 1)[1])
+        order = find_order_by_id(order_id)
+        if not order or order.get("delivery_type") != MANUAL_DELIVERY:
+            await send_inline_from_callback(query, "❌ Manual order not found.", admin_orders_keyboard())
+            return
+        if order.get("status") == MANUAL_DELIVERED_STATUS:
+            await send_inline_from_callback(query, "❌ Delivered orders cannot be cancelled through this flow.", admin_orders_keyboard())
+            return
+        amount = order.get("original_amount_paid", order.get("total", 0))
+        await send_inline_from_callback(
+            query,
+            "⚠️ <b>CONFIRM CANCELLATION & AUTOMATIC REFUND</b>\n\n"
+            f"Order ID: <b>#{order_id}</b>\nProduct: {escape_html(order.get('product', 'N/A'))}\n"
+            f"Exact refund to original Telegram wallet: <b>{format_money(amount)}</b>\n\n"
+            "This action is idempotent; repeated confirmation cannot credit twice.",
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Confirm Refund", callback_data=f"manual_fulfill_refund_{order_id}")],
+                [InlineKeyboardButton("⬅️ Back", callback_data=f"manual_fulfill_view_{order_id}_all_0")],
+            ]),
+        )
+        return
+
+    if data.startswith("manual_fulfill_refund_"):
+        order_id = int(data.rsplit("_", 1)[1])
+        result = cancel_manual_order_with_refund(order_id, user_id)
+        order = result.get("order") or find_order_by_id(order_id)
+        if result.get("ok") and order:
+            notification_key = str(order.get("id"))
+            with manual_order_lock:
+                should_notify_customer = (
+                    not order.get("refund_customer_notified_at")
+                    and notification_key not in manual_refund_notification_in_progress
+                )
+                if should_notify_customer:
+                    manual_refund_notification_in_progress.add(notification_key)
+            if should_notify_customer:
+                try:
+                    await context.bot.send_message(
+                    order["user_id"],
+                    "❌ <b>Order Cancelled</b>\n\n"
+                    f"<b>Order ID:</b> #{order['id']}\n"
+                    f"<b>Product:</b> {escape_html(order['product'])}\n"
+                    f"<b>Refunded:</b> {format_money(order['refunded_amount'])}\n"
+                    f"<b>New Wallet Balance:</b> {format_money(result['balance'])}\n\n"
+                    "Your order has been cancelled. The full payment has been returned to your wallet.",
+                    parse_mode="HTML",
+                    reply_markup=manual_purchase_success_keyboard(order["user_id"]),
+                    )
+                    with manual_order_lock, topup_credit_lock:
+                        order["refund_customer_notified_at"] = now_dt()
+                        order["updated_at"] = now_dt()
+                        _sync_manual_order_to_user(order)
+                        try:
+                            save_bot_state_strict()
+                        except Exception as exc:
+                            order["refund_notification_persistence_error"] = f"{type(exc).__name__}: {exc}"[:500]
+                except Exception as exc:
+                    print(f"Manual refund customer notification failed safely: {type(exc).__name__}")
+                finally:
+                    with manual_order_lock:
+                        manual_refund_notification_in_progress.discard(notification_key)
+            message = "Refund completed exactly once." if not result.get("duplicate") else "Order was already refunded; no additional credit was made."
+            await send_inline_from_callback(query, f"✅ <b>{escape_html(message)}</b>\n\n{render_manual_order_admin_detail(order)}", manual_orders_page_keyboard("refunded", 0))
+        else:
+            await send_inline_from_callback(query, f"❌ <b>{escape_html(result.get('error', 'Refund failed safely.'))}</b>", admin_orders_keyboard())
+        return
+
     if data == "orders_close":
         await send_inline_from_callback(query, "Closed orders panel.", close_keyboard())
         return
@@ -18062,6 +18904,31 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 buy_qty_keyboard(product_id, styled=False, user_id=user_id),
             )
             return
+        if is_manual_delivery_product(product_id):
+            if user_wallet[user_id] < total:
+                await send_inline_from_callback(
+                    query,
+                    render_buy_summary(product_id, qty, user_wallet[user_id], user_id),
+                    InlineKeyboardMarkup([
+                        [InlineKeyboardButton(f"💳 {t(user_id, 'top_up')}", callback_data="user_dashboard_topup")],
+                        [InlineKeyboardButton(f"⬅️ {t(user_id, 'back')}", callback_data="back_shop_cards")],
+                    ]),
+                )
+                return
+            nonce = secrets.token_urlsafe(9)
+            user_state[user_id] = {
+                "step": "manual_purchase_confirm",
+                "product_id": product_id,
+                "qty": qty,
+                "expected_total": total,
+                "manual_purchase_nonce": nonce,
+            }
+            await send_inline_from_callback(
+                query,
+                render_buy_summary(product_id, qty, user_wallet[user_id], user_id),
+                manual_purchase_confirm_keyboard(nonce, user_id),
+            )
+            return
         if user_wallet[user_id] >= total:
             await process_wallet_purchase(query, context, user_id, product_id, qty, total)
             user_state[user_id] = {"step": "main"}
@@ -18092,6 +18959,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Bybit payment is currently unavailable. Please use another payment method.",
             reply_markup,
         )
+        return
+
+    if data.startswith("manual_buy_confirm_"):
+        nonce = data.replace("manual_buy_confirm_", "", 1)
+        await process_manual_wallet_purchase(query, context, user_id, nonce)
         return
 
     if data == "buy_method_crypto":
