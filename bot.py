@@ -559,6 +559,9 @@ user_transactions = {}
 used_promo_codes = {}
 user_state = {}
 user_mode = {}
+# Ephemeral storefront navigation only.  Catalog browsing never needs a
+# persistence write and must not touch product/order/payment state.
+user_storefront_context = {}
 notify_waitlist = {product_id: set() for product_id in PRODUCTS}
 gold_vip_users = set()
 active_flash_deal = {}
@@ -1600,6 +1603,87 @@ USER_TRANSLATIONS["de"].update({
     "api_key_revoked_success": "API-Schlüssel erfolgreich widerrufen.",
     "api_copy_help": "Halte den oben angezeigten Code gedrückt, um ihn zu kopieren.",
     "api_enabled": "Aktiviert", "api_disabled": "Deaktiviert", "api_service_disabled": "Der API-Dienst ist derzeit nicht verfügbar.",
+})
+
+# Phase 15 direct-storefront vocabulary. Admin placement controls intentionally
+# remain English to match the existing admin panel.
+USER_TRANSLATIONS["en"].update({
+    "store_title": "SUPREME LEADER STORE", "store_intro": "Explore our premium digital products.",
+    "store_choose": "Choose a product below.", "search_products": "Search Products", "sort_filter": "Sort & Filter",
+    "previous": "Previous", "next": "Next", "main_menu": "Main Menu", "empty_store": "No products are available right now.",
+    "search_title": "SEARCH PRODUCTS", "search_prompt": "Type a product name or keyword.",
+    "search_results": "Search results for: {query}", "no_search_results": "No products matched your search.",
+    "clear_search": "Clear Search", "back_to_store": "Back to Store", "sort_filter_title": "SORT & FILTER",
+    "sort_filter_help": "Choose how products are shown.", "sort_default": "Default / Featured First",
+    "sort_price_low": "Price: Low to High", "sort_price_high": "Price: High to Low", "sort_name": "Name: A-Z",
+    "sort_newest": "Newest First", "filter_instant": "Instant Delivery", "filter_manual": "Manual Services",
+    "filter_all": "All Products", "reset_filters": "Clear Filters / Reset", "active_sort": "Sort",
+    "active_filter": "Filter", "results_count": "Products: {count}",
+})
+USER_TRANSLATIONS["es"].update({
+    "store_title": "TIENDA SUPREME LEADER", "store_intro": "Explora nuestros productos digitales premium.",
+    "store_choose": "Elige un producto abajo.", "search_products": "Buscar productos", "sort_filter": "Ordenar y filtrar",
+    "previous": "Anterior", "next": "Siguiente", "main_menu": "Menú principal", "empty_store": "No hay productos disponibles ahora.",
+    "search_title": "BUSCAR PRODUCTOS", "search_prompt": "Escribe el nombre de un producto o una palabra clave.",
+    "search_results": "Resultados para: {query}", "no_search_results": "Ningún producto coincide con tu búsqueda.",
+    "clear_search": "Borrar búsqueda", "back_to_store": "Volver a la tienda", "sort_filter_title": "ORDENAR Y FILTRAR",
+    "sort_filter_help": "Elige cómo se muestran los productos.", "sort_default": "Predeterminado / Destacados primero",
+    "sort_price_low": "Precio: menor a mayor", "sort_price_high": "Precio: mayor a menor", "sort_name": "Nombre: A-Z",
+    "sort_newest": "Más nuevos primero", "filter_instant": "Entrega instantánea", "filter_manual": "Servicios manuales",
+    "filter_all": "Todos los productos", "reset_filters": "Borrar filtros / Restablecer", "active_sort": "Orden",
+    "active_filter": "Filtro", "results_count": "Productos: {count}",
+})
+USER_TRANSLATIONS["ru"].update({
+    "store_title": "МАГАЗИН SUPREME LEADER", "store_intro": "Ознакомьтесь с нашими премиальными цифровыми товарами.",
+    "store_choose": "Выберите товар ниже.", "search_products": "Поиск товаров", "sort_filter": "Сортировка и фильтр",
+    "previous": "Назад", "next": "Далее", "main_menu": "Главное меню", "empty_store": "Сейчас нет доступных товаров.",
+    "search_title": "ПОИСК ТОВАРОВ", "search_prompt": "Введите название товара или ключевое слово.",
+    "search_results": "Результаты поиска: {query}", "no_search_results": "По вашему запросу ничего не найдено.",
+    "clear_search": "Очистить поиск", "back_to_store": "Вернуться в магазин", "sort_filter_title": "СОРТИРОВКА И ФИЛЬТР",
+    "sort_filter_help": "Выберите способ отображения товаров.", "sort_default": "По умолчанию / Сначала избранные",
+    "sort_price_low": "Цена: по возрастанию", "sort_price_high": "Цена: по убыванию", "sort_name": "Название: А-Я",
+    "sort_newest": "Сначала новые", "filter_instant": "Мгновенная доставка", "filter_manual": "Ручные услуги",
+    "filter_all": "Все товары", "reset_filters": "Сбросить фильтры", "active_sort": "Сортировка",
+    "active_filter": "Фильтр", "results_count": "Товаров: {count}",
+})
+USER_TRANSLATIONS["tr"].update({
+    "store_title": "SUPREME LEADER MAĞAZASI", "store_intro": "Premium dijital ürünlerimizi keşfedin.",
+    "store_choose": "Aşağıdan bir ürün seçin.", "search_products": "Ürün Ara", "sort_filter": "Sırala ve Filtrele",
+    "previous": "Önceki", "next": "Sonraki", "main_menu": "Ana Menü", "empty_store": "Şu anda kullanılabilir ürün yok.",
+    "search_title": "ÜRÜN ARA", "search_prompt": "Bir ürün adı veya anahtar kelime yazın.",
+    "search_results": "Arama sonuçları: {query}", "no_search_results": "Aramanızla eşleşen ürün bulunamadı.",
+    "clear_search": "Aramayı Temizle", "back_to_store": "Mağazaya Dön", "sort_filter_title": "SIRALA VE FİLTRELE",
+    "sort_filter_help": "Ürünlerin nasıl gösterileceğini seçin.", "sort_default": "Varsayılan / Öne çıkanlar önce",
+    "sort_price_low": "Fiyat: Düşükten yükseğe", "sort_price_high": "Fiyat: Yüksekten düşüğe", "sort_name": "Ad: A-Z",
+    "sort_newest": "En yeniler önce", "filter_instant": "Anında Teslimat", "filter_manual": "Manuel Hizmetler",
+    "filter_all": "Tüm Ürünler", "reset_filters": "Filtreleri Temizle / Sıfırla", "active_sort": "Sıralama",
+    "active_filter": "Filtre", "results_count": "Ürünler: {count}",
+})
+USER_TRANSLATIONS["fr"].update({
+    "store_title": "BOUTIQUE SUPREME LEADER", "store_intro": "Découvrez nos produits numériques premium.",
+    "store_choose": "Choisissez un produit ci-dessous.", "search_products": "Rechercher", "sort_filter": "Trier et filtrer",
+    "previous": "Précédent", "next": "Suivant", "main_menu": "Menu principal", "empty_store": "Aucun produit n’est disponible actuellement.",
+    "search_title": "RECHERCHER DES PRODUITS", "search_prompt": "Saisissez un nom de produit ou un mot-clé.",
+    "search_results": "Résultats pour : {query}", "no_search_results": "Aucun produit ne correspond à votre recherche.",
+    "clear_search": "Effacer la recherche", "back_to_store": "Retour à la boutique", "sort_filter_title": "TRIER ET FILTRER",
+    "sort_filter_help": "Choisissez l’affichage des produits.", "sort_default": "Par défaut / En vedette d’abord",
+    "sort_price_low": "Prix : croissant", "sort_price_high": "Prix : décroissant", "sort_name": "Nom : A-Z",
+    "sort_newest": "Plus récents d’abord", "filter_instant": "Livraison instantanée", "filter_manual": "Services manuels",
+    "filter_all": "Tous les produits", "reset_filters": "Effacer les filtres / Réinitialiser", "active_sort": "Tri",
+    "active_filter": "Filtre", "results_count": "Produits : {count}",
+})
+USER_TRANSLATIONS["de"].update({
+    "store_title": "SUPREME LEADER STORE", "store_intro": "Entdecke unsere hochwertigen digitalen Produkte.",
+    "store_choose": "Wähle unten ein Produkt.", "search_products": "Produkte suchen", "sort_filter": "Sortieren & Filtern",
+    "previous": "Zurück", "next": "Weiter", "main_menu": "Hauptmenü", "empty_store": "Derzeit sind keine Produkte verfügbar.",
+    "search_title": "PRODUKTE SUCHEN", "search_prompt": "Gib einen Produktnamen oder ein Stichwort ein.",
+    "search_results": "Suchergebnisse für: {query}", "no_search_results": "Keine Produkte entsprechen deiner Suche.",
+    "clear_search": "Suche löschen", "back_to_store": "Zurück zum Store", "sort_filter_title": "SORTIEREN & FILTERN",
+    "sort_filter_help": "Wähle, wie Produkte angezeigt werden.", "sort_default": "Standard / Empfohlene zuerst",
+    "sort_price_low": "Preis: aufsteigend", "sort_price_high": "Preis: absteigend", "sort_name": "Name: A-Z",
+    "sort_newest": "Neueste zuerst", "filter_instant": "Sofortlieferung", "filter_manual": "Manuelle Services",
+    "filter_all": "Alle Produkte", "reset_filters": "Filter löschen / Zurücksetzen", "active_sort": "Sortierung",
+    "active_filter": "Filter", "results_count": "Produkte: {count}",
 })
 
 
@@ -7165,6 +7249,7 @@ def update_api_product_mapping(product: dict, provider_id: str = None, **changes
     provider_id = str(provider_id or product.get("_seller_provider_id") or "default")
     mapping_key = seller_api_mapping_key(api_product_id, provider_id)
     mapping = dict(api_product_mappings.get(mapping_key) or {})
+    mapping.setdefault("created_at", datetime.now().isoformat(timespec="seconds"))
     mapping.setdefault("enabled", False)
     mapping.setdefault("selling_price", None)
     mapping.setdefault("category_id", None)
@@ -8635,6 +8720,7 @@ def admin_products_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📦 Edit Display Stock", callback_data="admin_edit_display_stock_menu")],
         [InlineKeyboardButton("💸 Bulk Pricing", callback_data="admin_bulk_pricing_menu")],
         [InlineKeyboardButton("↕️ Reorder in Shop", callback_data="admin_reorder_menu")],
+        [InlineKeyboardButton("⭐ Storefront Placement", callback_data="admin_sf_page_0")],
         [InlineKeyboardButton("🗑 Delete Product", callback_data="admin_delete_product_menu")],
         [InlineKeyboardButton("⬅️ Close", callback_data="admin_products_close")],
     ]
@@ -8662,6 +8748,91 @@ def bulk_pricing_remove_keyboard(product_id: str) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton("No tiers configured", callback_data="noop")])
     rows.append([InlineKeyboardButton("⬅️ Back", callback_data="admin_bulk_view")])
     return InlineKeyboardMarkup(rows)
+
+
+def storefront_admin_targets() -> list:
+    targets = []
+    for product_id in product_order:
+        product = PRODUCTS.get(product_id)
+        if product:
+            targets.append((f"local|{product_id}", "Local", product.get("name", product_id), product))
+    for mapping_key, mapping in saved_api_shop_mappings():
+        api_product_id = _saved_api_mapping_identity(mapping_key, mapping)
+        identity = f"api|{mapping_provider_id(mapping)}|{api_product_id}"
+        targets.append((identity, "Seller API", api_mapping_display_name(mapping), mapping))
+    return targets
+
+
+def storefront_admin_token(identity: str) -> str:
+    return hashlib.sha256(str(identity).encode("utf-8")).hexdigest()[:16]
+
+
+def find_storefront_admin_target(token: str):
+    token = str(token or "").strip().lower()
+    for identity, kind, name, record in storefront_admin_targets():
+        if storefront_admin_token(identity) == token:
+            return identity, kind, name, record
+    return None
+
+
+def render_storefront_admin_page(page: int = 0) -> tuple:
+    targets = storefront_admin_targets()
+    pages = max(1, (len(targets) + 9) // 10)
+    page = max(0, min(int(page), pages - 1))
+    text = (
+        "⭐ <b>STOREFRONT PLACEMENT</b>\n\n"
+        "Set Featured status and an optional numeric priority. Lower priorities appear first within Featured/non-Featured groups.\n\n"
+        f"Products: <b>{len(targets)}</b> | Page: <b>{page + 1}/{pages}</b>"
+    )
+    return text, targets, page, pages
+
+
+def storefront_admin_page_keyboard(page: int = 0) -> InlineKeyboardMarkup:
+    _, targets, page, pages = render_storefront_admin_page(page)
+    start = page * 10
+    rows = []
+    for identity, kind, name, record in targets[start:start + 10]:
+        featured = "⭐" if _buyer_api_bool_value(record.get("storefront_featured")) else "▫️"
+        priority = _storefront_priority(record)
+        priority_text = f" P{priority}" if priority is not None else ""
+        rows.append([InlineKeyboardButton(
+            f"{featured} {name}{priority_text}"[:64],
+            callback_data=f"admin_sf_v_{storefront_admin_token(identity)}",
+        )])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"admin_sf_page_{page - 1}"))
+    if page + 1 < pages:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"admin_sf_page_{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton("⬅️ Products", callback_data="admin_products_back")])
+    return InlineKeyboardMarkup(rows)
+
+
+def render_storefront_admin_target(target) -> str:
+    identity, kind, name, record = target
+    priority = _storefront_priority(record)
+    return (
+        "⭐ <b>STOREFRONT PLACEMENT</b>\n\n"
+        f"<b>Product:</b> {escape_html(name)}\n"
+        f"<b>Type:</b> {escape_html(kind)}\n"
+        f"<b>Featured:</b> {'Yes' if _buyer_api_bool_value(record.get('storefront_featured')) else 'No'}\n"
+        f"<b>Priority:</b> {priority if priority is not None else 'Not set'}\n\n"
+        "Default storefront order is Featured first, then priority, then the existing stable shop order."
+    )
+
+
+def storefront_admin_target_keyboard(target) -> InlineKeyboardMarkup:
+    identity, _, _, record = target
+    token = storefront_admin_token(identity)
+    toggle = "Remove Featured" if _buyer_api_bool_value(record.get("storefront_featured")) else "Mark Featured"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"⭐ {toggle}", callback_data=f"admin_sf_feat_{token}")],
+        [InlineKeyboardButton("🔢 Set Priority", callback_data=f"admin_sf_pr_{token}")],
+        [InlineKeyboardButton("🧹 Clear Priority", callback_data=f"admin_sf_pc_{token}")],
+        [InlineKeyboardButton("⬅️ Product List", callback_data="admin_sf_page_0")],
+    ])
 
 
 def product_translation_language_keyboard(back_callback: str) -> InlineKeyboardMarkup:
@@ -11120,12 +11291,18 @@ def _short_button_text(text: str, max_len: int = 60) -> str:
     return text if len(text) <= max_len else text[: max_len - 1] + "…"
 
 
-def render_shop_menu_text(user_id: int = None) -> str:
+def render_shop_menu_text(user_id: int = None, context: dict = None, result_count: int = None) -> str:
+    context = context or {}
+    query = str(context.get("query") or "").strip()
     base = (
-        f"🛒🛒 <b>{t(user_id, 'store_menu')}</b>\n\n"
-        f"──── ⚡ <b>{t(user_id, 'auto_delivery')}</b> ────\n"
-        f"{t(user_id, 'tap_product')}"
+        f"🛍️ <b>{t(user_id, 'store_title')}</b>\n\n"
+        f"{t(user_id, 'store_intro')}\n"
+        f"{t(user_id, 'store_choose')}"
     )
+    if query:
+        base += f"\n\n🔎 <b>{escape_html(t(user_id, 'search_results', query=query))}</b>"
+    if result_count is not None:
+        base += f"\n{escape_html(t(user_id, 'results_count', count=result_count))}"
     flash_banner = render_flash_deal_banner(user_id) if "render_flash_deal_banner" in globals() else ""
     return f"{flash_banner}\n\n{base}" if flash_banner else base
 
@@ -11281,8 +11458,7 @@ def render_api_shop_product_details(mapping: dict, user_id: int = None) -> str:
 
 
 def api_shop_product_details_keyboard(mapping: dict, styled: bool = True, user_id: int = None) -> InlineKeyboardMarkup:
-    category_id = str(mapping.get("category_id") or "")
-    back_callback = f"shop_category_{category_id}" if category_id != DEFAULT_CATEGORY_ID else "back_shop_cards"
+    back_callback = "back_shop_cards"
     rows = []
     stock = api_shop_mapping_stock(mapping)
     if is_api_shop_mapping_visible(mapping) and stock != 0:
@@ -11412,6 +11588,297 @@ def validate_api_shop_purchase(mapping: dict, quantity: int, user_id: int = None
     return ""
 
 
+STOREFRONT_PAGE_SIZE = 10
+STOREFRONT_CONTEXT_LIMIT = 2000
+STOREFRONT_SORTS = {"default", "price_low", "price_high", "name", "newest"}
+STOREFRONT_FILTERS = {"all", "instant", "manual"}
+
+
+def _storefront_context(user_id: int, reset: bool = False, chat_id: int = None) -> dict:
+    context_key = (user_id, chat_id) if chat_id is not None else user_id
+    if reset or context_key not in user_storefront_context:
+        if context_key not in user_storefront_context and len(user_storefront_context) >= STOREFRONT_CONTEXT_LIMIT:
+            # Navigation state is disposable. Bound memory without persisting or
+            # touching any customer/product/order data.
+            for oldest_user_id in list(user_storefront_context)[: max(1, STOREFRONT_CONTEXT_LIMIT // 4)]:
+                user_storefront_context.pop(oldest_user_id, None)
+        user_storefront_context[context_key] = {
+            "page": 0, "query": "", "sort": "default", "filter": "all",
+        }
+    context = user_storefront_context[context_key]
+    context["sort"] = context.get("sort") if context.get("sort") in STOREFRONT_SORTS else "default"
+    context["filter"] = context.get("filter") if context.get("filter") in STOREFRONT_FILTERS else "all"
+    context["query"] = str(context.get("query") or "").strip()[:120]
+    try:
+        context["page"] = max(0, int(context.get("page", 0)))
+    except (TypeError, ValueError):
+        context["page"] = 0
+    return context
+
+
+def _storefront_local_visible(product: dict) -> bool:
+    if not isinstance(product, dict):
+        return False
+    if "enabled" in product and not _buyer_api_bool_value(product.get("enabled")):
+        return False
+    if "visible" in product and not _buyer_api_bool_value(product.get("visible")):
+        return False
+    return not any(_buyer_api_bool_value(product.get(key)) for key in ("hidden", "internal_only"))
+
+
+def _storefront_priority(record: dict):
+    value = (record or {}).get("storefront_priority")
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return None
+    return value if 0 <= value <= 999999 else None
+
+
+def _storefront_timestamp(record: dict) -> float:
+    value = (record or {}).get("created_at") or (record or {}).get("storefront_created_at")
+    if isinstance(value, datetime):
+        try:
+            return value.timestamp()
+        except (ValueError, OSError):
+            return 0.0
+    if isinstance(value, dict) and value.get("__datetime__"):
+        value = value.get("__datetime__")
+    if value:
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+        except (TypeError, ValueError, OSError):
+            pass
+    return 0.0
+
+
+def _storefront_search_values(record: dict, display_name: str) -> tuple:
+    names = [display_name, str((record or {}).get("name") or ""), str((record or {}).get("custom_name") or "")]
+    translated = (record or {}).get("name_i18n")
+    if isinstance(translated, dict):
+        names.extend(str(value or "") for value in translated.values())
+    keywords = []
+    for key in ("search_keywords", "keywords"):
+        value = (record or {}).get(key)
+        if isinstance(value, (list, tuple, set)):
+            keywords.extend(str(item or "") for item in value)
+        elif value:
+            keywords.extend(re.split(r"[,;\n]", str(value)))
+    return (
+        tuple(value.strip().casefold() for value in names if value and value.strip()),
+        tuple(value.strip().casefold() for value in keywords if value and value.strip()),
+    )
+
+
+def _storefront_match_rank(item: dict, query: str):
+    query = str(query or "").strip().casefold()
+    if not query:
+        return 0
+    names, keywords = item["search_values"]
+    if query in names:
+        return 0
+    if any(value.startswith(query) for value in names):
+        return 1
+    if query in keywords:
+        return 2
+    if any(value.startswith(query) for value in keywords):
+        return 3
+    if any(query in value for value in names):
+        return 4
+    if any(query in value for value in keywords):
+        return 5
+    return None
+
+
+def local_storefront_callback_token(product_id: str) -> str:
+    return hashlib.sha256(str(product_id).encode("utf-8")).hexdigest()[:32]
+
+
+def find_local_storefront_product(callback_token: str):
+    safe_token = str(callback_token or "").strip().lower()
+    for product_id, product in PRODUCTS.items():
+        if local_storefront_callback_token(product_id) == safe_token:
+            return product_id, product
+    return None, None
+
+
+def storefront_local_product_available(product_id: str, product: dict = None, user_id: int = None) -> bool:
+    product = PRODUCTS.get(product_id) if product is None else product
+    if not _storefront_local_visible(product):
+        return False
+    price = _buyer_api_numeric_value(get_product_price(product_id, user_id))
+    return price is not None and price > 0
+
+
+def build_customer_storefront_catalog(user_id: int = None) -> list:
+    """Build the unified catalog entirely from local state and mapped API caches."""
+    normalize_shop_order()
+    stable_positions = {item: index for index, item in enumerate(shop_order)}
+    fallback_position = len(stable_positions)
+    items = []
+    for product_index, product_id in enumerate(product_order):
+        product = PRODUCTS.get(product_id)
+        if not _storefront_local_visible(product):
+            continue
+        price = _buyer_api_numeric_value(get_product_price(product_id, user_id))
+        if price is None or price <= 0:
+            continue
+        name = localized_product_name(product, user_id)
+        item = {
+            "kind": "local", "id": product_id, "record": product, "name": name,
+            "price": float(price), "delivery": product_delivery_type(product),
+            "callback": f"sf_v_{local_storefront_callback_token(product_id)}",
+            "stable_order": stable_positions.get(f"product:{product_id}", fallback_position + product_index),
+        }
+        item["search_values"] = _storefront_search_values(product, name)
+        items.append(item)
+    api_offset = fallback_position + len(product_order)
+    for mapping_index, (_, mapping) in enumerate(saved_api_shop_mappings()):
+        if not is_api_shop_mapping_visible(mapping):
+            continue
+        price = api_shop_mapping_price(mapping)
+        if price is None:
+            continue
+        api_product_id = str(mapping.get("api_product_id") or "").strip()
+        provider_id = mapping_provider_id(mapping)
+        name = localized_api_product_name(mapping, user_id)
+        item = {
+            "kind": "api", "id": api_product_id, "provider_id": provider_id,
+            "record": mapping, "name": name, "price": float(price), "delivery": AUTOMATIC_DELIVERY,
+            "callback": f"api_shop_view_{api_shop_callback_token(api_product_id, provider_id)}",
+            "stable_order": stable_positions.get(
+                api_product_shop_order_item(api_product_id, provider_id), api_offset + mapping_index
+            ),
+        }
+        item["search_values"] = _storefront_search_values(mapping, name)
+        items.append(item)
+    return items
+
+
+def storefront_results(user_id: int = None, context: dict = None) -> list:
+    context = context or _storefront_context(user_id)
+    query = str(context.get("query") or "").strip()
+    delivery_filter = context.get("filter", "all")
+    ranked = []
+    for item in build_customer_storefront_catalog(user_id):
+        if delivery_filter == "manual" and item["delivery"] != MANUAL_DELIVERY:
+            continue
+        if delivery_filter == "instant" and item["delivery"] == MANUAL_DELIVERY:
+            continue
+        rank = _storefront_match_rank(item, query)
+        if rank is not None:
+            item = dict(item)
+            item["match_rank"] = rank
+            ranked.append(item)
+
+    def default_key(item):
+        priority = _storefront_priority(item["record"])
+        return (
+            0 if _buyer_api_bool_value(item["record"].get("storefront_featured")) else 1,
+            priority if priority is not None else 1000000,
+            item["stable_order"], item["kind"], str(item["id"]),
+        )
+
+    sort_mode = context.get("sort", "default")
+    if sort_mode == "price_low":
+        sort_key = lambda item: (item["price"], item["name"].casefold(), *default_key(item))
+    elif sort_mode == "price_high":
+        sort_key = lambda item: (-item["price"], item["name"].casefold(), *default_key(item))
+    elif sort_mode == "name":
+        sort_key = lambda item: (item["name"].casefold(), *default_key(item))
+    elif sort_mode == "newest":
+        sort_key = lambda item: (-_storefront_timestamp(item["record"]), *default_key(item))
+    else:
+        sort_key = default_key
+    if query:
+        ranked.sort(key=lambda item: (item["match_rank"], *sort_key(item)))
+    else:
+        ranked.sort(key=sort_key)
+    return ranked
+
+
+def storefront_page(user_id: int = None, context: dict = None) -> tuple:
+    context = context or _storefront_context(user_id)
+    results = storefront_results(user_id, context)
+    total_pages = max(1, (len(results) + STOREFRONT_PAGE_SIZE - 1) // STOREFRONT_PAGE_SIZE)
+    page = max(0, min(int(context.get("page", 0)), total_pages - 1))
+    context["page"] = page
+    start = page * STOREFRONT_PAGE_SIZE
+    return results[start:start + STOREFRONT_PAGE_SIZE], page, total_pages, len(results)
+
+
+def _storefront_sort_label(user_id: int, value: str) -> str:
+    return t(user_id, {
+        "default": "sort_default", "price_low": "sort_price_low", "price_high": "sort_price_high",
+        "name": "sort_name", "newest": "sort_newest",
+    }.get(value, "sort_default"))
+
+
+def _storefront_filter_label(user_id: int, value: str) -> str:
+    return t(user_id, {"instant": "filter_instant", "manual": "filter_manual"}.get(value, "filter_all"))
+
+
+def storefront_keyboard(user_id: int = None, context: dict = None, styled: bool = True) -> InlineKeyboardMarkup:
+    context = context or _storefront_context(user_id)
+    page_items, page, total_pages, _ = storefront_page(user_id, context)
+    primary = "primary" if styled else None
+    rows = [[
+        make_styled_inline_button(f"🔎 {t(user_id, 'search_products')}", callback_data="sf_q", style=primary),
+        make_styled_inline_button(f"⚙️ {t(user_id, 'sort_filter')}", callback_data="sf_o", style=primary),
+    ]]
+    for item in page_items:
+        label = f"{item['name']} - {format_money(item['price'])}"
+        rows.append([make_product_inline_button(item["record"], label, item["callback"], style=primary)])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(f"⬅️ {t(user_id, 'previous')}", callback_data=f"sf_p_{page - 1}"))
+    nav.append(InlineKeyboardButton(f"{page + 1} / {total_pages}", callback_data="noop"))
+    if page + 1 < total_pages:
+        nav.append(InlineKeyboardButton(f"{t(user_id, 'next')} ➡️", callback_data=f"sf_p_{page + 1}"))
+    rows.append(nav)
+    if context.get("query"):
+        rows.append([
+            InlineKeyboardButton(f"🧹 {t(user_id, 'clear_search')}", callback_data="sf_qc"),
+            InlineKeyboardButton(f"⬅️ {t(user_id, 'back_to_store')}", callback_data="sf_home"),
+        ])
+    rows.append([make_styled_inline_button(
+        f"🏠 {t(user_id, 'main_menu')}", callback_data="user_back_to_dashboard",
+        style="danger" if styled else None,
+    )])
+    return InlineKeyboardMarkup(rows)
+
+
+def storefront_sort_filter_text(user_id: int, context: dict = None) -> str:
+    context = context or _storefront_context(user_id)
+    return (
+        f"⚙️ <b>{t(user_id, 'sort_filter_title')}</b>\n\n"
+        f"{t(user_id, 'sort_filter_help')}\n\n"
+        f"<b>{t(user_id, 'active_sort')}:</b> {escape_html(_storefront_sort_label(user_id, context['sort']))}\n"
+        f"<b>{t(user_id, 'active_filter')}:</b> {escape_html(_storefront_filter_label(user_id, context['filter']))}"
+    )
+
+
+def storefront_sort_filter_keyboard(user_id: int, context: dict = None) -> InlineKeyboardMarkup:
+    context = context or _storefront_context(user_id)
+    sort_rows = [
+        ("default", "sort_default"), ("price_low", "sort_price_low"), ("price_high", "sort_price_high"),
+        ("name", "sort_name"), ("newest", "sort_newest"),
+    ]
+    rows = [[InlineKeyboardButton(
+        ("✅ " if context["sort"] == value else "") + t(user_id, label), callback_data=f"sf_s_{value}"
+    )] for value, label in sort_rows]
+    rows.extend([
+        [
+            InlineKeyboardButton(("✅ " if context["filter"] == "instant" else "") + t(user_id, "filter_instant"), callback_data="sf_f_instant"),
+            InlineKeyboardButton(("✅ " if context["filter"] == "manual" else "") + t(user_id, "filter_manual"), callback_data="sf_f_manual"),
+        ],
+        [InlineKeyboardButton(("✅ " if context["filter"] == "all" else "") + t(user_id, "filter_all"), callback_data="sf_f_all")],
+        [InlineKeyboardButton(f"🧹 {t(user_id, 'reset_filters')}", callback_data="sf_reset")],
+        [InlineKeyboardButton(f"⬅️ {t(user_id, 'back_to_store')}", callback_data="sf_back")],
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
 def shop_product_rows(product_ids: list, user_id: int = None, styled: bool = True) -> list:
     rows = []
     for product_id in product_ids:
@@ -11446,81 +11913,27 @@ def shop_product_rows(product_ids: list, user_id: int = None, styled: bool = Tru
 
 
 def shop_categories_keyboard(user_id: int = None, styled: bool = True) -> InlineKeyboardMarkup:
-    normalize_shop_order()
-    rows = [[InlineKeyboardButton("──── ⚡ AUTO DELIVERY ────", callback_data="noop")]]
-    for item in shop_order:
-        item_type, item_id = item.split(":", 1)
-        if item_type == "product":
-            product = PRODUCTS.get(item_id)
-            if product and product.get("category_id") == DEFAULT_CATEGORY_ID:
-                rows.extend(shop_product_rows([item_id], user_id, styled=styled))
-            continue
-        if item_type == "api_product":
-            mapping = api_product_mapping_by_id(item_id)
-            if mapping and mapping.get("category_id") == DEFAULT_CATEGORY_ID:
-                rows.extend(api_shop_product_row(mapping, styled=styled, user_id=user_id))
-            continue
-        category = CATEGORIES.get(item_id, {})
-        if not category or item_id == DEFAULT_CATEGORY_ID:
-            continue
-        label = f"{category.get('name', item_id)}  ▶"
-        rows.append([
-            make_category_inline_button(
-                category,
-                label,
-                f"shop_category_{item_id}",
-                style="primary" if styled else None,
-            )
-        ])
-    rows.append([
-        make_styled_inline_button(
-            f"🏠 {t(user_id, 'back_to_menu')}",
-            callback_data="user_back_to_dashboard",
-            style="danger" if styled else None,
-        )
-    ])
-    return InlineKeyboardMarkup(rows)
+    # Backward-compatible function name; the customer entry point is now flat.
+    return storefront_keyboard(user_id, styled=styled)
 
 
 def shop_menu_keyboard(user_id: int = None, category_id: str = None, styled: bool = True) -> InlineKeyboardMarkup:
-    normalize_categories()
-    rows = [[InlineKeyboardButton("──── ⚡ AUTO DELIVERY ────", callback_data="noop")]]
-    rows.extend(ordered_category_product_rows(category_id, user_id, styled=styled))
-    if category_id and category_id != DEFAULT_CATEGORY_ID:
-        rows.append([
-            make_styled_inline_button(
-                f"⬅️ {t(user_id, 'back')}",
-                callback_data="back_shop_cards",
-                style="primary" if styled else None,
-            )
-        ])
-    rows.append([
-        make_styled_inline_button(
-            f"🏠 {t(user_id, 'back_to_menu')}",
-            callback_data="user_back_to_dashboard",
-            style="danger" if styled else None,
-        )
-    ])
-    return InlineKeyboardMarkup(rows)
+    # Old category callbacks safely land on the same direct storefront.
+    return storefront_keyboard(user_id, styled=styled)
 
 
-async def send_shop_cards_message(source, from_callback: bool = False, category_id: str = None):
-    # Kept same function name so existing callbacks keep working.
-    normalize_categories()
+async def send_shop_cards_message(source, from_callback: bool = False, category_id: str = None, reset: bool = False):
+    # Kept the function name and category argument so historical callbacks remain safe.
     viewer_id = getattr(getattr(source, "from_user", None), "id", None)
-    if category_id is None or category_id == DEFAULT_CATEGORY_ID:
-        text = render_shop_menu_text(viewer_id)
-        keyboard = shop_categories_keyboard(viewer_id)
-        fallback_keyboard = shop_categories_keyboard(viewer_id, styled=False)
-    else:
-        category = CATEGORIES.get(category_id, CATEGORIES[DEFAULT_CATEGORY_ID])
-        text = (
-            f"{category_icon_html(category)} "
-            f"<b>{escape_html(category.get('name', category_id))}</b>\n\n"
-            f"{render_shop_menu_text(viewer_id)}"
-        )
-        keyboard = shop_menu_keyboard(viewer_id, category_id)
-        fallback_keyboard = shop_menu_keyboard(viewer_id, category_id, styled=False)
+    store_message = getattr(source, "message", None) if from_callback else source
+    chat_id = getattr(store_message, "chat_id", None)
+    context = _storefront_context(viewer_id, reset=reset, chat_id=chat_id)
+    _, _, _, result_count = storefront_page(viewer_id, context)
+    text = render_shop_menu_text(viewer_id, context, result_count)
+    if result_count == 0:
+        text += f"\n\n{escape_html(t(viewer_id, 'no_search_results' if context.get('query') else 'empty_store'))}"
+    keyboard = storefront_keyboard(viewer_id, context)
+    fallback_keyboard = storefront_keyboard(viewer_id, context, styled=False)
     if from_callback:
         try:
             await source.edit_message_text(text=text, reply_markup=keyboard, parse_mode="HTML")
@@ -11541,6 +11954,34 @@ async def send_shop_cards_message(source, from_callback: bool = False, category_
         except Exception as e:
             print(f"Shop buttons were rejected; retrying normal buttons: {type(e).__name__}: {e}")
             await source.reply_text(text, reply_markup=fallback_keyboard, parse_mode="HTML")
+
+
+async def open_local_storefront_product(query, user_id: int, product_id: str):
+    product = PRODUCTS.get(product_id)
+    if not storefront_local_product_available(product_id, product, user_id):
+        await send_shop_inline_with_style_fallback(
+            query,
+            f"❌ <b>{t(user_id, 'product_no_longer_available')}</b>",
+            shop_return_keyboard(user_id=user_id),
+            shop_return_keyboard(styled=False, user_id=user_id),
+        )
+        return False
+    if get_display_stock(product_id) <= 0:
+        await send_shop_inline_with_style_fallback(
+            query,
+            render_product_details(product_id, user_id),
+            out_of_stock_product_keyboard(product_id, user_id=user_id),
+            out_of_stock_product_keyboard(product_id, styled=False, user_id=user_id),
+        )
+        return True
+    user_state[user_id] = {"step": "buy_qty_select", "product_id": product_id}
+    await send_shop_inline_with_style_fallback(
+        query,
+        render_product_details(product_id, user_id),
+        buy_qty_keyboard(product_id, user_id=user_id),
+        buy_qty_keyboard(product_id, styled=False, user_id=user_id),
+    )
+    return True
 
 
 
@@ -13720,7 +14161,7 @@ async def client_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     enter_client_mode(user_id)
     if command == "/shop":
         user_state[user_id] = {"step": "shop"}
-        await send_shop_cards_message(update.message, from_callback=False)
+        await send_shop_cards_message(update.message, from_callback=False, reset=True)
     elif command == "/wallet":
         await send_client_main_text(update, render_wallet_text(user_id))
     elif command == "/topup":
@@ -14073,6 +14514,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     state = user_state[user_id]
     step = state.get("step", "main")
+    message_chat_id = getattr(getattr(update, "effective_chat", None), "id", getattr(update.message, "chat_id", None))
 
     if user_mode[user_id] != "admin" and text == "Menu":
         enter_client_mode(user_id)
@@ -14111,6 +14553,47 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await process_api_shop_purchase(
             context, user_id, callback_token, quantity, customer_emails
+        )
+        return
+
+    if (
+        user_mode[user_id] != "admin"
+        and step == "storefront_search_input"
+        and (state.get("store_chat_id") is None or state.get("store_chat_id") == message_chat_id)
+    ):
+        query_text = text.strip()[:120]
+        storefront_state = _storefront_context(user_id, chat_id=state.get("store_chat_id") or message_chat_id)
+        storefront_state.update({"query": query_text, "page": 0})
+        user_state[user_id] = {"step": "shop"}
+        _, _, _, result_count = storefront_page(user_id, storefront_state)
+        result_text = render_shop_menu_text(user_id, storefront_state, result_count)
+        if result_count == 0:
+            result_text += f"\n\n{escape_html(t(user_id, 'no_search_results'))}"
+        chat_id = state.get("store_chat_id")
+        message_id = state.get("store_message_id")
+        if chat_id is not None and message_id is not None:
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id, message_id=message_id, text=result_text,
+                    reply_markup=storefront_keyboard(user_id, storefront_state), parse_mode="HTML",
+                )
+                return
+            except Exception as edit_error:
+                if "message is not modified" in str(edit_error).lower():
+                    return
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=chat_id, message_id=message_id, text=result_text,
+                        reply_markup=storefront_keyboard(user_id, storefront_state, styled=False), parse_mode="HTML",
+                    )
+                    return
+                except Exception as fallback_error:
+                    if "message is not modified" in str(fallback_error).lower():
+                        return
+        await update.message.reply_text(
+            result_text,
+            reply_markup=storefront_keyboard(user_id, storefront_state, styled=False),
+            parse_mode="HTML",
         )
         return
 
@@ -14725,6 +15208,34 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # ========= PRODUCT EDIT =========
+    if step == "admin_storefront_priority_input":
+        if not is_admin(user_id):
+            user_state[user_id] = {"step": "main"}
+            reset_admin_temp(user_id)
+            return
+        target = find_storefront_admin_target(admin_temp.get(user_id, {}).get("storefront_target_token"))
+        try:
+            priority = int(text.strip())
+            if not 0 <= priority <= 999999:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("❌ <b>Invalid priority.</b> Send a whole number from 0 to 999999.", parse_mode="HTML")
+            return
+        if not target:
+            reset_admin_temp(user_id)
+            user_state[user_id] = {"step": "admin_products"}
+            await update.message.reply_text("❌ <b>Product not found.</b>", reply_markup=admin_products_keyboard(), parse_mode="HTML")
+            return
+        target[3]["storefront_priority"] = priority
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "admin_storefront_placement"}
+        await update.message.reply_text(
+            "✅ <b>Storefront priority updated.</b>\n\n" + render_storefront_admin_target(target),
+            reply_markup=storefront_admin_target_keyboard(target),
+            parse_mode="HTML",
+        )
+        return
+
     if step == "admin_edit_name_input":
         new_name = text.strip()
         if not new_name:
@@ -15373,7 +15884,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await ensure_channel_access(update, context):
             return
         user_state[user_id] = {"step": "shop"}
-        await send_shop_cards_message(update.message, from_callback=False)
+        await send_shop_cards_message(update.message, from_callback=False, reset=True)
         return
 
     if text == "💰 Wallet":
@@ -15511,6 +16022,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     await query.answer()
     data = query.data
+    store_chat_id = getattr(query.message, "chat_id", None)
 
     if data == "required_channel_check":
         if await check_required_channel_membership(context, user_id):
@@ -15549,6 +16061,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ))
     )
     if phase14_product_admin_callback and not is_admin(user_id):
+        await send_inline_from_callback(query, "❌ <b>You are not allowed.</b>", close_keyboard())
+        return
+
+    if data.startswith("admin_sf_") and not is_admin(user_id):
         await send_inline_from_callback(query, "❌ <b>You are not allowed.</b>", close_keyboard())
         return
 
@@ -17072,6 +17588,58 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_inline_from_callback(query, "❌ <b>You are not allowed.</b>", close_keyboard())
         return
 
+    if data.startswith("admin_sf_page_"):
+        try:
+            page = int(data.replace("admin_sf_page_", "", 1))
+        except ValueError:
+            page = 0
+        text, _, page, _ = render_storefront_admin_page(page)
+        user_state[user_id] = {"step": "admin_storefront_placement"}
+        await send_inline_from_callback(query, text, storefront_admin_page_keyboard(page))
+        return
+
+    if data.startswith("admin_sf_v_"):
+        target = find_storefront_admin_target(data.replace("admin_sf_v_", "", 1))
+        if not target:
+            await send_inline_from_callback(query, "❌ <b>Product not found.</b>", storefront_admin_page_keyboard())
+            return
+        await send_inline_from_callback(query, render_storefront_admin_target(target), storefront_admin_target_keyboard(target))
+        return
+
+    if data.startswith("admin_sf_feat_"):
+        target = find_storefront_admin_target(data.replace("admin_sf_feat_", "", 1))
+        if not target:
+            await send_inline_from_callback(query, "❌ <b>Product not found.</b>", storefront_admin_page_keyboard())
+            return
+        target[3]["storefront_featured"] = not _buyer_api_bool_value(target[3].get("storefront_featured"))
+        await send_inline_from_callback(query, render_storefront_admin_target(target), storefront_admin_target_keyboard(target))
+        return
+
+    if data.startswith("admin_sf_pr_"):
+        token = data.replace("admin_sf_pr_", "", 1)
+        target = find_storefront_admin_target(token)
+        if not target:
+            await send_inline_from_callback(query, "❌ <b>Product not found.</b>", storefront_admin_page_keyboard())
+            return
+        admin_temp[user_id]["storefront_target_token"] = token
+        user_state[user_id] = {"step": "admin_storefront_priority_input"}
+        await send_inline_from_callback(
+            query,
+            f"🔢 <b>SET STOREFRONT PRIORITY</b>\n\nProduct: <b>{escape_html(target[2])}</b>\n\n"
+            "Send a whole number from 0 to 999999. Lower numbers appear first.",
+            admin_cancel_keyboard(),
+        )
+        return
+
+    if data.startswith("admin_sf_pc_"):
+        target = find_storefront_admin_target(data.replace("admin_sf_pc_", "", 1))
+        if not target:
+            await send_inline_from_callback(query, "❌ <b>Product not found.</b>", storefront_admin_page_keyboard())
+            return
+        target[3].pop("storefront_priority", None)
+        await send_inline_from_callback(query, render_storefront_admin_target(target), storefront_admin_target_keyboard(target))
+        return
+
     if data == "admin_products_close":
         await send_inline_from_callback(query, "Closed products panel.", close_keyboard())
         return
@@ -17855,6 +18423,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "details": list(temp["details"]),
             "accounts": [],
             "display_stock": int(temp.get("display_stock", 0)),
+            "created_at": now_dt(),
         }
         _normalize_product_icon_fields(PRODUCTS[product_id])
         notify_waitlist[product_id] = set()
@@ -18457,7 +19026,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not await ensure_channel_access(update, context):
                 return
             user_state[user_id] = {"step": "shop"}
-            await send_shop_cards_message(query, from_callback=True)
+            await send_shop_cards_message(query, from_callback=True, reset=True)
             return
 
         if data == "user_dashboard_wallet":
@@ -18683,6 +19252,92 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_inline_from_callback(query, "Closed.", close_keyboard())
         return
 
+    if data == "sf_q":
+        if user_state.get(user_id, {}).get("step", "main") not in {"main", "shop", "storefront_search_input"}:
+            return
+        context_state = _storefront_context(user_id, chat_id=store_chat_id)
+        user_state[user_id] = {
+            "step": "storefront_search_input",
+            "store_chat_id": getattr(query.message, "chat_id", None),
+            "store_message_id": getattr(query.message, "message_id", None),
+        }
+        await send_inline_from_callback(
+            query,
+            f"🔎 <b>{t(user_id, 'search_title')}</b>\n\n{escape_html(t(user_id, 'search_prompt'))}",
+            InlineKeyboardMarkup([[InlineKeyboardButton(f"⬅️ {t(user_id, 'back_to_store')}", callback_data="sf_back")]]),
+        )
+        return
+
+    if data == "sf_o":
+        context_state = _storefront_context(user_id, chat_id=store_chat_id)
+        await send_inline_from_callback(
+            query,
+            storefront_sort_filter_text(user_id, context_state),
+            storefront_sort_filter_keyboard(user_id, context_state),
+        )
+        return
+
+    if data.startswith("sf_v_"):
+        product_id, _ = find_local_storefront_product(data.replace("sf_v_", "", 1))
+        if product_id is None:
+            await send_shop_inline_with_style_fallback(
+                query,
+                f"❌ <b>{t(user_id, 'product_no_longer_available')}</b>",
+                shop_return_keyboard(user_id=user_id),
+                shop_return_keyboard(styled=False, user_id=user_id),
+            )
+            return
+        await open_local_storefront_product(query, user_id, product_id)
+        return
+
+    if data.startswith("sf_p_"):
+        try:
+            requested_page = int(data.replace("sf_p_", "", 1))
+        except ValueError:
+            requested_page = 0
+        _storefront_context(user_id, chat_id=store_chat_id)["page"] = max(0, requested_page)
+        await send_shop_cards_message(query, from_callback=True)
+        return
+
+    if data.startswith("sf_s_"):
+        sort_mode = data.replace("sf_s_", "", 1)
+        context_state = _storefront_context(user_id, chat_id=store_chat_id)
+        if sort_mode in STOREFRONT_SORTS:
+            context_state.update({"sort": sort_mode, "page": 0})
+        await send_shop_cards_message(query, from_callback=True)
+        return
+
+    if data.startswith("sf_f_"):
+        filter_mode = data.replace("sf_f_", "", 1)
+        context_state = _storefront_context(user_id, chat_id=store_chat_id)
+        if filter_mode in STOREFRONT_FILTERS:
+            context_state.update({"filter": filter_mode, "page": 0})
+        await send_shop_cards_message(query, from_callback=True)
+        return
+
+    if data == "sf_qc":
+        _storefront_context(user_id, chat_id=store_chat_id).update({"query": "", "page": 0})
+        user_state[user_id] = {"step": "shop"}
+        await send_shop_cards_message(query, from_callback=True)
+        return
+
+    if data == "sf_reset":
+        context_state = _storefront_context(user_id, chat_id=store_chat_id)
+        context_state.update({"sort": "default", "filter": "all", "page": 0})
+        await send_shop_cards_message(query, from_callback=True)
+        return
+
+    if data == "sf_home":
+        _storefront_context(user_id, reset=True, chat_id=store_chat_id)
+        user_state[user_id] = {"step": "shop"}
+        await send_shop_cards_message(query, from_callback=True)
+        return
+
+    if data == "sf_back":
+        user_state[user_id] = {"step": "shop"}
+        await send_shop_cards_message(query, from_callback=True)
+        return
+
     if data == "back_shop_cards":
         user_state[user_id] = {"step": "shop"}
         await send_shop_cards_message(query, from_callback=True)
@@ -18837,21 +19492,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("shop_buy_"):
         product_id = data.replace("shop_buy_", "")
-        if get_display_stock(product_id) <= 0:
-            await send_shop_inline_with_style_fallback(
-                query,
-                render_product_details(product_id, user_id),
-                out_of_stock_product_keyboard(product_id, user_id=user_id),
-                out_of_stock_product_keyboard(product_id, styled=False, user_id=user_id),
-            )
-            return
-        user_state[user_id] = {"step": "buy_qty_select", "product_id": product_id}
-        await send_shop_inline_with_style_fallback(
-            query,
-            render_product_details(product_id, user_id),
-            buy_qty_keyboard(product_id, user_id=user_id),
-            buy_qty_keyboard(product_id, styled=False, user_id=user_id),
-        )
+        await open_local_storefront_product(query, user_id, product_id)
         return
 
     if data.startswith("shop_notify_"):
@@ -18874,7 +19515,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("buy_qty_"):
-        _, _, product_id, qty_str = data.split("_")
+        product_id, separator, qty_str = data.replace("buy_qty_", "", 1).rpartition("_")
+        if not separator:
+            return
+        if not storefront_local_product_available(product_id, user_id=user_id):
+            await send_shop_inline_with_style_fallback(
+                query,
+                f"❌ <b>{t(user_id, 'product_no_longer_available')}</b>",
+                shop_return_keyboard(user_id=user_id),
+                shop_return_keyboard(styled=False, user_id=user_id),
+            )
+            return
         qty = int(qty_str)
         stock = get_display_stock(product_id)
         if qty > stock:
@@ -18930,6 +19581,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("buy_custom_"):
         product_id = data.replace("buy_custom_", "")
+        if not storefront_local_product_available(product_id, user_id=user_id):
+            await send_shop_inline_with_style_fallback(
+                query,
+                f"❌ <b>{t(user_id, 'product_no_longer_available')}</b>",
+                shop_return_keyboard(user_id=user_id),
+                shop_return_keyboard(styled=False, user_id=user_id),
+            )
+            return
         user_state[user_id] = {"step": "buy_custom_qty", "product_id": product_id}
         await query.message.reply_text(f"✏️ {t(user_id, 'send_custom_quantity')}\n{t(user_id, 'example')}: 2")
         return
@@ -19340,10 +19999,15 @@ async def start_persistent(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def client_menu_command_persistent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    command_parts = str(getattr(getattr(update, "message", None), "text", "") or "").split()
+    command = command_parts[0].split("@")[0].lower() if command_parts else ""
+    user_id = getattr(getattr(update, "effective_user", None), "id", None)
+    user_was_known = user_id in all_users
     try:
         await client_menu_command(update, context)
     finally:
-        save_bot_state()
+        if command != "/shop" or not user_was_known:
+            save_bot_state()
 
 
 async def admin_command_persistent(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -19361,10 +20025,13 @@ async def addstock_persistent(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def handle_text_persistent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = getattr(getattr(update, "effective_user", None), "id", None)
+    original_step = user_state.get(user_id, {}).get("step")
     try:
         await handle_text(update, context)
     finally:
-        save_bot_state()
+        if original_step != "storefront_search_input":
+            save_bot_state()
 
 
 async def handle_sticker_persistent(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -19385,10 +20052,18 @@ async def handle_dashboard_emoji_media_persistent(update: Update, context: Conte
 
 
 async def handle_callback_persistent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    callback_data = str(getattr(getattr(update, "callback_query", None), "data", "") or "")
+    user_id = getattr(getattr(getattr(update, "callback_query", None), "from_user", None), "id", None)
+    user_was_known = user_id in all_users
     try:
         await handle_callback(update, context)
     finally:
-        save_bot_state()
+        pure_store_navigation = (
+            callback_data.startswith(("sf_", "shop_category_", "api_shop_view_", "shop_buy_"))
+            or callback_data in {"back_shop_cards", "user_dashboard_shop"}
+        )
+        if not pure_store_navigation or not user_was_known:
+            save_bot_state()
 
 
 # =========================
