@@ -13,8 +13,11 @@ class Phase15StateMixin:
             "products": copy.deepcopy(bot.PRODUCTS),
             "product_order": list(bot.product_order),
             "shop_order": list(bot.shop_order),
+            "categories": copy.deepcopy(bot.CATEGORIES),
+            "category_order": list(bot.category_order),
             "mappings": copy.deepcopy(bot.api_product_mappings),
             "profiles": copy.deepcopy(bot.user_profiles),
+            "all_users": set(bot.all_users),
             "store_context": copy.deepcopy(bot.user_storefront_context),
             "user_state": copy.deepcopy(bot.user_state),
             "user_mode": copy.deepcopy(bot.user_mode),
@@ -26,8 +29,17 @@ class Phase15StateMixin:
         bot.PRODUCTS.clear()
         bot.product_order.clear()
         bot.shop_order.clear()
+        bot.CATEGORIES.clear()
+        bot.CATEGORIES[bot.DEFAULT_CATEGORY_ID] = {
+            "id": bot.DEFAULT_CATEGORY_ID,
+            "name": bot.DEFAULT_CATEGORY_NAME,
+            "icon": "🗂",
+            "order": 0,
+        }
+        bot.category_order[:] = [bot.DEFAULT_CATEGORY_ID]
         bot.api_product_mappings.clear()
         bot.user_profiles.clear()
+        bot.all_users.clear()
         bot.user_storefront_context.clear()
         self.user_id = 15015
         bot.user_profiles[self.user_id] = {"language": "en"}
@@ -37,10 +49,15 @@ class Phase15StateMixin:
         bot.PRODUCTS.update(self.saved["products"])
         bot.product_order[:] = self.saved["product_order"]
         bot.shop_order[:] = self.saved["shop_order"]
+        bot.CATEGORIES.clear()
+        bot.CATEGORIES.update(self.saved["categories"])
+        bot.category_order[:] = self.saved["category_order"]
         bot.api_product_mappings.clear()
         bot.api_product_mappings.update(self.saved["mappings"])
         bot.user_profiles.clear()
         bot.user_profiles.update(self.saved["profiles"])
+        bot.all_users.clear()
+        bot.all_users.update(self.saved["all_users"])
         bot.user_storefront_context.clear()
         bot.user_storefront_context.update(self.saved["store_context"])
         bot.user_state.clear()
@@ -89,65 +106,110 @@ class Phase15StateMixin:
         bot.shop_order.append(bot.api_product_shop_order_item(api_id, provider))
         return mapping
 
+    def add_category(self, category_id, name, icon="📁"):
+        category = {"id": category_id, "name": name, "icon": icon, "order": len(bot.category_order)}
+        bot.CATEGORIES[category_id] = category
+        bot.category_order.append(category_id)
+        bot.shop_order.append(f"category:{category_id}")
+        return category
+
 
 class Phase15CatalogTests(Phase15StateMixin, unittest.TestCase):
     def test_requested_catalog_sizes_have_exact_page_shapes(self):
-        for count in (0, 1, 9, 10, 11, 20, 21, 100, 500):
+        for count in (0, 1, 9, 10, 11, 20, 21, 100):
             with self.subTest(count=count):
                 bot.PRODUCTS.clear()
                 bot.product_order.clear()
                 bot.shop_order.clear()
                 bot.api_product_mappings.clear()
+                self.add_category("products", "Products")
                 for index in range(count):
-                    self.add_local(f"edge-{index}", f"Edge Product {index:03d}", index + 1)
-                context = bot._storefront_context(self.user_id, reset=True)
+                    self.add_local(
+                        f"edge-{index}", f"Edge Product {index:03d}", index + 1,
+                        category_id="products",
+                    )
                 expected_pages = max(1, (count + 9) // 10)
                 for page in range(expected_pages):
-                    context["page"] = page
-                    items, safe_page, pages, total = bot.storefront_page(self.user_id, context)
+                    keyboard = bot.shop_menu_keyboard(self.user_id, "products", styled=False, page=page)
+                    callbacks = [
+                        button.callback_data for row in keyboard.inline_keyboard for button in row
+                    ]
+                    product_callbacks = [value for value in callbacks if value and value.startswith("shop_buy_")]
                     expected_items = 0 if count == 0 else min(10, count - page * 10)
-                    self.assertEqual((len(items), safe_page, pages, total), (expected_items, page, expected_pages, count))
-                keyboard = bot.storefront_keyboard(self.user_id, context, styled=False)
-                labels = [button.text for row in keyboard.inline_keyboard for button in row]
-                self.assertIn(f"{expected_pages} / {expected_pages}", labels)
-                self.assertNotIn("Next ➡️", labels)
+                    self.assertEqual(len(product_callbacks), expected_items)
+                    self.assertEqual(
+                        product_callbacks,
+                        [f"shop_buy_edge-{index}" for index in range(page * 10, page * 10 + expected_items)],
+                    )
+                    labels = [button.text for row in keyboard.inline_keyboard for button in row]
+                    if expected_pages == 1:
+                        self.assertFalse(any(" / " in label for label in labels))
+                    else:
+                        self.assertIn(f"{page + 1} / {expected_pages}", labels)
+                        self.assertEqual(any("Previous" in label for label in labels), page > 0)
+                        self.assertEqual(any("Next" in label for label in labels), page + 1 < expected_pages)
 
     def test_fixed_ten_item_pages_and_boundaries(self):
+        self.add_category("products", "Products")
         for index in range(23):
-            self.add_local(f"p{index:02d}", f"Product {index:02d}", index + 1)
-        context = bot._storefront_context(self.user_id, reset=True)
+            self.add_local(
+                f"p{index:02d}", f"Product {index:02d}", index + 1, category_id="products"
+            )
 
-        first, page, pages, count = bot.storefront_page(self.user_id, context)
-        self.assertEqual((len(first), page, pages, count), (10, 0, 3, 23))
-        self.assertEqual([item["id"] for item in first], [f"p{i:02d}" for i in range(10)])
+        def product_callbacks(page):
+            keyboard = bot.shop_menu_keyboard(self.user_id, "products", styled=False, page=page)
+            return (
+                [
+                    button.callback_data for row in keyboard.inline_keyboard for button in row
+                    if button.callback_data and button.callback_data.startswith("shop_buy_")
+                ],
+                [button.text for row in keyboard.inline_keyboard for button in row],
+            )
 
-        context["page"] = 1
-        second, page, pages, _ = bot.storefront_page(self.user_id, context)
-        self.assertEqual(len(second), 10)
-        self.assertEqual([item["id"] for item in second], [f"p{i:02d}" for i in range(10, 20)])
-
-        context["page"] = 99
-        final, page, pages, _ = bot.storefront_page(self.user_id, context)
-        self.assertEqual((len(final), page, pages), (3, 2, 3))
-        labels = [button.text for row in bot.storefront_keyboard(self.user_id, context).inline_keyboard for button in row]
+        first, labels = product_callbacks(0)
+        self.assertEqual(first, [f"shop_buy_p{i:02d}" for i in range(10)])
+        self.assertFalse(any("Previous" in label for label in labels))
+        second, _ = product_callbacks(1)
+        self.assertEqual(second, [f"shop_buy_p{i:02d}" for i in range(10, 20)])
+        final, labels = product_callbacks(99)
+        self.assertEqual(final, [f"shop_buy_p{i:02d}" for i in range(20, 23)])
         self.assertFalse(any("Next" in label for label in labels))
         self.assertTrue(any("Previous" in label for label in labels))
-
-        context["page"] = -4
-        bot.storefront_page(self.user_id, context)
-        labels = [button.text for row in bot.storefront_keyboard(self.user_id, context).inline_keyboard for button in row]
+        first_again, labels = product_callbacks(-4)
+        self.assertEqual(first_again, first)
         self.assertFalse(any("Previous" in label for label in labels))
 
-    def test_shop_keyboard_is_direct_and_has_exactly_ten_product_buttons(self):
-        for index in range(12):
-            self.add_local(f"p{index}", f"Direct {index}", index + 1)
+    def test_shop_keyboard_restores_original_hierarchy_and_sections(self):
+        self.add_local("auto", "Auto Product", 1)
+        self.add_category("manual", "Manual Services", icon="🤝")
+        self.add_local(
+            "manual-product", "Manual Product", 2,
+            delivery=bot.MANUAL_DELIVERY, category_id="manual",
+        )
+        self.add_category("accounts", "Accounts")
         keyboard = bot.shop_categories_keyboard(self.user_id, styled=False)
         callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
-        product_callbacks = [value for value in callbacks if value and value.startswith("sf_v_")]
-        self.assertEqual(len(product_callbacks), 10)
-        self.assertTrue(all(len(value.encode("utf-8")) <= 64 for value in product_callbacks))
-        self.assertFalse(any(value and value.startswith("shop_category_") for value in callbacks))
-        self.assertIn("SUPREME LEADER STORE", bot.render_shop_menu_text(self.user_id))
+        self.assertIn("shop_buy_auto", callbacks)
+        self.assertIn("shop_category_manual", callbacks)
+        self.assertIn("shop_category_accounts", callbacks)
+        hierarchy_callbacks = [
+            value for value in callbacks
+            if value and (value.startswith("shop_buy_") or value.startswith("shop_category_"))
+        ]
+        self.assertEqual(
+            hierarchy_callbacks,
+            ["shop_buy_auto", "shop_category_manual", "shop_category_accounts"],
+        )
+        self.assertFalse(any(value and value.startswith("shop_page_") for value in callbacks))
+        self.assertFalse(any(value in {"sf_q", "sf_o"} for value in callbacks))
+        self.assertIn("STORE MENU", bot.render_shop_menu_text(self.user_id))
+        self.assertIn("AUTO DELIVERY", bot.render_shop_menu_text(self.user_id))
+        manual_callbacks = [
+            button.callback_data
+            for row in bot.shop_menu_keyboard(self.user_id, "manual", styled=False).inline_keyboard
+            for button in row
+        ]
+        self.assertIn("shop_buy_manual-product", manual_callbacks)
 
     def test_search_exact_prefix_partial_casefold_and_pagination(self):
         self.add_local("exact", "ChatGPT Plus", 10, search_keywords=["openai", "assistant"])
@@ -284,13 +346,17 @@ class Phase15CatalogTests(Phase15StateMixin, unittest.TestCase):
         self.assertNotIn("0.01", rendered)
 
     def test_all_new_storefront_callback_payloads_fit_telegram_limit(self):
-        self.add_local("local", "Local", 1)
+        self.add_category("services", "Services")
+        for index in range(11):
+            self.add_local(f"local-{index}", "Local", 1, category_id="services")
         self.add_api("api", provider="seller_2")
         context = bot._storefront_context(self.user_id, reset=True)
         keyboards = [
             bot.storefront_keyboard(self.user_id, context, styled=False),
             bot.storefront_sort_filter_keyboard(self.user_id, context),
             bot.storefront_admin_page_keyboard(0),
+            bot.shop_categories_keyboard(self.user_id, styled=False),
+            bot.shop_menu_keyboard(self.user_id, "services", styled=False),
         ]
         for keyboard in keyboards:
             for row in keyboard.inline_keyboard:
@@ -376,7 +442,8 @@ class Phase15NavigationTests(Phase15StateMixin, unittest.IsolatedAsyncioTestCase
         self.assertEqual(first, {"query": "product", "sort": "price_high", "filter": "all", "page": 1})
         self.assertEqual(second, {"query": "product", "sort": "name", "filter": "manual", "page": 0})
 
-    async def test_shop_command_immediately_sends_products(self):
+    async def test_shop_command_restores_original_category_layout(self):
+        self.add_category("manual", "Manual Services", icon="🤝")
         for index in range(11):
             self.add_local(f"p{index}", f"Product {index}", index + 1)
         user = SimpleNamespace(id=self.user_id, username="customer", first_name="Customer", last_name="", is_bot=False)
@@ -386,8 +453,31 @@ class Phase15NavigationTests(Phase15StateMixin, unittest.IsolatedAsyncioTestCase
             await bot.client_menu_command(update, SimpleNamespace())
         kwargs = message.reply_text.await_args.kwargs
         callbacks = [button.callback_data for row in kwargs["reply_markup"].inline_keyboard for button in row]
-        self.assertEqual(len([value for value in callbacks if value and value.startswith("sf_v_")]), 10)
-        self.assertFalse(any(value and value.startswith("shop_category_") for value in callbacks))
+        self.assertEqual(len([value for value in callbacks if value and value.startswith("shop_buy_")]), 10)
+        self.assertIn("shop_category_manual", callbacks)
+        self.assertIn("shop_page_1", callbacks)
+        self.assertFalse(any(value in {"sf_q", "sf_o"} for value in callbacks))
+        self.assertIn("STORE MENU", message.reply_text.await_args.args[0])
+
+    async def test_main_shop_button_opens_the_same_original_hierarchy(self):
+        self.add_category("accounts", "Accounts")
+        self.add_local("root", "Root Product", 3)
+        user = SimpleNamespace(id=self.user_id, username="customer", first_name="Customer", last_name="", is_bot=False)
+        bot.ensure_user(self.user_id, user)
+        query = SimpleNamespace(
+            from_user=user,
+            answer=AsyncMock(),
+            data="user_dashboard_shop",
+            edit_message_text=AsyncMock(),
+            message=SimpleNamespace(reply_text=AsyncMock()),
+        )
+        with patch.object(bot, "ensure_channel_access", new=AsyncMock(return_value=True)):
+            await bot.handle_callback(SimpleNamespace(callback_query=query), SimpleNamespace())
+        keyboard = query.edit_message_text.await_args.kwargs["reply_markup"]
+        callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
+        self.assertIn("shop_category_accounts", callbacks)
+        self.assertIn("shop_buy_root", callbacks)
+        self.assertFalse(any(value in {"sf_q", "sf_o"} for value in callbacks))
 
     async def test_pagination_edits_same_message_and_handles_not_modified(self):
         for index in range(12):
@@ -401,6 +491,33 @@ class Phase15NavigationTests(Phase15StateMixin, unittest.IsolatedAsyncioTestCase
         await bot.send_shop_cards_message(source, from_callback=True)
         source.edit_message_text.assert_awaited_once()
         source.message.reply_text.assert_not_awaited()
+
+    async def test_category_page_callback_edits_same_message_and_keeps_parent_back(self):
+        self.add_category("services", "Services")
+        for index in range(21):
+            self.add_local(
+                f"service-{index}", f"Service {index}", index + 1, category_id="services"
+            )
+        user = SimpleNamespace(id=self.user_id, username="u", first_name="U", last_name="", is_bot=False)
+        token = bot.shop_category_page_token("services")
+        query = SimpleNamespace(
+            from_user=user,
+            answer=AsyncMock(),
+            data=f"shop_catpage_{token}_1",
+            edit_message_text=AsyncMock(),
+            message=SimpleNamespace(reply_text=AsyncMock()),
+        )
+        await bot.handle_callback(SimpleNamespace(callback_query=query), SimpleNamespace())
+        query.edit_message_text.assert_awaited_once()
+        keyboard = query.edit_message_text.await_args.kwargs["reply_markup"]
+        callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
+        self.assertEqual(
+            [value for value in callbacks if value and value.startswith("shop_buy_")],
+            [f"shop_buy_service-{index}" for index in range(10, 20)],
+        )
+        self.assertIn("back_shop_cards", callbacks)
+        self.assertEqual(bot.user_state[self.user_id]["category_id"], "services")
+        self.assertEqual(bot.user_state[self.user_id]["page"], 1)
 
     async def test_store_message_edit_failure_uses_safe_reply_fallback(self):
         self.add_local("p1", "Fallback Product", 1)
@@ -555,7 +672,7 @@ class Phase15NavigationTests(Phase15StateMixin, unittest.IsolatedAsyncioTestCase
         bot.ensure_user(self.user_id, user)
         bot.user_state[self.user_id] = {"step": "shop"}
         query = SimpleNamespace(
-            from_user=user, answer=AsyncMock(), data="sf_p_0",
+            from_user=user, answer=AsyncMock(), data="shop_page_0",
             edit_message_text=AsyncMock(), message=SimpleNamespace(reply_text=AsyncMock()),
         )
         with patch.object(bot, "save_bot_state") as saver:
@@ -570,7 +687,7 @@ class Phase15NavigationTests(Phase15StateMixin, unittest.IsolatedAsyncioTestCase
         with patch.object(bot, "send_shop_inline_with_style_fallback", new=sender):
             local_query = SimpleNamespace(
                 from_user=user, answer=AsyncMock(),
-                data=f"sf_v_{bot.local_storefront_callback_token('local')}", message=SimpleNamespace(),
+                data="shop_buy_local", message=SimpleNamespace(),
             )
             await bot.handle_callback(SimpleNamespace(callback_query=local_query), SimpleNamespace())
             self.assertIn("Local Detail", sender.await_args.args[1])

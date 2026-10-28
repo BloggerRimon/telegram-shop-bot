@@ -11292,17 +11292,13 @@ def _short_button_text(text: str, max_len: int = 60) -> str:
 
 
 def render_shop_menu_text(user_id: int = None, context: dict = None, result_count: int = None) -> str:
-    context = context or {}
-    query = str(context.get("query") or "").strip()
+    # Keep the optional Phase 15 arguments for stale/internal callers, while
+    # restoring the exact customer-facing menu copy used before Phase 15.
     base = (
-        f"🛍️ <b>{t(user_id, 'store_title')}</b>\n\n"
-        f"{t(user_id, 'store_intro')}\n"
-        f"{t(user_id, 'store_choose')}"
+        f"🛒🛒 <b>{t(user_id, 'store_menu')}</b>\n\n"
+        f"──── ⚡ <b>{t(user_id, 'auto_delivery')}</b> ────\n"
+        f"{t(user_id, 'tap_product')}"
     )
-    if query:
-        base += f"\n\n🔎 <b>{escape_html(t(user_id, 'search_results', query=query))}</b>"
-    if result_count is not None:
-        base += f"\n{escape_html(t(user_id, 'results_count', count=result_count))}"
     flash_banner = render_flash_deal_banner(user_id) if "render_flash_deal_banner" in globals() else ""
     return f"{flash_banner}\n\n{base}" if flash_banner else base
 
@@ -11912,28 +11908,159 @@ def shop_product_rows(product_ids: list, user_id: int = None, styled: bool = Tru
     return rows
 
 
-def shop_categories_keyboard(user_id: int = None, styled: bool = True) -> InlineKeyboardMarkup:
-    # Backward-compatible function name; the customer entry point is now flat.
-    return storefront_keyboard(user_id, styled=styled)
+SHOP_PRODUCT_PAGE_SIZE = 10
 
 
-def shop_menu_keyboard(user_id: int = None, category_id: str = None, styled: bool = True) -> InlineKeyboardMarkup:
-    # Old category callbacks safely land on the same direct storefront.
-    return storefront_keyboard(user_id, styled=styled)
+def _shop_page_window(total_products: int, page: int = 0) -> tuple:
+    total_pages = max(1, (max(0, total_products) + SHOP_PRODUCT_PAGE_SIZE - 1) // SHOP_PRODUCT_PAGE_SIZE)
+    try:
+        page = int(page)
+    except (TypeError, ValueError):
+        page = 0
+    page = max(0, min(page, total_pages - 1))
+    start = page * SHOP_PRODUCT_PAGE_SIZE
+    return page, total_pages, start, min(start + SHOP_PRODUCT_PAGE_SIZE, total_products)
 
 
-async def send_shop_cards_message(source, from_callback: bool = False, category_id: str = None, reset: bool = False):
-    # Kept the function name and category argument so historical callbacks remain safe.
+def shop_category_page_token(category_id: str) -> str:
+    return hashlib.sha256(str(category_id).encode("utf-8")).hexdigest()[:16]
+
+
+def find_shop_category_by_page_token(callback_token: str):
+    safe_token = str(callback_token or "").strip().lower()
+    for category_id in CATEGORIES:
+        if shop_category_page_token(category_id) == safe_token:
+            return category_id
+    return None
+
+
+def _shop_pagination_row(user_id: int, page: int, total_pages: int, callback_prefix: str) -> list:
+    if total_pages <= 1:
+        return []
+    buttons = []
+    if page > 0:
+        buttons.append(InlineKeyboardButton(
+            f"⬅️ {t(user_id, 'previous')}", callback_data=f"{callback_prefix}_{page - 1}"
+        ))
+    buttons.append(InlineKeyboardButton(f"{page + 1} / {total_pages}", callback_data="noop"))
+    if page + 1 < total_pages:
+        buttons.append(InlineKeyboardButton(
+            f"{t(user_id, 'next')} ➡️", callback_data=f"{callback_prefix}_{page + 1}"
+        ))
+    return buttons
+
+
+def _root_shop_product_rows(item: str, user_id: int = None, styled: bool = True) -> list:
+    if item.startswith("product:"):
+        product_id = item.split(":", 1)[1]
+        product = PRODUCTS.get(product_id)
+        if product and product.get("category_id") == DEFAULT_CATEGORY_ID:
+            return shop_product_rows([product_id], user_id, styled=styled)
+    elif item.startswith("api_product:"):
+        mapping = api_product_mapping_by_id(item.split(":", 1)[1])
+        if mapping and mapping.get("category_id") == DEFAULT_CATEGORY_ID:
+            return api_shop_product_row(mapping, styled=styled, user_id=user_id)
+    return []
+
+
+def shop_categories_keyboard(user_id: int = None, styled: bool = True, page: int = 0) -> InlineKeyboardMarkup:
+    """Render the original root shop hierarchy, paging only root product rows."""
+    normalize_shop_order()
+    product_rows = {
+        item: _root_shop_product_rows(item, user_id, styled=styled)
+        for item in shop_order
+    }
+    total_products = sum(len(rows) for rows in product_rows.values())
+    page, total_pages, start, end = _shop_page_window(total_products, page)
+    rows = [[InlineKeyboardButton("──── ⚡ AUTO DELIVERY ────", callback_data="noop")]]
+    product_index = 0
+    for item in shop_order:
+        item_type, item_id = item.split(":", 1)
+        item_rows = product_rows.get(item) or []
+        if item_rows:
+            for product_row in item_rows:
+                if start <= product_index < end:
+                    rows.append(product_row)
+                product_index += 1
+            continue
+        if item_type != "category":
+            continue
+        category = CATEGORIES.get(item_id, {})
+        if not category or item_id == DEFAULT_CATEGORY_ID:
+            continue
+        label = f"{category.get('name', item_id)}  ▶"
+        rows.append([
+            make_category_inline_button(
+                category,
+                label,
+                f"shop_category_{item_id}",
+                style="primary" if styled else None,
+            )
+        ])
+    pagination = _shop_pagination_row(user_id, page, total_pages, "shop_page")
+    if pagination:
+        rows.append(pagination)
+    rows.append([
+        make_styled_inline_button(
+            f"🏠 {t(user_id, 'back_to_menu')}",
+            callback_data="user_back_to_dashboard",
+            style="danger" if styled else None,
+        )
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+def shop_menu_keyboard(
+    user_id: int = None, category_id: str = None, styled: bool = True, page: int = 0
+) -> InlineKeyboardMarkup:
+    """Render an original category product list with a fixed ten-product page."""
+    normalize_categories()
+    all_product_rows = ordered_category_product_rows(category_id, user_id, styled=styled)
+    page, total_pages, start, end = _shop_page_window(len(all_product_rows), page)
+    rows = [[InlineKeyboardButton("──── ⚡ AUTO DELIVERY ────", callback_data="noop")]]
+    rows.extend(all_product_rows[start:end])
+    category_token = shop_category_page_token(category_id)
+    pagination = _shop_pagination_row(user_id, page, total_pages, f"shop_catpage_{category_token}")
+    if pagination:
+        rows.append(pagination)
+    if category_id and category_id != DEFAULT_CATEGORY_ID:
+        rows.append([
+            make_styled_inline_button(
+                f"⬅️ {t(user_id, 'back')}",
+                callback_data="back_shop_cards",
+                style="primary" if styled else None,
+            )
+        ])
+    rows.append([
+        make_styled_inline_button(
+            f"🏠 {t(user_id, 'back_to_menu')}",
+            callback_data="user_back_to_dashboard",
+            style="danger" if styled else None,
+        )
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+async def send_shop_cards_message(
+    source, from_callback: bool = False, category_id: str = None, reset: bool = False, page: int = 0
+):
+    # Keep the historical function signature/callbacks and restore the original
+    # category hierarchy. `reset` remains accepted for callers added in Phase 15.
+    normalize_categories()
     viewer_id = getattr(getattr(source, "from_user", None), "id", None)
-    store_message = getattr(source, "message", None) if from_callback else source
-    chat_id = getattr(store_message, "chat_id", None)
-    context = _storefront_context(viewer_id, reset=reset, chat_id=chat_id)
-    _, _, _, result_count = storefront_page(viewer_id, context)
-    text = render_shop_menu_text(viewer_id, context, result_count)
-    if result_count == 0:
-        text += f"\n\n{escape_html(t(viewer_id, 'no_search_results' if context.get('query') else 'empty_store'))}"
-    keyboard = storefront_keyboard(viewer_id, context)
-    fallback_keyboard = storefront_keyboard(viewer_id, context, styled=False)
+    if category_id is None or category_id == DEFAULT_CATEGORY_ID:
+        text = render_shop_menu_text(viewer_id)
+        keyboard = shop_categories_keyboard(viewer_id, page=page)
+        fallback_keyboard = shop_categories_keyboard(viewer_id, styled=False, page=page)
+    else:
+        category = CATEGORIES.get(category_id, CATEGORIES[DEFAULT_CATEGORY_ID])
+        text = (
+            f"{category_icon_html(category)} "
+            f"<b>{escape_html(category.get('name', category_id))}</b>\n\n"
+            f"{render_shop_menu_text(viewer_id)}"
+        )
+        keyboard = shop_menu_keyboard(viewer_id, category_id, page=page)
+        fallback_keyboard = shop_menu_keyboard(viewer_id, category_id, styled=False, page=page)
     if from_callback:
         try:
             await source.edit_message_text(text=text, reply_markup=keyboard, parse_mode="HTML")
@@ -19343,6 +19470,30 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_shop_cards_message(query, from_callback=True)
         return
 
+    if data.startswith("shop_page_"):
+        try:
+            page = int(data.replace("shop_page_", "", 1))
+        except ValueError:
+            page = 0
+        user_state[user_id] = {"step": "shop", "page": max(0, page)}
+        await send_shop_cards_message(query, from_callback=True, page=page)
+        return
+
+    if data.startswith("shop_catpage_"):
+        selection = data.replace("shop_catpage_", "", 1)
+        category_token, separator, page_text = selection.rpartition("_")
+        category_id = find_shop_category_by_page_token(category_token) if separator else None
+        try:
+            page = int(page_text)
+        except ValueError:
+            page = 0
+        if category_id is None or category_id == DEFAULT_CATEGORY_ID:
+            await send_shop_cards_message(query, from_callback=True)
+            return
+        user_state[user_id] = {"step": "shop", "category_id": category_id, "page": max(0, page)}
+        await send_shop_cards_message(query, from_callback=True, category_id=category_id, page=page)
+        return
+
     if data.startswith("shop_category_"):
         category_id = data.replace("shop_category_", "", 1)
         if category_id == DEFAULT_CATEGORY_ID or category_id not in CATEGORIES:
@@ -20059,8 +20210,10 @@ async def handle_callback_persistent(update: Update, context: ContextTypes.DEFAU
         await handle_callback(update, context)
     finally:
         pure_store_navigation = (
-            callback_data.startswith(("sf_", "shop_category_", "api_shop_view_", "shop_buy_"))
-            or callback_data in {"back_shop_cards", "user_dashboard_shop"}
+            callback_data.startswith((
+                "sf_", "shop_category_", "shop_page_", "shop_catpage_", "api_shop_view_", "shop_buy_",
+            ))
+            or callback_data in {"noop", "back_shop_cards", "user_dashboard_shop"}
         )
         if not pure_store_navigation or not user_was_known:
             save_bot_state()
