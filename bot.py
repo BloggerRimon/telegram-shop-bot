@@ -393,6 +393,10 @@ category_order = [DEFAULT_CATEGORY_ID]
 next_category_number = 1
 shop_order = []
 api_product_mappings = {}
+# Serialize configured storefront placement reads, admin moves, provider-refresh
+# mapping updates, and placement snapshots.  RLock is required because the
+# ordering helpers intentionally call one another while holding this lock.
+shop_order_lock = threading.RLock()
 seller_api_browser_cache = {}
 api_purchase_in_progress = set()
 SELLER_API_BROWSER_CACHE_TTL_SECONDS = 300
@@ -626,6 +630,14 @@ def build_state_snapshot():
     if "normalize_shop_order" in globals():
         normalize_shop_order()
 
+    # Capture placement and mapping state as one consistent in-process view.
+    # The rest of the state keeps its established persistence behavior.
+    with shop_order_lock:
+        product_order_snapshot = list(product_order)
+        category_order_snapshot = list(category_order)
+        shop_order_snapshot = list(shop_order)
+        api_product_mappings_snapshot = _json_safe(api_product_mappings)
+
     state = {
         "user_wallet": user_wallet,
         "user_orders": user_orders,
@@ -636,11 +648,11 @@ def build_state_snapshot():
         "all_orders": all_orders,
         "all_transactions": all_transactions,
         "PRODUCTS": PRODUCTS,
-        "product_order": product_order,
+        "product_order": product_order_snapshot,
         "CATEGORIES": CATEGORIES,
-        "category_order": category_order,
-        "shop_order": shop_order,
-        "api_product_mappings": api_product_mappings,
+        "category_order": category_order_snapshot,
+        "shop_order": shop_order_snapshot,
+        "api_product_mappings": api_product_mappings_snapshot,
         "seller_api_clients": {
             str(client_id): {
                 "name": str(client.get("name") or client_id),
@@ -3921,98 +3933,130 @@ def api_product_mapping_by_id(api_product_id: str, provider_id: str = None):
     wanted_id = str(api_product_id or "").strip()
     if provider_id is None and "|" in wanted_id:
         provider_id, wanted_id = wanted_id.split("|", 1)
-    for mapping in api_product_mappings.values():
-        if (
-            str((mapping or {}).get("api_product_id") or "").strip() == wanted_id
-            and (provider_id is None or mapping_provider_id(mapping) == provider_id)
-        ):
+    with shop_order_lock:
+        matches = []
+        for mapping in api_product_mappings.values():
+            if (
+                str((mapping or {}).get("api_product_id") or "").strip() == wanted_id
+                and (provider_id is None or mapping_provider_id(mapping) == provider_id)
+            ):
+                matches.append(mapping)
+    if provider_id is not None:
+        return matches[0] if matches else None
+    # Unqualified order identities historically meant the default provider.
+    # Fall back to the only/first match solely for legacy non-default catalogs.
+    for mapping in matches:
+        if mapping_provider_id(mapping) == "default":
             return mapping
+    return matches[0] if matches else None
+
+
+def canonical_shop_order_item(item: str):
+    """Resolve a legacy order reference to one stable catalog identity."""
+    item = str(item or "").strip()
+    if item.startswith("product:"):
+        product_id = item.split(":", 1)[1]
+        return f"product:{product_id}" if product_id in PRODUCTS else None
+    if item.startswith("category:"):
+        category_id = item.split(":", 1)[1]
+        return f"category:{category_id}" if category_id in CATEGORIES and category_id != DEFAULT_CATEGORY_ID else None
+    if item.startswith("api_product:"):
+        mapping = api_product_mapping_by_id(item.split(":", 1)[1])
+        if not mapping:
+            return None
+        api_product_id = str(mapping.get("api_product_id") or "").strip()
+        if not api_product_id:
+            return None
+        return api_product_shop_order_item(api_product_id, mapping_provider_id(mapping))
     return None
 
 
-def normalize_shop_order() -> bool:
-    """Keep a safe combined shop order without deleting products or categories."""
-    normalize_categories()
-    changed = False
+def configured_shop_order_items() -> list:
+    with shop_order_lock:
+        return _configured_shop_order_items_unlocked()
 
-    valid_product_ids = [product_id for product_id in product_order if product_id in PRODUCTS]
-    for product_id in PRODUCTS:
-        if product_id not in valid_product_ids:
-            valid_product_ids.append(product_id)
 
-    valid_category_ids = [
-        category_id for category_id in category_order
-        if category_id in CATEGORIES and category_id != DEFAULT_CATEGORY_ID
-    ]
-    for category_id in CATEGORIES:
-        if category_id != DEFAULT_CATEGORY_ID and category_id not in valid_category_ids:
-            valid_category_ids.append(category_id)
+def _configured_shop_order_items_unlocked() -> list:
+    """Return a canonical, unique order without rewriting legacy shop_order.
 
-    valid_api_product_ids = []
-    for mapping in api_product_mappings.values():
-        if not is_api_shop_mapping_visible(mapping):
-            continue
-        api_product_id = str(mapping.get("api_product_id") or "").strip()
-        if api_product_id and api_product_id not in valid_api_product_ids:
-            valid_api_product_ids.append(api_product_id)
+    Existing references win. Products absent from the legacy list append in
+    stable local/category/mapping insertion order. Disabled, hidden and missing
+    records remain represented so a visibility transition never loses place.
+    """
+    ordered = []
+    seen = set()
 
-    valid_items = {
-        *[f"product:{product_id}" for product_id in valid_product_ids],
-        *[f"category:{category_id}" for category_id in valid_category_ids],
-        *[
-            api_product_shop_order_item(mapping.get("api_product_id"), mapping_provider_id(mapping))
-            for mapping in api_product_mappings.values() if is_api_shop_mapping_visible(mapping)
-        ],
-    }
-    cleaned_order = []
+    def add(item):
+        canonical = canonical_shop_order_item(item)
+        if canonical and canonical not in seen:
+            seen.add(canonical)
+            ordered.append(canonical)
+
     for item in shop_order:
-        item = str(item)
-        if item in valid_items and item not in cleaned_order:
-            cleaned_order.append(item)
+        add(item)
 
-    if not cleaned_order:
-        # Match the shop layout that existed before combined ordering was introduced.
-        cleaned_order.extend(f"category:{category_id}" for category_id in valid_category_ids)
-        cleaned_order.extend(f"product:{product_id}" for product_id in valid_product_ids)
-    else:
-        for product_id in valid_product_ids:
-            item = f"product:{product_id}"
-            if item not in cleaned_order:
-                cleaned_order.append(item)
-        for category_id in valid_category_ids:
-            item = f"category:{category_id}"
-            if item not in cleaned_order:
-                cleaned_order.append(item)
-    for mapping in api_product_mappings.values():
-        if not is_api_shop_mapping_visible(mapping):
-            continue
-        item = api_product_shop_order_item(mapping.get("api_product_id"), mapping_provider_id(mapping))
-        if item not in cleaned_order:
-            cleaned_order.append(item)
+    if not ordered:
+        for category_id in category_order:
+            if category_id != DEFAULT_CATEGORY_ID:
+                add(f"category:{category_id}")
+        for product_id in product_order:
+            add(f"product:{product_id}")
 
-    if cleaned_order != shop_order:
-        shop_order.clear()
-        shop_order.extend(cleaned_order)
-        changed = True
+    for product_id in product_order:
+        add(f"product:{product_id}")
+    for product_id in PRODUCTS:
+        add(f"product:{product_id}")
+    for category_id in category_order:
+        if category_id != DEFAULT_CATEGORY_ID:
+            add(f"category:{category_id}")
+    for category_id in CATEGORIES:
+        if category_id != DEFAULT_CATEGORY_ID:
+            add(f"category:{category_id}")
+    for _, mapping in saved_api_shop_mappings():
+        api_product_id = str((mapping or {}).get("api_product_id") or "").strip()
+        if api_product_id:
+            add(api_product_shop_order_item(api_product_id, mapping_provider_id(mapping)))
+    return ordered
 
-    ordered_products = [item.split(":", 1)[1] for item in shop_order if item.startswith("product:")]
-    if ordered_products != product_order:
-        product_order.clear()
-        product_order.extend(ordered_products)
-        changed = True
 
-    ordered_categories = [DEFAULT_CATEGORY_ID]
-    ordered_categories.extend(item.split(":", 1)[1] for item in shop_order if item.startswith("category:"))
-    if ordered_categories != category_order:
-        category_order.clear()
-        category_order.extend(ordered_categories)
-        changed = True
+def configured_product_order_items(category_id: str) -> list:
+    """Return every configured product in one original logical list."""
+    with shop_order_lock:
+        result = []
+        for item in _configured_shop_order_items_unlocked():
+            if item.startswith("product:"):
+                product = PRODUCTS.get(item.split(":", 1)[1])
+                if product and product.get("category_id") == category_id:
+                    result.append(item)
+            elif item.startswith("api_product:"):
+                mapping = api_product_mapping_by_id(item.split(":", 1)[1])
+                if mapping and mapping.get("category_id") == category_id:
+                    result.append(item)
+        return result
 
-    for index, category_id in enumerate(category_order):
-        if CATEGORIES[category_id].get("order") != index:
-            CATEGORIES[category_id]["order"] = index
-            changed = True
-    return changed
+
+def normalize_shop_order() -> bool:
+    """Append missing catalog references without deleting legacy placement."""
+    with shop_order_lock:
+        normalize_categories()
+        changed = False
+        represented = {
+            canonical for canonical in (canonical_shop_order_item(item) for item in shop_order) if canonical
+        }
+        for item in _configured_shop_order_items_unlocked():
+            if item not in represented:
+                shop_order.append(item)
+                represented.add(item)
+                changed = True
+        for product_id in PRODUCTS:
+            if product_id not in product_order:
+                product_order.append(product_id)
+                changed = True
+        for category_id in CATEGORIES:
+            if category_id not in category_order:
+                category_order.append(category_id)
+                changed = True
+        return changed
 
 
 def is_main_shop_order_item(item: str) -> bool:
@@ -4038,17 +4082,20 @@ def shop_order_item_category_id(item: str):
 
 
 def shop_order_move_peers(item: str) -> list:
-    normalize_shop_order()
+    item = canonical_shop_order_item(item)
+    ordered = configured_shop_order_items()
+    if not item:
+        return []
     if is_main_shop_order_item(item):
-        return [candidate for candidate in shop_order if is_main_shop_order_item(candidate)]
+        return [candidate for candidate in ordered if is_main_shop_order_item(candidate)]
     if item.startswith(("product:", "api_product:")):
         category_id = shop_order_item_category_id(item)
         return [
-            candidate for candidate in shop_order
+            candidate for candidate in ordered
             if candidate.startswith(("product:", "api_product:"))
             and shop_order_item_category_id(candidate) == category_id
         ]
-    return list(shop_order)
+    return [candidate for candidate in ordered if candidate.startswith("category:")]
 
 
 def can_move_shop_order_item(item: str, direction: int) -> bool:
@@ -4060,53 +4107,135 @@ def can_move_shop_order_item(item: str, direction: int) -> bool:
 
 
 def move_shop_order_item(item: str, direction: int) -> bool:
-    normalize_shop_order()
+    with shop_order_lock:
+        return _move_shop_order_item_unlocked(item, direction)
+
+
+def _move_shop_order_item_unlocked(item: str, direction: int) -> bool:
+    item = canonical_shop_order_item(item)
     peers = shop_order_move_peers(item)
-    if item not in peers:
+    if not item or item not in peers:
         return False
     peer_index = peers.index(item)
     target_peer_index = peer_index + direction
     if target_peer_index < 0 or target_peer_index >= len(peers):
         return False
-    target_item = peers[target_peer_index]
-    index = shop_order.index(item)
-    target_index = shop_order.index(target_item)
-    shop_order[index], shop_order[target_index] = shop_order[target_index], shop_order[index]
-    normalize_shop_order()
+    peers[peer_index], peers[target_peer_index] = peers[target_peer_index], peers[peer_index]
+    return _write_configured_peer_order(peers)
+
+
+def _write_configured_peer_order(ordered_peers: list) -> bool:
+    with shop_order_lock:
+        return _write_configured_peer_order_unlocked(ordered_peers)
+
+
+def _write_configured_peer_order_unlocked(ordered_peers: list) -> bool:
+    """Rewrite only first peer-reference slots; leave stale/duplicate data intact."""
+    ordered_peers = [canonical_shop_order_item(item) for item in ordered_peers]
+    ordered_peers = [item for index, item in enumerate(ordered_peers) if item and item not in ordered_peers[:index]]
+    if not ordered_peers:
+        return False
+    peer_set = set(ordered_peers)
+    represented = {
+        canonical for canonical in (canonical_shop_order_item(item) for item in shop_order) if canonical
+    }
+    for peer in ordered_peers:
+        if peer not in represented:
+            shop_order.append(peer)
+            represented.add(peer)
+    slots = []
+    found = set()
+    for index, raw_item in enumerate(shop_order):
+        canonical = canonical_shop_order_item(raw_item)
+        if canonical in peer_set and canonical not in found:
+            slots.append(index)
+            found.add(canonical)
+    if len(slots) != len(ordered_peers):
+        return False
+    changed = any(shop_order[index] != item for index, item in zip(slots, ordered_peers))
+    for index, item in zip(slots, ordered_peers):
+        shop_order[index] = item
+    if changed:
+        _sync_legacy_orders_from_configured()
+    return changed
+
+
+def _sync_legacy_orders_from_configured() -> None:
+    """Keep legacy admin order lists aligned after an explicit admin move."""
+    configured = configured_shop_order_items()
+    ordered_products = [
+        item.split(":", 1)[1] for item in configured if item.startswith("product:")
+    ]
+    ordered_products.extend(
+        product_id for product_id in product_order
+        if product_id in PRODUCTS and product_id not in ordered_products
+    )
+    ordered_products.extend(product_id for product_id in PRODUCTS if product_id not in ordered_products)
+    product_order[:] = ordered_products
+
+    ordered_categories = [DEFAULT_CATEGORY_ID]
+    ordered_categories.extend(
+        item.split(":", 1)[1] for item in configured
+        if item.startswith("category:") and item.split(":", 1)[1] not in ordered_categories
+    )
+    ordered_categories.extend(
+        category_id for category_id in category_order
+        if category_id in CATEGORIES and category_id not in ordered_categories
+    )
+    ordered_categories.extend(category_id for category_id in CATEGORIES if category_id not in ordered_categories)
+    category_order[:] = ordered_categories
+    for index, category_id in enumerate(category_order):
+        if category_id in CATEGORIES:
+            CATEGORIES[category_id]["order"] = index
+
+
+def move_configured_product_to_position(item: str, position: int) -> bool:
+    with shop_order_lock:
+        return _move_configured_product_to_position_unlocked(item, position)
+
+
+def _move_configured_product_to_position_unlocked(item: str, position: int) -> bool:
+    item = canonical_shop_order_item(item)
+    if not item or not item.startswith(("product:", "api_product:")):
+        return False
+    category_id = shop_order_item_category_id(item)
+    peers = configured_product_order_items(category_id)
+    if item not in peers:
+        return False
+    try:
+        position = int(position)
+    except (TypeError, ValueError):
+        return False
+    if position <= 0:
+        return False
+    peers.remove(item)
+    peers.insert(min(position - 1, len(peers)), item)
+    _write_configured_peer_order_unlocked(peers)
     return True
 
 
 def remove_api_product_shop_order_item(api_product_id: str, provider_id: str = "default") -> bool:
-    item = api_product_shop_order_item(api_product_id, provider_id)
-    original_length = len(shop_order)
-    shop_order[:] = [candidate for candidate in shop_order if candidate != item]
-    return len(shop_order) != original_length
+    with shop_order_lock:
+        item = api_product_shop_order_item(api_product_id, provider_id)
+        original_length = len(shop_order)
+        shop_order[:] = [candidate for candidate in shop_order if candidate != item]
+        return len(shop_order) != original_length
 
 
 def sync_api_product_shop_order(mapping: dict) -> bool:
-    api_product_id = str((mapping or {}).get("api_product_id") or "").strip()
-    if not api_product_id:
-        return False
-    provider_id = mapping_provider_id(mapping)
-    item = api_product_shop_order_item(api_product_id, provider_id)
-    changed = False
-    if is_api_shop_mapping_visible(mapping) and item not in shop_order:
+    with shop_order_lock:
+        api_product_id = str((mapping or {}).get("api_product_id") or "").strip()
+        if not api_product_id:
+            return False
+        provider_id = mapping_provider_id(mapping)
+        item = api_product_shop_order_item(api_product_id, provider_id)
+        represented = {
+            canonical for canonical in (canonical_shop_order_item(candidate) for candidate in shop_order) if canonical
+        }
+        if item in represented:
+            return False
         shop_order.append(item)
-        changed = True
-    elif not is_api_shop_mapping_visible(mapping):
-        changed = remove_api_product_shop_order_item(api_product_id, provider_id)
-    elif shop_order.count(item) > 1:
-        found = False
-        deduplicated = []
-        for candidate in shop_order:
-            if candidate == item:
-                if found:
-                    continue
-                found = True
-            deduplicated.append(candidate)
-        shop_order[:] = deduplicated
-        changed = True
-    return changed
+        return True
 
 
 def enter_client_mode(user_id: int):
@@ -7243,6 +7372,11 @@ def _api_product_mapping_snapshot(product: dict, provider_id: str = "default") -
 
 
 def update_api_product_mapping(product: dict, provider_id: str = None, **changes) -> dict:
+    with shop_order_lock:
+        return _update_api_product_mapping_unlocked(product, provider_id, **changes)
+
+
+def _update_api_product_mapping_unlocked(product: dict, provider_id: str = None, **changes) -> dict:
     api_product_id = _buyer_api_product_id(product)
     if not api_product_id:
         raise ValueError("API product ID is missing.")
@@ -7305,6 +7439,15 @@ def sync_api_product_mapping_validity(
     allow_missing: bool = True,
     provider_id: str = "default",
 ) -> dict:
+    with shop_order_lock:
+        return _sync_api_product_mapping_validity_unlocked(products, allow_missing, provider_id)
+
+
+def _sync_api_product_mapping_validity_unlocked(
+    products: list,
+    allow_missing: bool = True,
+    provider_id: str = "default",
+) -> dict:
     """Refresh saved mappings by exact seller product ID without deleting mappings."""
     current_products = {}
     for product in products or []:
@@ -7331,7 +7474,6 @@ def sync_api_product_mapping_validity(
                 mapping["last_missing_at"] = now_text
             mapping["seller_missing"] = True
             mapping["enabled"] = False
-            remove_api_product_shop_order_item(api_product_id, provider_id)
             if newly_missing:
                 result["missing"] += 1
             continue
@@ -7357,15 +7499,7 @@ def sync_api_product_mapping_validity(
         if was_missing:
             mapping["last_restored_at"] = now_text
             mapping["enabled"] = _buyer_api_bool_value(mapping.get("enabled_before_missing"))
-            item = api_product_shop_order_item(api_product_id, provider_id)
-            remove_api_product_shop_order_item(api_product_id, provider_id)
-            if _buyer_api_bool_value(mapping.get("enabled")):
-                saved_index = mapping.get("shop_order_index_before_missing")
-                try:
-                    saved_index = max(0, min(int(saved_index), len(shop_order)))
-                except (TypeError, ValueError):
-                    saved_index = len(shop_order)
-                shop_order.insert(saved_index, item)
+            sync_api_product_shop_order(mapping)
             result["restored"] += 1
         else:
             result["updated"] += 1
@@ -8720,6 +8854,7 @@ def admin_products_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📦 Edit Display Stock", callback_data="admin_edit_display_stock_menu")],
         [InlineKeyboardButton("💸 Bulk Pricing", callback_data="admin_bulk_pricing_menu")],
         [InlineKeyboardButton("↕️ Reorder in Shop", callback_data="admin_reorder_menu")],
+        [InlineKeyboardButton("📋 Store Product Positions", callback_data="admin_pos_lists")],
         [InlineKeyboardButton("⭐ Storefront Placement", callback_data="admin_sf_page_0")],
         [InlineKeyboardButton("🗑 Delete Product", callback_data="admin_delete_product_menu")],
         [InlineKeyboardButton("⬅️ Close", callback_data="admin_products_close")],
@@ -8781,7 +8916,8 @@ def render_storefront_admin_page(page: int = 0) -> tuple:
     page = max(0, min(int(page), pages - 1))
     text = (
         "⭐ <b>STOREFRONT PLACEMENT</b>\n\n"
-        "Set Featured status and an optional numeric priority. Lower priorities appear first within Featured/non-Featured groups.\n\n"
+        "Featured and priority settings are retained for compatible search/filter views. "
+        "The original Store Menu order is controlled by Store Product Positions.\n\n"
         f"Products: <b>{len(targets)}</b> | Page: <b>{page + 1}/{pages}</b>"
     )
     return text, targets, page, pages
@@ -8819,7 +8955,7 @@ def render_storefront_admin_target(target) -> str:
         f"<b>Type:</b> {escape_html(kind)}\n"
         f"<b>Featured:</b> {'Yes' if _buyer_api_bool_value(record.get('storefront_featured')) else 'No'}\n"
         f"<b>Priority:</b> {priority if priority is not None else 'Not set'}\n\n"
-        "Default storefront order is Featured first, then priority, then the existing stable shop order."
+        "These values do not override a manually configured position in the original Store Menu."
     )
 
 
@@ -8833,6 +8969,166 @@ def storefront_admin_target_keyboard(target) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🧹 Clear Priority", callback_data=f"admin_sf_pc_{token}")],
         [InlineKeyboardButton("⬅️ Product List", callback_data="admin_sf_page_0")],
     ])
+
+
+def store_position_token(item: str) -> str:
+    return hashlib.sha256(str(item).encode("utf-8")).hexdigest()[:16]
+
+
+def find_store_position_item(callback_token: str):
+    callback_token = str(callback_token or "").strip().lower()
+    for item in configured_shop_order_items():
+        if item.startswith(("product:", "api_product:")) and store_position_token(item) == callback_token:
+            return item
+    return None
+
+
+def store_position_record(item: str):
+    item = canonical_shop_order_item(item)
+    if not item:
+        return None
+    if item.startswith("product:"):
+        product_id = item.split(":", 1)[1]
+        product = PRODUCTS.get(product_id)
+        if not product:
+            return None
+        source = "Manual" if is_manual_delivery_product(product) else "Local"
+        return {
+            "item": item,
+            "name": str(product.get("name") or product_id),
+            "source": source,
+            "enabled": _storefront_local_visible(product),
+            "category_id": product.get("category_id"),
+            "identity": product_id,
+            "record": product,
+        }
+    mapping = api_product_mapping_by_id(item.split(":", 1)[1])
+    if not mapping:
+        return None
+    api_product_id = str(mapping.get("api_product_id") or "").strip()
+    provider_id = mapping_provider_id(mapping)
+    return {
+        "item": item,
+        "name": api_mapping_display_name(mapping),
+        "source": "Mapped API",
+        "enabled": is_api_shop_mapping_visible(mapping),
+        "category_id": mapping.get("category_id"),
+        "identity": api_product_order_identity(api_product_id, provider_id),
+        "record": mapping,
+    }
+
+
+def store_position_category_name(category_id: str) -> str:
+    if category_id == DEFAULT_CATEGORY_ID:
+        return "Root Store"
+    category = CATEGORIES.get(category_id, {})
+    return str(category.get("name") or category_id)
+
+
+def store_position_lists_keyboard() -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(
+        "🛒 Root Store", callback_data=f"admin_pos_list_{shop_category_page_token(DEFAULT_CATEGORY_ID)}"
+    )]]
+    for category_id in category_order:
+        if category_id == DEFAULT_CATEGORY_ID or category_id not in CATEGORIES:
+            continue
+        rows.append([InlineKeyboardButton(
+            f"📁 {CATEGORIES[category_id].get('name', category_id)}"[:64],
+            callback_data=f"admin_pos_list_{shop_category_page_token(category_id)}",
+        )])
+    rows.append([InlineKeyboardButton("⬅️ Products", callback_data="admin_products_back")])
+    return InlineKeyboardMarkup(rows)
+
+
+def render_store_position_page(user_id: int, page: int = 0) -> tuple:
+    category_id = admin_temp.get(user_id, {}).get("store_position_category", DEFAULT_CATEGORY_ID)
+    if category_id not in CATEGORIES:
+        category_id = DEFAULT_CATEGORY_ID
+    items = configured_product_order_items(category_id)
+    pages = max(1, (len(items) + 9) // 10)
+    try:
+        page = int(page)
+    except (TypeError, ValueError):
+        page = 0
+    page = max(0, min(page, pages - 1))
+    text = (
+        "📋 <b>STORE PRODUCT POSITIONS</b>\n\n"
+        f"<b>List:</b> {escape_html(store_position_category_name(category_id))}\n"
+        f"Configured products: <b>{len(items)}</b> | Page: <b>{page + 1}/{pages}</b>\n\n"
+        "Positions include disabled and temporarily missing products. Customer pages contain 10 currently visible products."
+    )
+    return text, items, page, pages
+
+
+def store_position_page_keyboard(user_id: int, page: int = 0) -> InlineKeyboardMarkup:
+    _, items, page, pages = render_store_position_page(user_id, page)
+    admin_temp.setdefault(user_id, {})["store_position_page"] = page
+    start = page * 10
+    rows = []
+    for offset, item in enumerate(items[start:start + 10], start=start + 1):
+        info = store_position_record(item)
+        if not info:
+            continue
+        status = "✅" if info["enabled"] else "⛔"
+        rows.append([InlineKeyboardButton(
+            _short_button_text(f"#{offset} {status} {info['name']}", 64),
+            callback_data=f"admin_pos_view_{store_position_token(item)}",
+        )])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"admin_pos_page_{page - 1}"))
+    nav.append(InlineKeyboardButton(f"{page + 1} / {pages}", callback_data="noop"))
+    if page + 1 < pages:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"admin_pos_page_{page + 1}"))
+    if pages > 1:
+        rows.append(nav)
+    rows.extend([
+        [InlineKeyboardButton("📁 Select Product List", callback_data="admin_pos_lists")],
+        [InlineKeyboardButton("⬅️ Products", callback_data="admin_products_back")],
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+def render_store_position_detail(user_id: int, item: str) -> str:
+    info = store_position_record(item)
+    if not info:
+        return "❌ <b>Product placement is no longer available.</b>"
+    peers = configured_product_order_items(info["category_id"])
+    position = peers.index(info["item"]) + 1 if info["item"] in peers else 0
+    category_name = store_position_category_name(info["category_id"])
+    return (
+        "📋 <b>STORE PRODUCT POSITION</b>\n\n"
+        f"<b>Position:</b> {position}\n"
+        f"<b>Product:</b> {escape_html(info['name'])}\n"
+        f"<b>Status:</b> {'Enabled' if info['enabled'] else 'Disabled'}\n"
+        f"<b>Source:</b> {escape_html(info['source'])}\n"
+        f"<b>Category:</b> {escape_html(category_name)}\n"
+        f"<b>Identity:</b> <code>{escape_html(info['identity'])}</code>\n\n"
+        "Moving changes only this list's configured order; it never changes category membership."
+    )
+
+
+def store_position_detail_keyboard(user_id: int, item: str) -> InlineKeyboardMarkup:
+    info = store_position_record(item)
+    if not info:
+        return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Product List", callback_data="admin_pos_page_0")]])
+    peers = configured_product_order_items(info["category_id"])
+    index = peers.index(info["item"])
+    token = store_position_token(info["item"])
+    rows = []
+    if index > 0:
+        rows.append([InlineKeyboardButton("⬆️ Move Up", callback_data=f"admin_pos_up_{token}")])
+    if index + 1 < len(peers):
+        rows.append([InlineKeyboardButton("⬇️ Move Down", callback_data=f"admin_pos_down_{token}")])
+    rows.extend([
+        [InlineKeyboardButton("🔢 Move to Position", callback_data=f"admin_pos_exact_{token}")],
+        [InlineKeyboardButton("📄 Move to Page + Slot", callback_data=f"admin_pos_slot_{token}")],
+        [InlineKeyboardButton(
+            "⬅️ Product List",
+            callback_data=f"admin_pos_page_{admin_temp.get(user_id, {}).get('store_position_page', 0)}",
+        )],
+    ])
+    return InlineKeyboardMarkup(rows)
 
 
 def product_translation_language_keyboard(back_callback: str) -> InlineKeyboardMarkup:
@@ -9247,9 +9543,8 @@ def sales_report_auto_keyboard() -> InlineKeyboardMarkup:
 
 
 def admin_shop_reorder_select_keyboard() -> InlineKeyboardMarkup:
-    normalize_shop_order()
     rows = []
-    for item in shop_order:
+    for item in configured_shop_order_items():
         if item.startswith("product:"):
             product_id = item.split(":", 1)[1]
             product = PRODUCTS.get(product_id)
@@ -9306,9 +9601,8 @@ def broadcast_confirm_keyboard() -> InlineKeyboardMarkup:
 
 
 def admin_reorder_selected_keyboard(product_id: str) -> InlineKeyboardMarkup:
-    normalize_shop_order()
     item = f"product:{product_id}"
-    if item not in shop_order:
+    if item not in configured_shop_order_items():
         return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="admin_reorder_menu")]])
     rows = []
     if can_move_shop_order_item(item, -1):
@@ -9320,12 +9614,11 @@ def admin_reorder_selected_keyboard(product_id: str) -> InlineKeyboardMarkup:
 
 
 def admin_api_reorder_selected_keyboard(mapping: dict) -> InlineKeyboardMarkup:
-    normalize_shop_order()
     api_product_id = str((mapping or {}).get("api_product_id") or "").strip()
     provider_id = mapping_provider_id(mapping)
     item = api_product_shop_order_item(api_product_id, provider_id)
     token = api_shop_callback_token(api_product_id, provider_id)
-    if item not in shop_order:
+    if item not in configured_shop_order_items():
         return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="admin_reorder_menu")]])
     rows = []
     if can_move_shop_order_item(item, -1):
@@ -11409,17 +11702,15 @@ def api_shop_product_rows(category_id: str, styled: bool = True) -> list:
 
 
 def ordered_category_product_rows(category_id: str, user_id: int = None, styled: bool = True) -> list:
-    normalize_shop_order()
     rows = []
-    for item in shop_order:
+    # Canonical identity deduplication happens before row rendering/pagination.
+    for item in configured_product_order_items(category_id):
         if item.startswith("product:"):
             product_id = item.split(":", 1)[1]
-            product = PRODUCTS.get(product_id)
-            if product and product.get("category_id") == category_id:
-                rows.extend(shop_product_rows([product_id], user_id, styled=styled))
+            rows.extend(shop_product_rows([product_id], user_id, styled=styled))
         elif item.startswith("api_product:"):
             mapping = api_product_mapping_by_id(item.split(":", 1)[1])
-            if mapping and mapping.get("category_id") == category_id:
+            if mapping:
                 rows.extend(api_shop_product_row(mapping, styled=styled, user_id=user_id))
     return rows
 
@@ -11708,8 +11999,8 @@ def storefront_local_product_available(product_id: str, product: dict = None, us
 
 def build_customer_storefront_catalog(user_id: int = None) -> list:
     """Build the unified catalog entirely from local state and mapped API caches."""
-    normalize_shop_order()
-    stable_positions = {item: index for index, item in enumerate(shop_order)}
+    configured_order = configured_shop_order_items()
+    stable_positions = {item: index for index, item in enumerate(configured_order)}
     fallback_position = len(stable_positions)
     items = []
     for product_index, product_id in enumerate(product_order):
@@ -11881,6 +12172,8 @@ def shop_product_rows(product_ids: list, user_id: int = None, styled: bool = Tru
         if product_id not in PRODUCTS:
             continue
         product = PRODUCTS[product_id]
+        if not _storefront_local_visible(product):
+            continue
         display_name = localized_product_name(product, user_id)
         stock = get_display_stock(product_id)
         month = format_duration_text(product.get("month", ""))
@@ -11965,16 +12258,16 @@ def _root_shop_product_rows(item: str, user_id: int = None, styled: bool = True)
 
 def shop_categories_keyboard(user_id: int = None, styled: bool = True, page: int = 0) -> InlineKeyboardMarkup:
     """Render the original root shop hierarchy, paging only root product rows."""
-    normalize_shop_order()
+    ordered_items = configured_shop_order_items()
     product_rows = {
         item: _root_shop_product_rows(item, user_id, styled=styled)
-        for item in shop_order
+        for item in ordered_items
     }
     total_products = sum(len(rows) for rows in product_rows.values())
     page, total_pages, start, end = _shop_page_window(total_products, page)
     rows = [[InlineKeyboardButton("──── ⚡ AUTO DELIVERY ────", callback_data="noop")]]
     product_index = 0
-    for item in shop_order:
+    for item in ordered_items:
         item_type, item_id = item.split(":", 1)
         item_rows = product_rows.get(item) or []
         if item_rows:
@@ -15335,6 +15628,61 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # ========= PRODUCT EDIT =========
+    if step in {"admin_store_position_input", "admin_store_page_slot_input"}:
+        if not is_admin(user_id):
+            user_state[user_id] = {"step": "main"}
+            reset_admin_temp(user_id)
+            return
+        token = admin_temp.get(user_id, {}).get("store_position_target")
+        item = find_store_position_item(token)
+        info = store_position_record(item) if item else None
+        if not info:
+            user_state[user_id] = {"step": "admin_products"}
+            reset_admin_temp(user_id)
+            await update.message.reply_text(
+                "❌ <b>Product placement not found.</b>", reply_markup=admin_products_keyboard(), parse_mode="HTML"
+            )
+            return
+        if step == "admin_store_position_input":
+            try:
+                position = int(text.strip())
+                if position <= 0:
+                    raise ValueError
+            except ValueError:
+                await update.message.reply_text(
+                    "❌ <b>Invalid position.</b> Send a positive whole number.", parse_mode="HTML"
+                )
+                return
+        else:
+            match = re.fullmatch(r"\s*(\d+)\s*[, :/]\s*(\d+)\s*", text)
+            if not match:
+                await update.message.reply_text(
+                    "❌ <b>Invalid page and slot.</b> Use format <code>2,3</code>.", parse_mode="HTML"
+                )
+                return
+            page_number, slot = (int(value) for value in match.groups())
+            if page_number <= 0 or not 1 <= slot <= 10:
+                await update.message.reply_text(
+                    "❌ <b>Invalid page or slot.</b> Page must be positive and slot must be 1-10.",
+                    parse_mode="HTML",
+                )
+                return
+            position = (page_number - 1) * 10 + slot
+        if not move_configured_product_to_position(item, position):
+            await update.message.reply_text("❌ <b>Could not update this product position.</b>", parse_mode="HTML")
+            return
+        peers = configured_product_order_items(info["category_id"])
+        actual_position = peers.index(item) + 1
+        admin_temp[user_id]["store_position_page"] = (actual_position - 1) // 10
+        admin_temp[user_id].pop("store_position_target", None)
+        user_state[user_id] = {"step": "admin_store_positions"}
+        await update.message.reply_text(
+            "✅ <b>Product position updated.</b>\n\n" + render_store_position_detail(user_id, item),
+            reply_markup=store_position_detail_keyboard(user_id, item),
+            parse_mode="HTML",
+        )
+        return
+
     if step == "admin_storefront_priority_input":
         if not is_admin(user_id):
             user_state[user_id] = {"step": "main"}
@@ -16191,7 +16539,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_inline_from_callback(query, "❌ <b>You are not allowed.</b>", close_keyboard())
         return
 
-    if data.startswith("admin_sf_") and not is_admin(user_id):
+    if data.startswith(("admin_sf_", "admin_pos_")) and not is_admin(user_id):
         await send_inline_from_callback(query, "❌ <b>You are not allowed.</b>", close_keyboard())
         return
 
@@ -17765,6 +18113,98 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         target[3].pop("storefront_priority", None)
         await send_inline_from_callback(query, render_storefront_admin_target(target), storefront_admin_target_keyboard(target))
+        return
+
+    if data == "admin_pos_lists":
+        reset_admin_temp(user_id)
+        user_state[user_id] = {"step": "admin_store_positions"}
+        await send_inline_from_callback(
+            query,
+            "📋 <b>STORE PRODUCT POSITIONS</b>\n\nSelect the original product list to manage.",
+            store_position_lists_keyboard(),
+        )
+        return
+
+    if data.startswith("admin_pos_list_"):
+        category_id = find_shop_category_by_page_token(data.replace("admin_pos_list_", "", 1))
+        if category_id not in CATEGORIES:
+            await send_inline_from_callback(query, "❌ <b>Product list not found.</b>", store_position_lists_keyboard())
+            return
+        admin_temp.setdefault(user_id, {})["store_position_category"] = category_id
+        admin_temp[user_id]["store_position_page"] = 0
+        user_state[user_id] = {"step": "admin_store_positions"}
+        text, _, page, _ = render_store_position_page(user_id, 0)
+        await send_inline_from_callback(query, text, store_position_page_keyboard(user_id, page))
+        return
+
+    if data.startswith("admin_pos_page_"):
+        try:
+            page = int(data.replace("admin_pos_page_", "", 1))
+        except ValueError:
+            page = 0
+        text, _, page, _ = render_store_position_page(user_id, page)
+        user_state[user_id] = {"step": "admin_store_positions"}
+        await send_inline_from_callback(query, text, store_position_page_keyboard(user_id, page))
+        return
+
+    if data.startswith("admin_pos_view_"):
+        item = find_store_position_item(data.replace("admin_pos_view_", "", 1))
+        if not item:
+            await send_inline_from_callback(query, "❌ <b>Product placement not found.</b>", store_position_lists_keyboard())
+            return
+        info = store_position_record(item)
+        admin_temp.setdefault(user_id, {})["store_position_category"] = info["category_id"]
+        user_state[user_id] = {"step": "admin_store_positions"}
+        await send_inline_from_callback(
+            query, render_store_position_detail(user_id, item), store_position_detail_keyboard(user_id, item)
+        )
+        return
+
+    if data.startswith(("admin_pos_up_", "admin_pos_down_")):
+        move_up = data.startswith("admin_pos_up_")
+        token = data.replace("admin_pos_up_" if move_up else "admin_pos_down_", "", 1)
+        item = find_store_position_item(token)
+        info = store_position_record(item) if item else None
+        if not info:
+            await send_inline_from_callback(query, "❌ <b>Product placement not found.</b>", store_position_lists_keyboard())
+            return
+        move_shop_order_item(item, -1 if move_up else 1)
+        await send_inline_from_callback(
+            query, "✅ <b>Product position updated.</b>\n\n" + render_store_position_detail(user_id, item),
+            store_position_detail_keyboard(user_id, item),
+        )
+        return
+
+    if data.startswith("admin_pos_exact_"):
+        token = data.replace("admin_pos_exact_", "", 1)
+        item = find_store_position_item(token)
+        if not item:
+            await send_inline_from_callback(query, "❌ <b>Product placement not found.</b>", store_position_lists_keyboard())
+            return
+        admin_temp.setdefault(user_id, {})["store_position_target"] = token
+        user_state[user_id] = {"step": "admin_store_position_input"}
+        await send_inline_from_callback(
+            query,
+            "🔢 <b>MOVE TO POSITION</b>\n\nSend an exact positive configured position, for example <code>1</code>, <code>5</code>, or <code>25</code>.",
+            admin_cancel_keyboard(),
+        )
+        return
+
+    if data.startswith("admin_pos_slot_"):
+        token = data.replace("admin_pos_slot_", "", 1)
+        item = find_store_position_item(token)
+        if not item:
+            await send_inline_from_callback(query, "❌ <b>Product placement not found.</b>", store_position_lists_keyboard())
+            return
+        admin_temp.setdefault(user_id, {})["store_position_target"] = token
+        user_state[user_id] = {"step": "admin_store_page_slot_input"}
+        await send_inline_from_callback(
+            query,
+            "📄 <b>MOVE TO PAGE + SLOT</b>\n\nSend page and slot as <code>page,slot</code>.\n"
+            "Example: <code>2,3</code> means configured position 13. Slot must be 1-10.\n\n"
+            "Visible page membership can shift when products are disabled, hidden, missing, or newly inserted.",
+            admin_cancel_keyboard(),
+        )
         return
 
     if data == "admin_products_close":
