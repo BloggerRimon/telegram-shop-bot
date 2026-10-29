@@ -11703,15 +11703,10 @@ def api_shop_product_rows(category_id: str, styled: bool = True) -> list:
 
 def ordered_category_product_rows(category_id: str, user_id: int = None, styled: bool = True) -> list:
     rows = []
-    # Canonical identity deduplication happens before row rendering/pagination.
-    for item in configured_product_order_items(category_id):
-        if item.startswith("product:"):
-            product_id = item.split(":", 1)[1]
-            rows.extend(shop_product_rows([product_id], user_id, styled=styled))
-        elif item.startswith("api_product:"):
-            mapping = api_product_mapping_by_id(item.split(":", 1)[1])
-            if mapping:
-                rows.extend(api_shop_product_row(mapping, styled=styled, user_id=user_id))
+    for item in visible_configured_product_items(category_id):
+        row = configured_product_button_row(item, user_id, styled=styled)
+        if row:
+            rows.append(row)
     return rows
 
 
@@ -12204,6 +12199,44 @@ def shop_product_rows(product_ids: list, user_id: int = None, styled: bool = Tru
 SHOP_PRODUCT_PAGE_SIZE = 10
 
 
+def visible_configured_product_items(category_id: str, ordered_items: list = None) -> list:
+    """One canonical ordered sequence shared by page counts and rendering."""
+    with shop_order_lock:
+        visible = []
+        source_items = list(ordered_items) if ordered_items is not None else configured_shop_order_items()
+        for item in source_items:
+            if item.startswith("product:"):
+                product = PRODUCTS.get(item.split(":", 1)[1])
+                if (
+                    product and product.get("category_id") == category_id
+                    and _storefront_local_visible(product)
+                ):
+                    visible.append(item)
+            elif item.startswith("api_product:"):
+                mapping = api_product_mapping_by_id(item.split(":", 1)[1])
+                if (
+                    mapping and mapping.get("category_id") == category_id
+                    and is_api_shop_mapping_visible(mapping)
+                ):
+                    visible.append(item)
+        return visible
+
+
+def configured_product_button_row(item: str, user_id: int = None, styled: bool = True):
+    """Render exactly one product-button row for one canonical identity."""
+    item = canonical_shop_order_item(item)
+    if not item:
+        return None
+    if item.startswith("product:"):
+        product_rows = shop_product_rows([item.split(":", 1)[1]], user_id, styled=styled)
+    elif item.startswith("api_product:"):
+        mapping = api_product_mapping_by_id(item.split(":", 1)[1])
+        product_rows = api_shop_product_row(mapping, styled=styled, user_id=user_id) if mapping else []
+    else:
+        product_rows = []
+    return product_rows[0] if product_rows else None
+
+
 def _shop_page_window(total_products: int, page: int = 0) -> tuple:
     total_pages = max(1, (max(0, total_products) + SHOP_PRODUCT_PAGE_SIZE - 1) // SHOP_PRODUCT_PAGE_SIZE)
     try:
@@ -12243,38 +12276,27 @@ def _shop_pagination_row(user_id: int, page: int, total_pages: int, callback_pre
     return buttons
 
 
-def _root_shop_product_rows(item: str, user_id: int = None, styled: bool = True) -> list:
-    if item.startswith("product:"):
-        product_id = item.split(":", 1)[1]
-        product = PRODUCTS.get(product_id)
-        if product and product.get("category_id") == DEFAULT_CATEGORY_ID:
-            return shop_product_rows([product_id], user_id, styled=styled)
-    elif item.startswith("api_product:"):
-        mapping = api_product_mapping_by_id(item.split(":", 1)[1])
-        if mapping and mapping.get("category_id") == DEFAULT_CATEGORY_ID:
-            return api_shop_product_row(mapping, styled=styled, user_id=user_id)
-    return []
-
-
 def shop_categories_keyboard(user_id: int = None, styled: bool = True, page: int = 0) -> InlineKeyboardMarkup:
+    with shop_order_lock:
+        return _shop_categories_keyboard_unlocked(user_id, styled, page)
+
+
+def _shop_categories_keyboard_unlocked(
+    user_id: int = None, styled: bool = True, page: int = 0
+) -> InlineKeyboardMarkup:
     """Render the original root shop hierarchy, paging only root product rows."""
     ordered_items = configured_shop_order_items()
-    product_rows = {
-        item: _root_shop_product_rows(item, user_id, styled=styled)
-        for item in ordered_items
-    }
-    total_products = sum(len(rows) for rows in product_rows.values())
-    page, total_pages, start, end = _shop_page_window(total_products, page)
+    visible_product_items = visible_configured_product_items(DEFAULT_CATEGORY_ID, ordered_items)
+    page, total_pages, start, end = _shop_page_window(len(visible_product_items), page)
+    page_product_items = set(visible_product_items[start:end])
     rows = [[InlineKeyboardButton("──── ⚡ AUTO DELIVERY ────", callback_data="noop")]]
-    product_index = 0
     for item in ordered_items:
         item_type, item_id = item.split(":", 1)
-        item_rows = product_rows.get(item) or []
-        if item_rows:
-            for product_row in item_rows:
-                if start <= product_index < end:
+        if item_type in {"product", "api_product"}:
+            if item in page_product_items:
+                product_row = configured_product_button_row(item, user_id, styled=styled)
+                if product_row:
                     rows.append(product_row)
-                product_index += 1
             continue
         if item_type != "category":
             continue
@@ -12306,12 +12328,22 @@ def shop_categories_keyboard(user_id: int = None, styled: bool = True, page: int
 def shop_menu_keyboard(
     user_id: int = None, category_id: str = None, styled: bool = True, page: int = 0
 ) -> InlineKeyboardMarkup:
+    with shop_order_lock:
+        return _shop_menu_keyboard_unlocked(user_id, category_id, styled, page)
+
+
+def _shop_menu_keyboard_unlocked(
+    user_id: int = None, category_id: str = None, styled: bool = True, page: int = 0
+) -> InlineKeyboardMarkup:
     """Render an original category product list with a fixed ten-product page."""
     normalize_categories()
-    all_product_rows = ordered_category_product_rows(category_id, user_id, styled=styled)
-    page, total_pages, start, end = _shop_page_window(len(all_product_rows), page)
+    visible_product_items = visible_configured_product_items(category_id)
+    page, total_pages, start, end = _shop_page_window(len(visible_product_items), page)
     rows = [[InlineKeyboardButton("──── ⚡ AUTO DELIVERY ────", callback_data="noop")]]
-    rows.extend(all_product_rows[start:end])
+    for item in visible_product_items[start:end]:
+        product_row = configured_product_button_row(item, user_id, styled=styled)
+        if product_row:
+            rows.append(product_row)
     category_token = shop_category_page_token(category_id)
     pagination = _shop_pagination_row(user_id, page, total_pages, f"shop_catpage_{category_token}")
     if pagination:

@@ -20,6 +20,116 @@ def product_callbacks(keyboard):
 
 
 class Phase15BOrderingTests(Phase15StateMixin, unittest.TestCase):
+    def _reset_mock_catalog(self):
+        bot.PRODUCTS.clear()
+        bot.product_order.clear()
+        bot.shop_order.clear()
+        bot.api_product_mappings.clear()
+        bot.CATEGORIES.clear()
+        bot.CATEGORIES[bot.DEFAULT_CATEGORY_ID] = {
+            "id": bot.DEFAULT_CATEGORY_ID,
+            "name": bot.DEFAULT_CATEGORY_NAME,
+            "icon": "🗂",
+            "order": 0,
+        }
+        bot.category_order[:] = [bot.DEFAULT_CATEGORY_ID]
+
+    def test_actual_root_keyboard_has_exact_unique_product_page_sizes(self):
+        for count, expected in ((13, (10, 3)), (15, (10, 5)), (20, (10, 10))):
+            with self.subTest(count=count):
+                self._reset_mock_catalog()
+                for index in range(count):
+                    self.add_local(f"p{index:02d}", f"Product {index:02d}", index + 1)
+                first = product_callbacks(bot.shop_categories_keyboard(self.user_id, styled=False, page=0))
+                second = product_callbacks(bot.shop_categories_keyboard(self.user_id, styled=False, page=1))
+                self.assertEqual((len(first), len(second)), expected)
+                self.assertEqual(len(first), len(set(first)))
+                self.assertEqual(len(second), len(set(second)))
+                self.assertFalse(set(first) & set(second))
+
+    def test_actual_keyboard_deduplicates_18_raw_aliases_to_15_before_slicing(self):
+        names = ["ChatGPT Codex Token", "Claude Token", "Gmail"]
+        for index in range(12):
+            self.add_local(f"local-{index:02d}", f"Local {index:02d}", index + 1)
+        for index, name in enumerate(names):
+            self.add_api(f"api-{index}", provider="seller-two", name=name)
+        # Put each legacy alias before its provider-aware reference. The raw
+        # order contains 18 product references, but only 15 canonical products.
+        for index in reversed(range(3)):
+            bot.shop_order.insert(5, f"api_product:api-{index}")
+        raw_product_references = [
+            item for item in bot.shop_order if item.startswith(("product:", "api_product:"))
+        ]
+        self.assertEqual(len(raw_product_references), 18)
+
+        self.add_category("manual", "Manual Services", icon="🤝")
+        self.add_local(
+            "manual-one", "Manual Service", 9, delivery=bot.MANUAL_DELIVERY,
+            category_id="manual",
+        )
+        # An unlisted disabled record exercises visibility filtering without
+        # changing the 18 raw references above.
+        bot.PRODUCTS["disabled"] = {
+            "name": "Disabled", "price": 1, "category_id": bot.DEFAULT_CATEGORY_ID,
+            "enabled": False, "accounts": [{"raw_line": "stock"}], "display_stock": 1,
+        }
+        bot.product_order.append("disabled")
+
+        first_keyboard = bot.shop_categories_keyboard(self.user_id, styled=False, page=0)
+        second_keyboard = bot.shop_categories_keyboard(self.user_id, styled=False, page=1)
+        first = product_callbacks(first_keyboard)
+        second = product_callbacks(second_keyboard)
+        self.assertEqual((len(first), len(second)), (10, 5))
+        self.assertEqual(len(first + second), 15)
+        self.assertEqual(len(set(first + second)), 15)
+        self.assertFalse(set(first) & set(second))
+        self.assertEqual(
+            product_callbacks(bot.shop_categories_keyboard(self.user_id, styled=False, page=0)), first
+        )
+
+        # Folder buttons remain unpaginated and are never counted as products.
+        for keyboard in (first_keyboard, second_keyboard):
+            callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
+            self.assertIn("shop_category_manual", callbacks)
+            indicators = [
+                button.text for row in keyboard.inline_keyboard for button in row
+                if button.callback_data == "noop" and "/" in button.text
+            ]
+            self.assertEqual(indicators, ["1 / 2"] if keyboard is first_keyboard else ["2 / 2"])
+
+        local_callback = next(value for value in first + second if value.startswith("shop_buy_"))
+        self.assertIn(local_callback.replace("shop_buy_", ""), bot.PRODUCTS)
+        api_callbacks = [value for value in first + second if value.startswith("api_shop_view_")]
+        self.assertEqual(len(api_callbacks), 3)
+        for callback in api_callbacks:
+            mapping = bot.find_api_shop_mapping(callback.replace("api_shop_view_", "", 1))
+            self.assertIsNotNone(mapping)
+            self.assertEqual(bot.mapping_provider_id(mapping), "seller-two")
+
+    def test_thirteen_then_five_visual_rows_classify_repeats_as_folders(self):
+        for index in range(12):
+            self.add_local(f"p{index:02d}", f"Product {index:02d}", index + 1)
+        repeated_names = ["ChatGPT Codex Token", "Claude Token", "Gmail"]
+        for index, name in enumerate(repeated_names):
+            self.add_category(f"folder-{index}", name)
+
+        keyboards = [
+            bot.shop_categories_keyboard(self.user_id, styled=False, page=page) for page in (0, 1)
+        ]
+        products = [product_callbacks(keyboard) for keyboard in keyboards]
+        folders = [
+            [
+                button.callback_data for row in keyboard.inline_keyboard for button in row
+                if button.callback_data and button.callback_data.startswith("shop_category_")
+            ]
+            for keyboard in keyboards
+        ]
+        self.assertEqual([len(page) for page in products], [10, 2])
+        self.assertEqual([len(products[index]) + len(folders[index]) for index in (0, 1)], [13, 5])
+        self.assertFalse(set(products[0]) & set(products[1]))
+        self.assertEqual(folders[0], folders[1])
+        self.assertEqual(len(folders[0]), 3)
+
     def test_repeated_root_references_and_named_examples_render_once(self):
         names = ["ChatGPT Codex Token", "Claude Token", "Gmail"]
         for index, name in enumerate(names):
