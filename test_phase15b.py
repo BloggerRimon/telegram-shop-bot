@@ -19,6 +19,18 @@ def product_callbacks(keyboard):
     ]
 
 
+def root_catalog_callbacks(keyboard):
+    return [
+        button.callback_data
+        for row in keyboard.inline_keyboard
+        for button in row
+        if button.callback_data
+        and button.callback_data.startswith((
+            "shop_buy_", "shop_notify_", "api_shop_view_", "shop_category_",
+        ))
+    ]
+
+
 class Phase15BOrderingTests(Phase15StateMixin, unittest.TestCase):
     def _reset_mock_catalog(self):
         bot.PRODUCTS.clear()
@@ -46,6 +58,30 @@ class Phase15BOrderingTests(Phase15StateMixin, unittest.TestCase):
                 self.assertEqual(len(first), len(set(first)))
                 self.assertEqual(len(second), len(set(second)))
                 self.assertFalse(set(first) & set(second))
+
+    def test_actual_root_keyboard_paginates_mixed_catalog_items_in_shop_order(self):
+        for count, expected_sizes in ((13, (10, 3)), (18, (10, 8))):
+            with self.subTest(count=count):
+                self._reset_mock_catalog()
+                expected_order = []
+                for index in range(count):
+                    if index % 4 == 1:
+                        category_id = f"folder-{index:02d}"
+                        self.add_category(category_id, f"Folder {index:02d}")
+                        expected_order.append(f"shop_category_{category_id}")
+                    else:
+                        product_id = f"product-{index:02d}"
+                        self.add_local(product_id, f"Product {index:02d}", index + 1)
+                        expected_order.append(f"shop_buy_{product_id}")
+                pages = [
+                    root_catalog_callbacks(
+                        bot.shop_categories_keyboard(self.user_id, styled=False, page=page)
+                    )
+                    for page in (0, 1)
+                ]
+                self.assertEqual(tuple(len(page) for page in pages), expected_sizes)
+                self.assertEqual(pages[0] + pages[1], expected_order)
+                self.assertFalse(set(pages[0]) & set(pages[1]))
 
     def test_actual_keyboard_deduplicates_18_raw_aliases_to_15_before_slicing(self):
         names = ["ChatGPT Codex Token", "Claude Token", "Gmail"]
@@ -87,15 +123,22 @@ class Phase15BOrderingTests(Phase15StateMixin, unittest.TestCase):
             product_callbacks(bot.shop_categories_keyboard(self.user_id, styled=False, page=0)), first
         )
 
-        # Folder buttons remain unpaginated and are never counted as products.
+        # Folder buttons share root pagination but are never counted as products.
         for keyboard in (first_keyboard, second_keyboard):
             callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
-            self.assertIn("shop_category_manual", callbacks)
             indicators = [
                 button.text for row in keyboard.inline_keyboard for button in row
                 if button.callback_data == "noop" and "/" in button.text
             ]
             self.assertEqual(indicators, ["1 / 2"] if keyboard is first_keyboard else ["2 / 2"])
+        self.assertNotIn(
+            "shop_category_manual",
+            [button.callback_data for row in first_keyboard.inline_keyboard for button in row],
+        )
+        self.assertIn(
+            "shop_category_manual",
+            [button.callback_data for row in second_keyboard.inline_keyboard for button in row],
+        )
 
         local_callback = next(value for value in first + second if value.startswith("shop_buy_"))
         self.assertIn(local_callback.replace("shop_buy_", ""), bot.PRODUCTS)
@@ -106,7 +149,7 @@ class Phase15BOrderingTests(Phase15StateMixin, unittest.TestCase):
             self.assertIsNotNone(mapping)
             self.assertEqual(bot.mapping_provider_id(mapping), "seller-two")
 
-    def test_thirteen_then_five_visual_rows_classify_repeats_as_folders(self):
+    def test_fifteen_catalog_rows_paginate_folders_once_instead_of_repeating(self):
         for index in range(12):
             self.add_local(f"p{index:02d}", f"Product {index:02d}", index + 1)
         repeated_names = ["ChatGPT Codex Token", "Claude Token", "Gmail"]
@@ -125,10 +168,11 @@ class Phase15BOrderingTests(Phase15StateMixin, unittest.TestCase):
             for keyboard in keyboards
         ]
         self.assertEqual([len(page) for page in products], [10, 2])
-        self.assertEqual([len(products[index]) + len(folders[index]) for index in (0, 1)], [13, 5])
+        self.assertEqual([len(root_catalog_callbacks(keyboard)) for keyboard in keyboards], [10, 5])
         self.assertFalse(set(products[0]) & set(products[1]))
-        self.assertEqual(folders[0], folders[1])
-        self.assertEqual(len(folders[0]), 3)
+        self.assertEqual(folders[0], [])
+        self.assertEqual(len(folders[1]), 3)
+        self.assertEqual(len(set(folders[0] + folders[1])), 3)
 
     def test_repeated_root_references_and_named_examples_render_once(self):
         names = ["ChatGPT Codex Token", "Claude Token", "Gmail"]
@@ -407,6 +451,36 @@ class Phase15BOrderingTests(Phase15StateMixin, unittest.TestCase):
                     if button.callback_data:
                         self.assertLessEqual(len(button.callback_data.encode("utf-8")), 64)
 
+    def test_root_position_manager_includes_and_reorders_folders_with_products(self):
+        self.add_local("first", "First", 1)
+        category = self.add_category("accounts", "Accounts")
+        self.add_local("last", "Last", 1)
+        expected = ["product:first", "category:accounts", "product:last"]
+        self.assertEqual(bot.configured_store_position_items(bot.DEFAULT_CATEGORY_ID), expected)
+
+        folder_item = "category:accounts"
+        folder_token = bot.store_position_token(folder_item)
+        self.assertEqual(bot.find_store_position_item(folder_token), folder_item)
+        detail = bot.render_store_position_detail(self.user_id, folder_item)
+        self.assertIn("Source:</b> Folder", detail)
+        self.assertIn("Identity:</b> <code>accounts</code>", detail)
+        self.assertTrue(bot.move_shop_order_item(folder_item, -1))
+        self.assertEqual(bot.configured_store_position_items(bot.DEFAULT_CATEGORY_ID)[0], folder_item)
+        self.assertTrue(bot.move_configured_store_item_to_position(folder_item, 3))
+        self.assertEqual(bot.configured_store_position_items(bot.DEFAULT_CATEGORY_ID)[2], folder_item)
+        self.assertIs(bot.CATEGORIES["accounts"], category)
+
+        bot.admin_temp[self.user_id] = {
+            "store_position_category": bot.DEFAULT_CATEGORY_ID,
+            "store_position_page": 0,
+        }
+        callbacks = [
+            button.callback_data
+            for row in bot.store_position_page_keyboard(self.user_id).inline_keyboard
+            for button in row
+        ]
+        self.assertIn(f"admin_pos_view_{folder_token}", callbacks)
+
 
 class Phase15BAdminTests(Phase15StateMixin, unittest.IsolatedAsyncioTestCase):
     async def test_position_callbacks_are_admin_only(self):
@@ -452,6 +526,27 @@ class Phase15BAdminTests(Phase15StateMixin, unittest.IsolatedAsyncioTestCase):
             await bot.handle_text(update, SimpleNamespace())
         self.assertEqual(bot.configured_product_order_items(bot.DEFAULT_CATEGORY_ID)[1], "product:p5")
         self.assertIn("Position:</b> 2", message.reply_text.await_args.args[0])
+
+    async def test_admin_folder_move_to_exact_root_position(self):
+        self.add_local("first", "First", 1)
+        category = self.add_category("accounts", "Accounts")
+        self.add_local("last", "Last", 1)
+        token = bot.store_position_token("category:accounts")
+        bot.admin_temp[self.user_id] = {
+            "store_position_category": bot.DEFAULT_CATEGORY_ID,
+            "store_position_target": token,
+        }
+        bot.user_state[self.user_id] = {"step": "admin_store_position_input"}
+        message = SimpleNamespace(text="1", reply_text=AsyncMock())
+        update = SimpleNamespace(effective_user=SimpleNamespace(id=self.user_id), message=message)
+        with patch.object(bot, "is_admin", return_value=True):
+            await bot.handle_text(update, SimpleNamespace())
+        self.assertEqual(
+            bot.configured_store_position_items(bot.DEFAULT_CATEGORY_ID)[0], "category:accounts"
+        )
+        self.assertIs(bot.CATEGORIES["accounts"], category)
+        self.assertIn("Position:</b> 1", message.reply_text.await_args.args[0])
+        self.assertIn("Source:</b> Folder", message.reply_text.await_args.args[0])
 
     async def test_invalid_position_page_and_slot_inputs_do_not_change_order(self):
         for index in range(4):

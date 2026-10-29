@@ -453,8 +453,15 @@ class Phase15NavigationTests(Phase15StateMixin, unittest.IsolatedAsyncioTestCase
             await bot.client_menu_command(update, SimpleNamespace())
         kwargs = message.reply_text.await_args.kwargs
         callbacks = [button.callback_data for row in kwargs["reply_markup"].inline_keyboard for button in row]
-        self.assertEqual(len([value for value in callbacks if value and value.startswith("shop_buy_")]), 10)
+        self.assertEqual(len([value for value in callbacks if value and value.startswith("shop_buy_")]), 9)
         self.assertIn("shop_category_manual", callbacks)
+        self.assertEqual(
+            len([
+                value for value in callbacks
+                if value and value.startswith(("shop_buy_", "shop_category_"))
+            ]),
+            10,
+        )
         self.assertIn("shop_page_1", callbacks)
         self.assertFalse(any(value in {"sf_q", "sf_o"} for value in callbacks))
         self.assertIn("STORE MENU", message.reply_text.await_args.args[0])

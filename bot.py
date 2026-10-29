@@ -4071,6 +4071,14 @@ def is_main_shop_order_item(item: str) -> bool:
     return False
 
 
+def configured_store_position_items(category_id: str) -> list:
+    """Configured admin position scope for the root or one category list."""
+    with shop_order_lock:
+        if category_id == DEFAULT_CATEGORY_ID:
+            return [item for item in configured_shop_order_items() if is_main_shop_order_item(item)]
+        return configured_product_order_items(category_id)
+
+
 def shop_order_item_category_id(item: str):
     if item.startswith("product:"):
         product = PRODUCTS.get(item.split(":", 1)[1])
@@ -4212,6 +4220,33 @@ def _move_configured_product_to_position_unlocked(item: str, position: int) -> b
     peers.insert(min(position - 1, len(peers)), item)
     _write_configured_peer_order_unlocked(peers)
     return True
+
+
+def move_configured_store_item_to_position(item: str, position: int) -> bool:
+    """Move a root product/folder or category product without changing membership."""
+    with shop_order_lock:
+        item = canonical_shop_order_item(item)
+        if not item:
+            return False
+        if item.startswith("category:"):
+            category_id = DEFAULT_CATEGORY_ID
+        elif item.startswith(("product:", "api_product:")):
+            category_id = shop_order_item_category_id(item)
+        else:
+            return False
+        peers = configured_store_position_items(category_id)
+        if item not in peers:
+            return False
+        try:
+            position = int(position)
+        except (TypeError, ValueError):
+            return False
+        if position <= 0:
+            return False
+        peers.remove(item)
+        peers.insert(min(position - 1, len(peers)), item)
+        _write_configured_peer_order_unlocked(peers)
+        return True
 
 
 def remove_api_product_shop_order_item(api_product_id: str, provider_id: str = "default") -> bool:
@@ -8978,7 +9013,7 @@ def store_position_token(item: str) -> str:
 def find_store_position_item(callback_token: str):
     callback_token = str(callback_token or "").strip().lower()
     for item in configured_shop_order_items():
-        if item.startswith(("product:", "api_product:")) and store_position_token(item) == callback_token:
+        if item.startswith(("product:", "api_product:", "category:")) and store_position_token(item) == callback_token:
             return item
     return None
 
@@ -9001,6 +9036,20 @@ def store_position_record(item: str):
             "category_id": product.get("category_id"),
             "identity": product_id,
             "record": product,
+        }
+    if item.startswith("category:"):
+        category_id = item.split(":", 1)[1]
+        category = CATEGORIES.get(category_id)
+        if not category or category_id == DEFAULT_CATEGORY_ID:
+            return None
+        return {
+            "item": item,
+            "name": str(category.get("name") or category_id),
+            "source": "Folder",
+            "enabled": True,
+            "category_id": DEFAULT_CATEGORY_ID,
+            "identity": category_id,
+            "record": category,
         }
     mapping = api_product_mapping_by_id(item.split(":", 1)[1])
     if not mapping:
@@ -9044,7 +9093,7 @@ def render_store_position_page(user_id: int, page: int = 0) -> tuple:
     category_id = admin_temp.get(user_id, {}).get("store_position_category", DEFAULT_CATEGORY_ID)
     if category_id not in CATEGORIES:
         category_id = DEFAULT_CATEGORY_ID
-    items = configured_product_order_items(category_id)
+    items = configured_store_position_items(category_id)
     pages = max(1, (len(items) + 9) // 10)
     try:
         page = int(page)
@@ -9054,8 +9103,9 @@ def render_store_position_page(user_id: int, page: int = 0) -> tuple:
     text = (
         "📋 <b>STORE PRODUCT POSITIONS</b>\n\n"
         f"<b>List:</b> {escape_html(store_position_category_name(category_id))}\n"
-        f"Configured products: <b>{len(items)}</b> | Page: <b>{page + 1}/{pages}</b>\n\n"
-        "Positions include disabled and temporarily missing products. Customer pages contain 10 currently visible products."
+        f"Configured items: <b>{len(items)}</b> | Page: <b>{page + 1}/{pages}</b>\n\n"
+        "Root positions include products and folders. Positions include disabled and temporarily missing products. "
+        "Customer pages contain 10 currently visible catalog items."
     )
     return text, items, page, pages
 
@@ -9093,13 +9143,13 @@ def render_store_position_detail(user_id: int, item: str) -> str:
     info = store_position_record(item)
     if not info:
         return "❌ <b>Product placement is no longer available.</b>"
-    peers = configured_product_order_items(info["category_id"])
+    peers = configured_store_position_items(info["category_id"])
     position = peers.index(info["item"]) + 1 if info["item"] in peers else 0
     category_name = store_position_category_name(info["category_id"])
     return (
-        "📋 <b>STORE PRODUCT POSITION</b>\n\n"
+        "📋 <b>STORE CATALOG POSITION</b>\n\n"
         f"<b>Position:</b> {position}\n"
-        f"<b>Product:</b> {escape_html(info['name'])}\n"
+        f"<b>Item:</b> {escape_html(info['name'])}\n"
         f"<b>Status:</b> {'Enabled' if info['enabled'] else 'Disabled'}\n"
         f"<b>Source:</b> {escape_html(info['source'])}\n"
         f"<b>Category:</b> {escape_html(category_name)}\n"
@@ -9112,7 +9162,7 @@ def store_position_detail_keyboard(user_id: int, item: str) -> InlineKeyboardMar
     info = store_position_record(item)
     if not info:
         return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Product List", callback_data="admin_pos_page_0")]])
-    peers = configured_product_order_items(info["category_id"])
+    peers = configured_store_position_items(info["category_id"])
     index = peers.index(info["item"])
     token = store_position_token(info["item"])
     rows = []
@@ -12237,6 +12287,22 @@ def configured_product_button_row(item: str, user_id: int = None, styled: bool =
     return product_rows[0] if product_rows else None
 
 
+def visible_root_catalog_items(ordered_items: list = None) -> list:
+    """Return visible root products and folders once, in configured shop_order."""
+    with shop_order_lock:
+        source_items = list(ordered_items) if ordered_items is not None else configured_shop_order_items()
+        visible_products = set(visible_configured_product_items(DEFAULT_CATEGORY_ID, source_items))
+        result = []
+        for item in source_items:
+            if item in visible_products:
+                result.append(item)
+            elif item.startswith("category:"):
+                category_id = item.split(":", 1)[1]
+                if category_id != DEFAULT_CATEGORY_ID and category_id in CATEGORIES:
+                    result.append(item)
+        return result
+
+
 def _shop_page_window(total_products: int, page: int = 0) -> tuple:
     total_pages = max(1, (max(0, total_products) + SHOP_PRODUCT_PAGE_SIZE - 1) // SHOP_PRODUCT_PAGE_SIZE)
     try:
@@ -12284,19 +12350,17 @@ def shop_categories_keyboard(user_id: int = None, styled: bool = True, page: int
 def _shop_categories_keyboard_unlocked(
     user_id: int = None, styled: bool = True, page: int = 0
 ) -> InlineKeyboardMarkup:
-    """Render the original root shop hierarchy, paging only root product rows."""
+    """Render the original root hierarchy with ten ordered catalog items per page."""
     ordered_items = configured_shop_order_items()
-    visible_product_items = visible_configured_product_items(DEFAULT_CATEGORY_ID, ordered_items)
-    page, total_pages, start, end = _shop_page_window(len(visible_product_items), page)
-    page_product_items = set(visible_product_items[start:end])
+    visible_catalog_items = visible_root_catalog_items(ordered_items)
+    page, total_pages, start, end = _shop_page_window(len(visible_catalog_items), page)
     rows = [[InlineKeyboardButton("──── ⚡ AUTO DELIVERY ────", callback_data="noop")]]
-    for item in ordered_items:
+    for item in visible_catalog_items[start:end]:
         item_type, item_id = item.split(":", 1)
         if item_type in {"product", "api_product"}:
-            if item in page_product_items:
-                product_row = configured_product_button_row(item, user_id, styled=styled)
-                if product_row:
-                    rows.append(product_row)
+            product_row = configured_product_button_row(item, user_id, styled=styled)
+            if product_row:
+                rows.append(product_row)
             continue
         if item_type != "category":
             continue
@@ -15672,7 +15736,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_state[user_id] = {"step": "admin_products"}
             reset_admin_temp(user_id)
             await update.message.reply_text(
-                "❌ <b>Product placement not found.</b>", reply_markup=admin_products_keyboard(), parse_mode="HTML"
+                "❌ <b>Catalog placement not found.</b>", reply_markup=admin_products_keyboard(), parse_mode="HTML"
             )
             return
         if step == "admin_store_position_input":
@@ -15700,16 +15764,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
             position = (page_number - 1) * 10 + slot
-        if not move_configured_product_to_position(item, position):
-            await update.message.reply_text("❌ <b>Could not update this product position.</b>", parse_mode="HTML")
+        if not move_configured_store_item_to_position(item, position):
+            await update.message.reply_text("❌ <b>Could not update this catalog position.</b>", parse_mode="HTML")
             return
-        peers = configured_product_order_items(info["category_id"])
+        peers = configured_store_position_items(info["category_id"])
         actual_position = peers.index(item) + 1
         admin_temp[user_id]["store_position_page"] = (actual_position - 1) // 10
         admin_temp[user_id].pop("store_position_target", None)
         user_state[user_id] = {"step": "admin_store_positions"}
         await update.message.reply_text(
-            "✅ <b>Product position updated.</b>\n\n" + render_store_position_detail(user_id, item),
+            "✅ <b>Catalog position updated.</b>\n\n" + render_store_position_detail(user_id, item),
             reply_markup=store_position_detail_keyboard(user_id, item),
             parse_mode="HTML",
         )
@@ -18202,7 +18266,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         move_shop_order_item(item, -1 if move_up else 1)
         await send_inline_from_callback(
-            query, "✅ <b>Product position updated.</b>\n\n" + render_store_position_detail(user_id, item),
+            query, "✅ <b>Catalog position updated.</b>\n\n" + render_store_position_detail(user_id, item),
             store_position_detail_keyboard(user_id, item),
         )
         return
