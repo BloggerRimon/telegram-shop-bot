@@ -115,8 +115,12 @@ class Phase15StateMixin:
 
 
 class Phase15CatalogTests(Phase15StateMixin, unittest.TestCase):
+    def test_customer_page_sizes_are_fifteen(self):
+        self.assertEqual(bot.SHOP_PRODUCT_PAGE_SIZE, 15)
+        self.assertEqual(bot.STOREFRONT_PAGE_SIZE, 15)
+
     def test_requested_catalog_sizes_have_exact_page_shapes(self):
-        for count in (0, 1, 9, 10, 11, 20, 21, 100):
+        for count in (0, 1, 14, 15, 16, 30, 31, 100):
             with self.subTest(count=count):
                 bot.PRODUCTS.clear()
                 bot.product_order.clear()
@@ -128,19 +132,21 @@ class Phase15CatalogTests(Phase15StateMixin, unittest.TestCase):
                         f"edge-{index}", f"Edge Product {index:03d}", index + 1,
                         category_id="products",
                     )
-                expected_pages = max(1, (count + 9) // 10)
+                expected_pages = max(1, (count + 14) // 15)
+                seen = []
                 for page in range(expected_pages):
                     keyboard = bot.shop_menu_keyboard(self.user_id, "products", styled=False, page=page)
                     callbacks = [
                         button.callback_data for row in keyboard.inline_keyboard for button in row
                     ]
                     product_callbacks = [value for value in callbacks if value and value.startswith("shop_buy_")]
-                    expected_items = 0 if count == 0 else min(10, count - page * 10)
+                    expected_items = 0 if count == 0 else min(15, count - page * 15)
                     self.assertEqual(len(product_callbacks), expected_items)
                     self.assertEqual(
                         product_callbacks,
-                        [f"shop_buy_edge-{index}" for index in range(page * 10, page * 10 + expected_items)],
+                        [f"shop_buy_edge-{index}" for index in range(page * 15, page * 15 + expected_items)],
                     )
+                    seen.extend(product_callbacks)
                     labels = [button.text for row in keyboard.inline_keyboard for button in row]
                     if expected_pages == 1:
                         self.assertFalse(any(" / " in label for label in labels))
@@ -148,10 +154,12 @@ class Phase15CatalogTests(Phase15StateMixin, unittest.TestCase):
                         self.assertIn(f"{page + 1} / {expected_pages}", labels)
                         self.assertEqual(any("Previous" in label for label in labels), page > 0)
                         self.assertEqual(any("Next" in label for label in labels), page + 1 < expected_pages)
+                self.assertEqual(seen, [f"shop_buy_edge-{index}" for index in range(count)])
+                self.assertEqual(len(seen), len(set(seen)))
 
-    def test_fixed_ten_item_pages_and_boundaries(self):
+    def test_fixed_fifteen_item_pages_and_boundaries(self):
         self.add_category("products", "Products")
-        for index in range(23):
+        for index in range(33):
             self.add_local(
                 f"p{index:02d}", f"Product {index:02d}", index + 1, category_id="products"
             )
@@ -167,12 +175,17 @@ class Phase15CatalogTests(Phase15StateMixin, unittest.TestCase):
             )
 
         first, labels = product_callbacks(0)
-        self.assertEqual(first, [f"shop_buy_p{i:02d}" for i in range(10)])
+        self.assertEqual(first, [f"shop_buy_p{i:02d}" for i in range(15)])
         self.assertFalse(any("Previous" in label for label in labels))
-        second, _ = product_callbacks(1)
-        self.assertEqual(second, [f"shop_buy_p{i:02d}" for i in range(10, 20)])
+        self.assertIn("1 / 3", labels)
+        second, labels = product_callbacks(1)
+        self.assertEqual(second, [f"shop_buy_p{i:02d}" for i in range(15, 30)])
+        self.assertIn("2 / 3", labels)
+        self.assertTrue(any("Previous" in label for label in labels))
+        self.assertTrue(any("Next" in label for label in labels))
         final, labels = product_callbacks(99)
-        self.assertEqual(final, [f"shop_buy_p{i:02d}" for i in range(20, 23)])
+        self.assertEqual(final, [f"shop_buy_p{i:02d}" for i in range(30, 33)])
+        self.assertIn("3 / 3", labels)
         self.assertFalse(any("Next" in label for label in labels))
         self.assertTrue(any("Previous" in label for label in labels))
         first_again, labels = product_callbacks(-4)
@@ -215,7 +228,7 @@ class Phase15CatalogTests(Phase15StateMixin, unittest.TestCase):
         self.add_local("exact", "ChatGPT Plus", 10, search_keywords=["openai", "assistant"])
         self.add_local("prefix", "ChatGPT Team", 20)
         self.add_local("partial", "Premium ChatGPT Workspace", 30)
-        for index in range(12):
+        for index in range(17):
             self.add_local(f"cloud{index}", f"Cloud Service {index}", 5)
 
         context = bot._storefront_context(self.user_id, reset=True)
@@ -229,9 +242,49 @@ class Phase15CatalogTests(Phase15StateMixin, unittest.TestCase):
         self.assertEqual([item["id"] for item in bot.storefront_results(self.user_id, context)], ["exact"])
         context["query"] = "cloud"
         first, _, pages, count = bot.storefront_page(self.user_id, context)
-        self.assertEqual((len(first), pages, count), (10, 2, 12))
+        self.assertEqual((len(first), pages, count), (15, 2, 17))
         context["page"] = 1
-        self.assertEqual(len(bot.storefront_page(self.user_id, context)[0]), 2)
+        second = bot.storefront_page(self.user_id, context)[0]
+        self.assertEqual(len(second), 2)
+        first_ids = [item["id"] for item in first]
+        second_ids = [item["id"] for item in second]
+        self.assertFalse(set(first_ids) & set(second_ids))
+        self.assertEqual(len(set(first_ids + second_ids)), 17)
+
+    def test_storefront_page_shapes_indicator_and_stale_pages(self):
+        for count in (0, 1, 14, 15, 16, 30, 31):
+            with self.subTest(count=count):
+                bot.PRODUCTS.clear()
+                bot.product_order.clear()
+                bot.shop_order.clear()
+                for index in range(count):
+                    self.add_local(f"s{index:02d}", f"Store Item {index:02d}", index + 1)
+                context = bot._storefront_context(self.user_id, reset=True)
+                expected_pages = max(1, (count + 14) // 15)
+                expected_ids = [item["id"] for item in bot.storefront_results(self.user_id, context)]
+                collected = []
+                for page in range(expected_pages):
+                    context["page"] = page
+                    items, actual_page, pages, total = bot.storefront_page(self.user_id, context)
+                    self.assertEqual((actual_page, pages, total), (page, expected_pages, count))
+                    self.assertEqual(len(items), 0 if count == 0 else min(15, count - page * 15))
+                    collected.extend(item["id"] for item in items)
+                    labels = [
+                        button.text
+                        for row in bot.storefront_keyboard(self.user_id, context, styled=False).inline_keyboard
+                        for button in row
+                    ]
+                    self.assertIn(f"{page + 1} / {expected_pages}", labels)
+                    self.assertEqual(any("Previous" in label for label in labels), page > 0)
+                    self.assertEqual(any("Next" in label for label in labels), page + 1 < expected_pages)
+                self.assertEqual(collected, expected_ids)
+                self.assertEqual(len(collected), len(set(collected)))
+                context["page"] = 99
+                _, stale_page, _, _ = bot.storefront_page(self.user_id, context)
+                self.assertEqual(stale_page, expected_pages - 1)
+                context["page"] = -3
+                _, stale_page, _, _ = bot.storefront_page(self.user_id, context)
+                self.assertEqual(stale_page, 0)
 
     def test_empty_and_no_result_search_are_safe(self):
         self.add_local("visible", "Visible Product", 3)
@@ -444,7 +497,7 @@ class Phase15NavigationTests(Phase15StateMixin, unittest.IsolatedAsyncioTestCase
 
     async def test_shop_command_restores_original_category_layout(self):
         self.add_category("manual", "Manual Services", icon="🤝")
-        for index in range(11):
+        for index in range(16):
             self.add_local(f"p{index}", f"Product {index}", index + 1)
         user = SimpleNamespace(id=self.user_id, username="customer", first_name="Customer", last_name="", is_bot=False)
         message = SimpleNamespace(text="/shop", reply_text=AsyncMock(), from_user=user)
@@ -453,14 +506,15 @@ class Phase15NavigationTests(Phase15StateMixin, unittest.IsolatedAsyncioTestCase
             await bot.client_menu_command(update, SimpleNamespace())
         kwargs = message.reply_text.await_args.kwargs
         callbacks = [button.callback_data for row in kwargs["reply_markup"].inline_keyboard for button in row]
-        self.assertEqual(len([value for value in callbacks if value and value.startswith("shop_buy_")]), 9)
+        # The folder counts as one root catalog item: 1 folder + 14 products = 15.
+        self.assertEqual(len([value for value in callbacks if value and value.startswith("shop_buy_")]), 14)
         self.assertIn("shop_category_manual", callbacks)
         self.assertEqual(
             len([
                 value for value in callbacks
                 if value and value.startswith(("shop_buy_", "shop_category_"))
             ]),
-            10,
+            15,
         )
         self.assertIn("shop_page_1", callbacks)
         self.assertFalse(any(value in {"sf_q", "sf_o"} for value in callbacks))
@@ -520,11 +574,70 @@ class Phase15NavigationTests(Phase15StateMixin, unittest.IsolatedAsyncioTestCase
         callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
         self.assertEqual(
             [value for value in callbacks if value and value.startswith("shop_buy_")],
-            [f"shop_buy_service-{index}" for index in range(10, 20)],
+            [f"shop_buy_service-{index}" for index in range(15, 21)],
         )
         self.assertIn("back_shop_cards", callbacks)
         self.assertEqual(bot.user_state[self.user_id]["category_id"], "services")
         self.assertEqual(bot.user_state[self.user_id]["page"], 1)
+
+    async def _callback_keyboard(self, data):
+        user = SimpleNamespace(id=self.user_id, username="u", first_name="U", last_name="", is_bot=False)
+        query = SimpleNamespace(
+            from_user=user, answer=AsyncMock(), data=data,
+            edit_message_text=AsyncMock(), message=SimpleNamespace(reply_text=AsyncMock()),
+        )
+        with patch.object(bot, "save_bot_state"):
+            await bot.handle_callback(SimpleNamespace(callback_query=query), SimpleNamespace())
+        query.edit_message_text.assert_awaited_once()
+        keyboard = query.edit_message_text.await_args.kwargs["reply_markup"]
+        return (
+            [button.callback_data for row in keyboard.inline_keyboard for button in row],
+            [button.text for row in keyboard.inline_keyboard for button in row],
+        )
+
+    async def test_stale_root_page_callback_shows_last_valid_page(self):
+        for index in range(31):
+            self.add_local(f"p{index:02d}", f"Product {index:02d}", index + 1)
+        callbacks, labels = await self._callback_keyboard("shop_page_1")
+        self.assertEqual(
+            [value for value in callbacks if value and value.startswith("shop_buy_")],
+            [f"shop_buy_p{index:02d}" for index in range(15, 30)],
+        )
+        self.assertIn("2 / 3", labels)
+        self.assertIn("shop_page_0", callbacks)
+        self.assertIn("shop_page_2", callbacks)
+        # A page number from an old 10-item message (e.g. page 3 of 4) clamps to the last page.
+        callbacks, labels = await self._callback_keyboard("shop_page_3")
+        self.assertEqual(
+            [value for value in callbacks if value and value.startswith("shop_buy_")],
+            ["shop_buy_p30"],
+        )
+        self.assertIn("3 / 3", labels)
+        self.assertNotIn("shop_page_3", callbacks)
+
+    async def test_stale_category_page_callback_shows_last_valid_page(self):
+        self.add_category("services", "Services")
+        for index in range(16):
+            self.add_local(f"s{index:02d}", f"Service {index:02d}", index + 1, category_id="services")
+        token = bot.shop_category_page_token("services")
+        callbacks, labels = await self._callback_keyboard(f"shop_catpage_{token}_5")
+        self.assertEqual(
+            [value for value in callbacks if value and value.startswith("shop_buy_")],
+            ["shop_buy_s15"],
+        )
+        self.assertIn("2 / 2", labels)
+        self.assertIn(f"shop_catpage_{token}_0", callbacks)
+        self.assertIn("back_shop_cards", callbacks)
+
+    async def test_stale_storefront_page_callback_clamps_to_valid_page(self):
+        for index in range(16):
+            self.add_local(f"p{index}", f"Cloud Product {index}", index + 1)
+        context_state = bot._storefront_context(self.user_id, reset=True)
+        context_state.update({"query": "cloud", "page": 0})
+        await self._callback_keyboard("sf_p_7")
+        _, page, pages, _ = bot.storefront_page(self.user_id, context_state)
+        self.assertEqual((page, pages), (1, 2))
+        self.assertEqual(context_state["page"], 1)
 
     async def test_store_message_edit_failure_uses_safe_reply_fallback(self):
         self.add_local("p1", "Fallback Product", 1)
