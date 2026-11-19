@@ -10,6 +10,7 @@ import random
 import re
 import secrets
 import string
+import time
 import requests
 from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP, ROUND_UP
 from datetime import date, datetime, timedelta
@@ -35,6 +36,7 @@ from telegram.ext import (
 import payment as paymod
 import crypto_verify as cv
 import wallet_checker as wc
+import jero_api
 
 try:
     import cryptomus as cm
@@ -673,6 +675,7 @@ def build_state_snapshot():
         "credited_topups": credited_topups,
         "seller_api_auto_refresh": seller_api_auto_refresh,
         "seller_api_provider_status": seller_api_provider_status,
+        "jero_orders": _json_safe(globals().get("jero_orders", {})),
         "sales_report_settings": sales_report_settings,
         "dashboard_custom_emoji_ids": dashboard_custom_emoji_ids,
         "dashboard_header_custom_emoji_ids": dashboard_header_custom_emoji_ids,
@@ -938,6 +941,13 @@ def apply_loaded_state(data: dict):
         CRYPTOMUS_PAYMENTS = data.get("CRYPTOMUS_PAYMENTS", {}) or {}
     if "CRYPTOMUS_PROCESSED" in globals() and "CRYPTOMUS_PROCESSED" in data:
         CRYPTOMUS_PROCESSED = set(data.get("CRYPTOMUS_PROCESSED", []) or [])
+    if "jero_orders" in globals():
+        loaded_jero_orders = data.get("jero_orders")
+        jero_orders.clear()
+        if isinstance(loaded_jero_orders, dict):
+            jero_orders.update({
+                str(key): value for key, value in loaded_jero_orders.items() if isinstance(value, dict)
+            })
 
 
 # Fast persistence settings.
@@ -2078,6 +2088,7 @@ def load_seller_api_providers() -> dict:
             "current": "telegram_buyer",
             "telegram_buyer": "telegram_buyer",
             "warzone_v1": "warzone_v1",
+            "jero_reseller": "jero_reseller",
         }.get(provider_type_raw, provider_type_raw)
         default_product_id_field = "service_id" if provider_type == "warzone_v1" else "product_id"
         product_id_field = os.getenv(f"{prefix}_PRODUCT_ID_FIELD", default_product_id_field).strip()
@@ -2096,7 +2107,8 @@ def load_seller_api_providers() -> dict:
             continue
         normalized_url = base_url.rstrip("/")
         api_suffix = "/api/telegram-buyer"
-        if normalized_url.lower().endswith(api_suffix):
+        # jero_reseller URLs are complete endpoints and are used unchanged.
+        if provider_type != "jero_reseller" and normalized_url.lower().endswith(api_suffix):
             normalized_url = normalized_url[:-len(api_suffix)].rstrip("/")
         configured = bool(normalized_url and api_key)
         providers[provider_id] = {
@@ -2109,7 +2121,7 @@ def load_seller_api_providers() -> dict:
             "masked_key": mask_secret_value(api_key),
             "configured": configured,
             "env_prefix": prefix,
-            "url_had_api_suffix": base_url.rstrip("/").lower().endswith(api_suffix),
+            "url_had_api_suffix": provider_type != "jero_reseller" and base_url.rstrip("/").lower().endswith(api_suffix),
             "product_id_field": product_id_field,
             "quantity_field": quantity_field,
             "email_field": email_field,
@@ -2207,18 +2219,29 @@ def buyer_api_endpoint(path: str, provider_id: str = "default") -> str:
 
 
 def seller_api_balance_path(provider_id: str = "default") -> str:
+    if seller_api_provider_type(provider_id) == "jero_reseller":
+        return "?action=balance"
     return "/api/v1/me" if seller_api_provider_type(provider_id) == "warzone_v1" else "/api/telegram-buyer/balance"
 
 
 def seller_api_products_path(provider_id: str = "default") -> str:
+    if seller_api_provider_type(provider_id) == "jero_reseller":
+        return "?action=products"
     return "/api/v1/products" if seller_api_provider_type(provider_id) == "warzone_v1" else "/api/telegram-buyer/products"
 
 
 def seller_api_purchase_path(provider_id: str = "default") -> str:
+    if seller_api_provider_type(provider_id) == "jero_reseller":
+        return "?action=order"
     return "/api/v1/order" if seller_api_provider_type(provider_id) == "warzone_v1" else "/api/telegram-buyer/purchase"
 
 
 def buyer_api_endpoint_preview(path: str, params: dict = None, provider_id: str = "default") -> str:
+    if seller_api_provider_type(provider_id) == "jero_reseller":
+        return (
+            f"GET {buyer_api_endpoint(path, provider_id)} "
+            f"[Authorization: Bearer {mask_buyer_api_key(provider_id)}]"
+        )
     if seller_api_provider_type(provider_id) == "warzone_v1":
         return (
             f"GET {buyer_api_endpoint(path, provider_id)} "
@@ -2236,7 +2259,7 @@ def _validate_buyer_api_config(provider_id: str = "default") -> dict:
         raise BuyerAPIError(f"{provider.get('name')} is disabled.", "config")
     if not provider.get("base_url") or not provider.get("api_key"):
         raise BuyerAPIError(f"{provider.get('name')} configuration is incomplete.", "config")
-    if provider.get("type") not in {"telegram_buyer", "warzone_v1"}:
+    if provider.get("type") not in {"telegram_buyer", "warzone_v1", "jero_reseller"}:
         raise BuyerAPIError(f"{provider.get('name')} has an unsupported provider type.", "config")
     return provider
 
@@ -2248,6 +2271,8 @@ def _buyer_api_get(
     include_status: bool = False,
 ):
     provider = _validate_buyer_api_config(provider_id)
+    if provider.get("type") == "jero_reseller":
+        raise BuyerAPIError("Jero requests use the jero_api adapter.", "config")
     request_params = dict(params or {})
     headers = None
     if provider.get("type") == "warzone_v1":
@@ -2346,6 +2371,9 @@ def purchase_buyer_api_product(
     """Place one external purchase and return only the fulfillment fields the bot needs."""
     provider = _validate_buyer_api_config(provider_id)
     provider_type = provider.get("type")
+    if provider_type == "jero_reseller":
+        # Jero orders must go through the durable order flow (jero_reserve_order).
+        raise BuyerAPIError("Jero purchases use the durable supplier order flow.", "config")
     headers = None
     if provider_type == "warzone_v1":
         payload = {
@@ -3661,6 +3689,8 @@ def _safe_warzone_http_error_diagnostic(
 
 
 def fetch_buyer_api_balance(provider_id: str = "default") -> dict:
+    if seller_api_provider_type(provider_id) == "jero_reseller":
+        return fetch_jero_balance(provider_id)
     if seller_api_provider_type(provider_id) == "warzone_v1":
         payload, http_status = _buyer_api_get(
             seller_api_balance_path(provider_id),
@@ -3675,6 +3705,8 @@ def fetch_buyer_api_balance(provider_id: str = "default") -> dict:
 
 
 def fetch_buyer_api_products(provider_id: str = "default"):
+    if seller_api_provider_type(provider_id) == "jero_reseller":
+        return fetch_jero_products(provider_id)
     if seller_api_provider_type(provider_id) == "warzone_v1":
         payload, http_status = _buyer_api_get(
             seller_api_products_path(provider_id),
@@ -7146,6 +7178,8 @@ def seller_api_provider_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📦 Fetch API Products", callback_data="seller_api_products")],
         [InlineKeyboardButton("🔎 Inspect Product Fields", callback_data="seller_api_inspect")],
         [InlineKeyboardButton("🔎 Debug Config", callback_data="seller_api_debug")],
+        *([[InlineKeyboardButton("🧾 Jero Supplier Orders", callback_data="seller_api_jero_orders")]]
+          if _any_jero_provider() else []),
         [InlineKeyboardButton("⬅️ Back", callback_data="seller_api_provider_back")],
     ])
 
@@ -7233,13 +7267,15 @@ def render_seller_api_provider_panel(provider_id: str = "default") -> str:
         f"<b>API URL:</b> <code>{escape_html(provider.get('base_url') or 'Not configured')}</code>\n"
         f"<b>API key:</b> <code>{escape_html(provider.get('masked_key'))}</code>\n"
         f"<b>Key length:</b> {len(api_key)}\n"
-        f"<b>Starts with api_:</b> {'Yes' if api_key.startswith('api_') else 'No'}"
+        f"{_seller_api_key_format_line(provider)}"
         f"{warning_text}\n\n{render_seller_api_auto_refresh_status(provider_id)}"
     )
 
 
 def render_seller_api_debug_config(provider_id: str = "default") -> str:
     provider = get_seller_api_provider(provider_id)
+    if provider.get("type") == "jero_reseller":
+        return render_jero_debug_config(provider_id, provider)
     if provider.get("type") == "warzone_v1":
         return "\n".join([
             "🔎 <b>SELLER API DEBUG CONFIG</b>",
@@ -7403,6 +7439,7 @@ def _api_product_mapping_snapshot(product: dict, provider_id: str = "default") -
         "is_slot_product": _buyer_api_bool_value(fields.get("slot_product")),
         "last_stock": stock,
         "last_seen_at": datetime.now().isoformat(timespec="seconds"),
+        **_jero_mapping_snapshot_fields(product),
     }
 
 
@@ -8031,7 +8068,8 @@ def render_buyer_api_product_detail(product: dict) -> str:
         f"<b>Stock:</b> {_format_buyer_api_value(stock_text)}\n"
         f"<b>Requires customer email:</b> {'Yes' if _buyer_api_bool_value(fields.get('requires_email')) else 'No'}\n"
         f"<b>Slot product:</b> {'Yes' if _buyer_api_bool_value(fields.get('slot_product')) else 'No'}\n"
-        f"<b>Description:</b> {_format_buyer_api_value(description, 600)}\n\n"
+        f"<b>Description:</b> {_format_buyer_api_value(description, 600)}"
+        f"{jero_product_detail_lines(product)}\n\n"
         f"<b>Mapping status:</b> {mapping_status}\n"
         f"<b>Category:</b> {escape_html(str(category_name or 'Not selected'))}\n"
         f"<b>Selling price:</b> {format_money(selling_price_value) if selling_price_value is not None else 'Not set'}\n"
@@ -11797,7 +11835,9 @@ def api_shop_product_details_keyboard(mapping: dict, styled: bool = True, user_i
         token = api_shop_callback_token(mapping.get("api_product_id"), mapping_provider_id(mapping))
         requires_email = api_mapping_requires_customer_email(mapping)
         rows.append([make_styled_inline_button(
-            f"📧 {t(user_id, 'activation_info_button')}" if requires_email else f"🛒 {t(user_id, 'buy_now')}",
+            _jero_buy_label(mapping, user_id) or (
+                f"📧 {t(user_id, 'activation_info_button')}" if requires_email else f"🛒 {t(user_id, 'buy_now')}"
+            ),
             callback_data=f"api_shop_buy_{token}",
             style="success" if styled else None,
         )])
@@ -11910,6 +11950,10 @@ def validate_api_shop_purchase(mapping: dict, quantity: int, user_id: int = None
         return t(user_id, "product_unavailable")
     if not isinstance(quantity, int) or quantity <= 0:
         return t(user_id, "invalid_quantity")
+    if provider.get("type") == "jero_reseller":
+        jero_error = jero_mapping_validation_error(mapping, quantity, user_id)
+        if jero_error:
+            return jero_error
     if api_mapping_requires_customer_email(mapping) and quantity not in {1, 2, 3, 5, 10}:
         return t(user_id, "invalid_quantity")
     stock = api_shop_mapping_stock(mapping)
@@ -12874,6 +12918,13 @@ async def notify_unavailable_api_provider(context, user_id: int, mapping: dict) 
 
 async def continue_api_shop_purchase(context, user_id: int, callback_token: str, quantity: int):
     mapping = find_api_shop_mapping(callback_token)
+    if mapping is not None and is_jero_mapping(mapping):
+        # Jero: quantity -> price/total -> explicit confirmation -> supplier order.
+        if jero_special_kind(mapping):
+            await jero_start_special_flow(context, user_id, mapping, callback_token)
+            return
+        await jero_send_confirmation(context, user_id, mapping, quantity)
+        return
     if mapping is None:
         await context.bot.send_message(user_id, f"❌ {t(user_id, 'product_no_longer_available')}")
         return
@@ -12951,6 +13002,10 @@ async def process_api_shop_purchase(
     customer_emails=None,
 ):
     mapping = find_api_shop_mapping(callback_token)
+    if mapping is not None and is_jero_mapping(mapping):
+        # Never buy from Jero without the durable confirmation flow.
+        await continue_api_shop_purchase(context, user_id, callback_token, quantity)
+        return False
     if mapping is None:
         await context.bot.send_message(user_id, f"❌ {t(user_id, 'product_no_longer_available')}")
         return False
@@ -13204,6 +13259,1258 @@ async def process_api_shop_purchase(
         return True
     finally:
         api_purchase_in_progress.discard(user_id)
+
+
+# =========================
+# JERO ACCOUNTS RESELLER (provider type jero_reseller)
+# =========================
+# Durable, provider-scoped orders for Jero Accounts. Customer money is
+# reserved and the order intent (with a stable external_order_id) is persisted
+# strictly BEFORE the supplier is called. Every supplier answer is applied
+# through jero_apply_result(), which finalises an order exactly once.
+# Passwords for WordPress installs live only in jero_secret_inputs (memory).
+JERO_PROVIDER_TYPE = jero_api.PROVIDER_TYPE
+JERO_INSTANCE_ID = secrets.token_hex(8)
+jero_order_lock = threading.RLock()
+jero_orders = {}
+jero_checkout_drafts = {}
+jero_draft_results = {}
+jero_secret_inputs = {}
+jero_local_claims = {}
+jero_reconciler_task = None
+jero_probe_done = set()
+# Reservations made by this process that have not been sent yet. Only these
+# may be refunded on a local configuration failure; a reservation recovered
+# after a restart may already have reached the supplier.
+jero_fresh_reservations = set()
+
+JERO_DRAFT_TTL_SECONDS = 15 * 60
+JERO_SECRET_TTL_SECONDS = 20 * 60
+JERO_RECONCILE_INTERVAL_SECONDS = 60
+JERO_REVIEW_AFTER_SECONDS = 24 * 60 * 60
+JERO_MAX_RESENDS = 5
+JERO_AUTH_PAUSE_SECONDS = 10 * 60
+JERO_PENDING_STATES = {"reserved", "unknown", "processing"}
+JERO_TERMINAL_STATES = {"completed", "partial", "refunded", "failed", "needs_review"}
+JERO_DELIVERY_STATES = {"completed", "partial"}
+JERO_LOOKUP_NOT_FOUND_CODES = {"invalid_request", "product_not_found", "order_not_found", "not_found"}
+
+USER_TRANSLATIONS["en"].update({
+    "jero_confirm_title": "Confirm your order",
+    "jero_confirm_button": "Confirm and pay",
+    "jero_cancel_button": "Cancel",
+    "jero_order_submitted": "Your order was submitted to the supplier. You will receive it here as soon as it is ready.",
+    "jero_order_pending": "Your order is being processed by the supplier. It is still pending; you will be notified here.",
+    "jero_order_already": "This order was already confirmed. It will not be charged again.",
+    "jero_draft_expired": "This confirmation expired. Please start the purchase again.",
+    "jero_price_changed": "The price changed before confirmation. Please review the new price and try again.",
+    "jero_supplier_unavailable": "The supplier cannot fill this order right now. Your wallet was refunded in full.",
+    "jero_supplier_out_of_stock": "The supplier is out of stock for this product. Your wallet was refunded in full.",
+    "jero_supplier_busy": "The supplier is busy right now. Your wallet was refunded in full; please try again in a few minutes.",
+    "jero_order_refunded": "The supplier refunded this order. The amount was returned to your wallet.",
+    "jero_needs_review": "Your order is pending a manual check by support. You were not charged twice; support will finish it.",
+    "jero_ui8_valid_days": "Download links are valid for 3 days.",
+    "jero_wp_intro": (
+        "This product is installed on your WordPress site by our supplier, Jero Accounts.\n\n"
+        "You will send your site address, a WordPress administrator username and its password. "
+        "These details are sent to Jero Accounts only to perform the installation.\n\n"
+        "Requirements: the account must be an administrator. A captcha or two-factor login on the "
+        "WordPress login page can block the automatic install.\n\n"
+        "Your password is never stored, never shown in the confirmation and is cleared when the order ends."
+    ),
+    "jero_wp_ask_site": "Send your WordPress site address (for example https://example.com).",
+    "jero_wp_ask_username": "Send the WordPress administrator username.",
+    "jero_wp_ask_password": "Send the WordPress administrator password. The message is deleted after reading when possible.",
+    "jero_wp_invalid_site": "That site address is not valid. Send a public address such as https://example.com.",
+    "jero_wp_invalid_username": "That username is not valid. Send 1-60 characters without line breaks.",
+    "jero_wp_invalid_password": "That password is not valid. Send 1-200 characters without line breaks.",
+    "jero_wp_completed": "Installation completed.",
+    "jero_ui8_ask_links": "Send the UI8 product links, one per line (maximum 100). Each accepted link is one item.",
+    "jero_ui8_no_valid": "No valid UI8 product links were found. Links must look like https://ui8.net/.../products/...",
+})
+
+
+def is_jero_provider(provider_id: str) -> bool:
+    return seller_api_provider_type(provider_id) == JERO_PROVIDER_TYPE
+
+
+def is_jero_mapping(mapping: dict) -> bool:
+    return isinstance(mapping, dict) and is_jero_provider(mapping_provider_id(mapping))
+
+
+def jero_special_kind(mapping_or_product_id) -> str:
+    if isinstance(mapping_or_product_id, dict):
+        product_id = str(mapping_or_product_id.get("api_product_id") or "").strip()
+    else:
+        product_id = str(mapping_or_product_id or "").strip()
+    if product_id in jero_api.WORDPRESS_PRODUCT_IDS:
+        return "wordpress"
+    if product_id == jero_api.UI8_PRODUCT_ID:
+        return "ui8"
+    return ""
+
+
+def jero_client(provider_id: str):
+    provider = _validate_buyer_api_config(provider_id)
+    if provider.get("type") != JERO_PROVIDER_TYPE:
+        raise BuyerAPIError("Provider is not a Jero reseller provider.", "config")
+    try:
+        return jero_api.JeroClient(provider["base_url"], provider["api_key"], provider_id=provider_id)
+    except jero_api.JeroAPIError as exc:
+        raise BuyerAPIError(str(exc), "config") from exc
+
+
+def _jero_provider_status(provider_id: str) -> dict:
+    return get_seller_api_provider_status(provider_id)
+
+
+def _jero_now() -> float:
+    return time.time()
+
+
+def jero_auth_blocked(provider_id: str) -> bool:
+    try:
+        until = float(_jero_provider_status(provider_id).get("jero_auth_blocked_until") or 0)
+    except (TypeError, ValueError):
+        until = 0
+    return until > _jero_now()
+
+
+def _jero_note_error(provider_id: str, exc) -> None:
+    status = _jero_provider_status(provider_id)
+    code = getattr(exc, "code", "")
+    if code in jero_api.AUTH_CODES:
+        # Stop the retry storm after an authentication/configuration failure.
+        status["jero_auth_blocked_until"] = _jero_now() + JERO_AUTH_PAUSE_SECONDS
+        status["jero_auth_error"] = jero_api.redact(str(exc))[:200]
+
+
+def _jero_clear_auth_block(provider_id: str) -> None:
+    status = _jero_provider_status(provider_id)
+    status.pop("jero_auth_blocked_until", None)
+    status.pop("jero_auth_error", None)
+
+
+def _jero_buyer_error(exc) -> BuyerAPIError:
+    code = getattr(exc, "code", "unknown")
+    category = {
+        "unauthorized": "config",
+        "config": "config",
+        "redirect_blocked": "config",
+        "insufficient_balance": "insufficient_seller_balance",
+        "out_of_stock": "out_of_stock",
+        "product_not_found": "product_unavailable",
+        "timeout": "timeout",
+    }.get(code, "http_error")
+    return BuyerAPIError(jero_api.redact(str(exc)), category)
+
+
+def fetch_jero_products(provider_id: str):
+    if jero_auth_blocked(provider_id):
+        raise BuyerAPIError("Jero requests are paused after an authentication failure. Check BUYER_API key.", "config")
+    client = jero_client(provider_id)
+    try:
+        raw = client.products_raw()
+        products = jero_api.normalize_products(raw)
+    except jero_api.JeroAPIError as exc:
+        _jero_note_error(provider_id, exc)
+        raise _jero_buyer_error(exc) from exc
+    status = _jero_provider_status(provider_id)
+    status["jero_products_verified_at"] = datetime.now().isoformat(timespec="seconds")
+    status["jero_products_shape"] = str(jero_api.describe_shape(raw))[:500]
+    _jero_clear_auth_block(provider_id)
+    for product in products:
+        product["_seller_provider_id"] = provider_id
+    return products, len(products)
+
+
+def fetch_jero_balance(provider_id: str) -> dict:
+    if jero_auth_blocked(provider_id):
+        raise BuyerAPIError("Jero requests are paused after an authentication failure. Check BUYER_API key.", "config")
+    client = jero_client(provider_id)
+    try:
+        raw = client.balance_raw()
+        balance = jero_api.normalize_balance(raw)
+    except jero_api.JeroAPIError as exc:
+        _jero_note_error(provider_id, exc)
+        raise _jero_buyer_error(exc) from exc
+    _jero_provider_status(provider_id)["jero_balance_shape"] = str(jero_api.describe_shape(raw))[:300]
+    _jero_clear_auth_block(provider_id)
+    return balance
+
+
+def jero_mapping_validation_error(mapping: dict, quantity: int, user_id: int = None) -> str:
+    provider_id = mapping_provider_id(mapping)
+    if jero_auth_blocked(provider_id):
+        return t(user_id, "product_unavailable")
+    if not _jero_provider_status(provider_id).get("jero_products_verified_at"):
+        # Live checkout stays closed until the product response was parsed.
+        return t(user_id, "product_unavailable")
+    if mapping.get("api_price_valid") is False or _buyer_api_numeric_value(mapping.get("api_cost")) is None:
+        return t(user_id, "product_unavailable")
+    if quantity > jero_api.MAX_ITEMS_PER_ORDER:
+        return t(user_id, "invalid_quantity")
+    kind = jero_special_kind(mapping)
+    if kind == "wordpress" and quantity != 1:
+        return t(user_id, "invalid_quantity")
+    if not kind and api_shop_mapping_stock(mapping) is None:
+        # Missing supplier stock is never treated as unlimited.
+        return t(user_id, "product_unavailable")
+    return ""
+
+
+def jero_unit_price(mapping: dict) -> Decimal:
+    return jero_api.money(mapping.get("selling_price"))
+
+
+def _jero_prune(now: float = None) -> None:
+    now = _jero_now() if now is None else now
+    for draft_id, draft in list(jero_checkout_drafts.items()):
+        if now - float(draft.get("created_at", 0) or 0) > JERO_DRAFT_TTL_SECONDS:
+            jero_checkout_drafts.pop(draft_id, None)
+            jero_secret_inputs.pop(f"draft:{draft_id}", None)
+    for key, secret in list(jero_secret_inputs.items()):
+        if now > float(secret.get("expires_at", 0) or 0):
+            jero_secret_inputs.pop(key, None)
+    for draft_id, ext in list(jero_draft_results.items()):
+        record = jero_orders.get(ext) if isinstance(ext, str) else None
+        if record and record.get("state") in JERO_TERMINAL_STATES:
+            created = float(record.get("created_ts", now) or now)
+            if now - created > JERO_DRAFT_TTL_SECONDS:
+                jero_draft_results.pop(draft_id, None)
+
+
+def _jero_get_secret(key: str):
+    _jero_prune()
+    secret = jero_secret_inputs.get(key)
+    return secret.get("password") if isinstance(secret, dict) else None
+
+
+def jero_clear_secret(key: str) -> None:
+    jero_secret_inputs.pop(key, None)
+
+
+def jero_create_draft(user_id: int, mapping: dict, quantity: int, **inputs) -> dict:
+    _jero_prune()
+    unit_price = jero_unit_price(mapping)
+    total = (unit_price * int(quantity)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    provider_id = mapping_provider_id(mapping)
+    api_product_id = str(mapping.get("api_product_id") or "").strip()
+    draft_id = secrets.token_hex(8)
+    draft = {
+        "id": draft_id,
+        "user_id": int(user_id),
+        "provider_id": provider_id,
+        "api_product_id": api_product_id,
+        "mapping_key": seller_api_mapping_key(api_product_id, provider_id),
+        "product_name": api_mapping_display_name(mapping),
+        "quantity": int(quantity),
+        "unit_price": str(unit_price),
+        "total": str(total),
+        "kind": jero_special_kind(mapping),
+        "created_at": _jero_now(),
+    }
+    for key in ("links", "site", "username", "rejected_links"):
+        if key in inputs and inputs[key] is not None:
+            draft[key] = inputs[key]
+    jero_checkout_drafts[draft_id] = draft
+    return draft
+
+
+def render_jero_confirmation(user_id: int, draft: dict) -> str:
+    lines = [
+        f"🧾 <b>{t(user_id, 'jero_confirm_title')}</b>",
+        "",
+        f"<b>{t(user_id, 'product')}:</b> {escape_html(draft.get('product_name'))}",
+        f"<b>{t(user_id, 'quantity')}:</b> {int(draft.get('quantity', 0))}",
+        f"<b>{t(user_id, 'price')}:</b> {format_money(float(draft['unit_price']))}",
+        f"<b>{t(user_id, 'total')}:</b> {format_money(float(draft['total']))}",
+        f"<b>{t(user_id, 'wallet')}:</b> {format_money(user_wallet.get(user_id, 0.0))}",
+    ]
+    if draft.get("kind") == "wordpress":
+        lines.extend([
+            "",
+            f"<b>Site:</b> <code>{escape_html(draft.get('site'))}</code>",
+            f"<b>Username:</b> <code>{escape_html(draft.get('username'))}</code>",
+            "<b>Password:</b> hidden",
+            "",
+            "These details will be sent to Jero Accounts to install the plugin.",
+        ])
+    if draft.get("kind") == "ui8":
+        lines.extend(["", "<b>Accepted links:</b>"])
+        for link in draft.get("links", [])[:100]:
+            lines.append(f"• <code>{escape_html(link)}</code>")
+        rejected = draft.get("rejected_links") or {}
+        for label, key in (("Invalid", "invalid"), ("Duplicate", "duplicates"), ("Over limit", "over_limit")):
+            values = rejected.get(key) or []
+            if values:
+                lines.extend(["", f"<b>{label} (not included):</b>"])
+                lines.extend(f"• <code>{escape_html(value)}</code>" for value in values[:20])
+    return "\n".join(lines)
+
+
+def jero_confirmation_keyboard(user_id: int, draft_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"✅ {t(user_id, 'jero_confirm_button')}", callback_data=f"jero_ok_{draft_id}")],
+        [InlineKeyboardButton(f"❌ {t(user_id, 'jero_cancel_button')}", callback_data=f"jero_no_{draft_id}")],
+    ])
+
+
+async def jero_send_confirmation(context, user_id: int, mapping: dict, quantity: int, **inputs) -> bool:
+    error = validate_api_shop_purchase(mapping, quantity, user_id)
+    if error:
+        await context.bot.send_message(user_id, f"❌ {escape_html(error)}", parse_mode="HTML")
+        return False
+    draft = jero_create_draft(user_id, mapping, quantity, **inputs)
+    if Decimal(str(user_wallet.get(user_id, 0.0))) < Decimal(draft["total"]):
+        jero_checkout_drafts.pop(draft["id"], None)
+        await context.bot.send_message(
+            user_id,
+            f"❌ <b>{t(user_id, 'wallet_not_enough')}</b>\n\n"
+            f"<b>{t(user_id, 'total')}:</b> {format_money(float(draft['total']))}\n"
+            f"<b>{t(user_id, 'wallet')}:</b> {format_money(user_wallet.get(user_id, 0.0))}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"💳 {t(user_id, 'top_up')}", callback_data="user_dashboard_topup")],
+                [InlineKeyboardButton(f"🏠 {t(user_id, 'back_to_menu')}", callback_data="user_back_to_dashboard")],
+            ]),
+            parse_mode="HTML",
+        )
+        return False
+    await context.bot.send_message(
+        user_id,
+        render_jero_confirmation(user_id, draft),
+        reply_markup=jero_confirmation_keyboard(user_id, draft["id"]),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+    return draft
+
+
+def _jero_payload_product_id(api_product_id: str):
+    text = str(api_product_id or "").strip()
+    return int(text) if text.isdigit() else text
+
+
+def _jero_provider_slot(provider_id: str) -> str:
+    return str(provider_id or "default").replace("seller_", "") or "1"
+
+
+def _jero_find_tx(tx_id):
+    for tx in all_transactions:
+        if isinstance(tx, dict) and tx.get("id") == tx_id:
+            return tx
+    return None
+
+
+def _jero_find_order(order_id):
+    for order in all_orders:
+        if isinstance(order, dict) and order.get("id") == order_id:
+            return order
+    return None
+
+
+def _jero_remove_from_lists(item, *lists) -> None:
+    for container in lists:
+        for index in range(len(container) - 1, -1, -1):
+            if container[index] is item:
+                del container[index]
+
+
+def jero_reserve_order(user_id: int, mapping: dict, draft: dict) -> dict:
+    """Debit the wallet and persist the order intent before any supplier call."""
+    with jero_order_lock, topup_credit_lock:
+        total = jero_api.money(draft["total"])
+        unit_price = jero_api.money(draft["unit_price"])
+        quantity = int(draft["quantity"])
+        balance = jero_api.money(user_wallet.get(user_id, 0.0))
+        if balance < total:
+            return {"ok": False, "error": "wallet"}
+        provider_id = draft["provider_id"]
+        order_id = get_next_order_id()
+        external_order_id = f"TSB{_jero_provider_slot(provider_id)}-{order_id}-{secrets.token_hex(3)}"
+        while external_order_id in jero_orders:
+            external_order_id = f"TSB{_jero_provider_slot(provider_id)}-{order_id}-{secrets.token_hex(3)}"
+        user_transactions.setdefault(user_id, [])
+        tx = add_transaction_record(
+            user_id,
+            "Wallet Purchase",
+            float(total),
+            "Reserved",
+            {
+                "order_id": order_id,
+                "product_type": "api",
+                "provider_id": provider_id,
+                "api_product_id": draft["api_product_id"],
+                "qty": quantity,
+                "external_order_id": external_order_id,
+            },
+        )
+        order = {
+            "id": order_id,
+            "user_id": user_id,
+            "product_id": draft["api_product_id"],
+            "product_type": "api",
+            "api_product_id": draft["api_product_id"],
+            "provider_id": provider_id,
+            "product": draft["product_name"],
+            "qty": quantity,
+            "unit_price": float(unit_price),
+            "total": float(total),
+            "price_type": "Shop price",
+            "status": "Processing",
+            "payment_type": "Wallet",
+            "external_order_id": external_order_id,
+            "wallet_transaction_id": tx["id"],
+            "created_at": now_dt(),
+            "updated_at": now_dt(),
+        }
+        user_orders.setdefault(user_id, []).append(order)
+        all_orders.append(order)
+        user_wallet[user_id] = float(balance - total)
+        payload = {
+            "product_id": _jero_payload_product_id(draft["api_product_id"]),
+            "quantity": quantity,
+            "external_order_id": external_order_id,
+        }
+        if draft.get("kind") == "ui8":
+            payload["links"] = list(draft.get("links") or [])
+        if draft.get("kind") == "wordpress":
+            payload["site"] = draft.get("site")
+            payload["username"] = draft.get("username")
+        now = _jero_now()
+        record = {
+            "external_order_id": external_order_id,
+            "provider_id": provider_id,
+            "user_id": user_id,
+            "order_id": order_id,
+            "tx_id": tx["id"],
+            "api_product_id": draft["api_product_id"],
+            "mapping_key": draft["mapping_key"],
+            "product_name": draft["product_name"],
+            "kind": draft.get("kind") or "",
+            "quantity": quantity,
+            "unit_price": str(unit_price),
+            "total": str(total),
+            "payload": payload,  # never contains the password
+            "state": "reserved",
+            "debited": True,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "created_ts": now,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "next_check_at": now + 30,
+            "lookups": 0,
+            "resends": 0,
+            "delivered": [],
+            "delivery_sent": False,
+            "delivery_attempts": 0,
+            "refund_reference": "",
+            "refunded_amount": "0.00",
+            "customer_notified": [],
+        }
+        jero_orders[external_order_id] = record
+        jero_fresh_reservations.add(external_order_id)
+        try:
+            save_bot_state_strict()
+        except Exception as exc:
+            # Nothing was sent to the supplier: undo the reservation completely.
+            user_wallet[user_id] = float(balance)
+            jero_orders.pop(external_order_id, None)
+            jero_fresh_reservations.discard(external_order_id)
+            _jero_remove_from_lists(order, user_orders.get(user_id, []), all_orders)
+            _jero_remove_from_lists(tx, user_transactions.get(user_id, []), all_transactions)
+            print(f"Jero order reservation persistence failed: {type(exc).__name__}")
+            return {"ok": False, "error": "persist"}
+        return {"ok": True, "record": record, "order": order}
+
+
+def _jero_claim(record: dict, event: str) -> bool:
+    """Durable once-only claim for a terminal transition (cross-worker safe)."""
+    key = (record["provider_id"], record["external_order_id"], event)
+    if USE_DATABASE and db is not None and hasattr(db, "claim_seller_order_event"):
+        try:
+            return bool(db.claim_seller_order_event(*key, JERO_INSTANCE_ID))
+        except Exception as exc:
+            print(f"Jero claim failed; leaving order unresolved: {type(exc).__name__}")
+            return False
+    owner = jero_local_claims.get(key)
+    if owner is None:
+        jero_local_claims[key] = JERO_INSTANCE_ID
+        return True
+    return owner == JERO_INSTANCE_ID
+
+
+def _jero_refund(record: dict, amount: Decimal, reason: str) -> bool:
+    """Credit the customer exactly once for this order (idempotent)."""
+    amount = jero_api.money(amount)
+    if amount <= 0:
+        return False
+    reference = f"JRF-{record['external_order_id']}"
+    existing = next(
+        (
+            tx for tx in all_transactions
+            if isinstance(tx, dict) and isinstance(tx.get("meta"), dict)
+            and tx["meta"].get("refund_reference") == reference
+        ),
+        None,
+    )
+    if record.get("refund_reference") or existing is not None:
+        record["refund_reference"] = reference
+        return False
+    user_id = int(record["user_id"])
+    user_wallet[user_id] = float(jero_api.money(user_wallet.get(user_id, 0.0)) + amount)
+    user_transactions.setdefault(user_id, [])
+    refund_tx = add_transaction_record(
+        user_id,
+        "Supplier Order Refund",
+        float(amount),
+        "Completed",
+        {
+            "order_id": record["order_id"],
+            "refund_reference": reference,
+            "external_order_id": record["external_order_id"],
+            "provider_id": record["provider_id"],
+            "reason": reason,
+        },
+    )
+    record["refund_reference"] = reference
+    record["refund_tx_id"] = refund_tx["id"]
+    record["refunded_amount"] = str(amount)
+    return True
+
+
+def _jero_set_order_status(record: dict, order_status: str, tx_status: str = None) -> None:
+    order = _jero_find_order(record.get("order_id"))
+    if order is not None:
+        order["status"] = order_status
+        order["seller_status"] = record.get("state")
+        if record.get("supplier_order_id"):
+            order["seller_order_code"] = record["supplier_order_id"]
+            order["payment_reference"] = record["supplier_order_id"]
+        if record.get("delivered"):
+            order["delivered_items"] = snapshot_delivered_items(record["delivered"])
+        if record.get("refunded_amount") and record["refunded_amount"] != "0.00":
+            order["refunded_amount"] = float(record["refunded_amount"])
+        order["updated_at"] = now_dt()
+        _sync_manual_order_to_user(order)
+    tx = _jero_find_tx(record.get("tx_id"))
+    if tx is not None and tx_status:
+        tx["status"] = tx_status
+        tx["updated_at"] = now_dt()
+        _sync_transaction_to_user(tx)
+
+
+def _jero_mark_review(record: dict, reason: str) -> None:
+    record["state"] = "needs_review"
+    record["review_reason"] = reason[:200]
+    record["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    _jero_set_order_status(record, "Needs Review", "Pending Review")
+
+
+def _jero_finalize(record: dict, result: dict) -> None:
+    """Apply one terminal supplier outcome. Caller holds the locks."""
+    status = result.get("status")
+    quantity = int(record["quantity"])
+    kind = record.get("kind") or ""
+    delivered = list(result.get("delivered") or [])
+    refunded_count = int(result.get("refunded_count", 0) or 0)
+    pending_count = int(result.get("pending_count", 0) or 0)
+    unit_price = jero_api.money(record["unit_price"])
+    total = jero_api.money(record["total"])
+
+    if status == jero_api.ORDER_STATUS_COMPLETED:
+        if kind != "wordpress" and len(delivered) != quantity:
+            _jero_mark_review(record, f"Supplier reported completed with {len(delivered)} of {quantity} deliverable items.")
+            return
+        if not _jero_claim(record, "final"):
+            _jero_mark_review(record, "Another bot instance already finalized this order.")
+            return
+        record["state"] = "completed"
+        record["delivered"] = delivered
+        _jero_set_order_status(record, "Completed", "Completed")
+        mapping = api_product_mappings.get(record.get("mapping_key"))
+        known_stock = api_shop_mapping_stock(mapping) if isinstance(mapping, dict) else None
+        if known_stock is not None and not kind:
+            mapping["last_stock"] = max(0, known_stock - quantity)
+        return
+
+    if status == jero_api.ORDER_STATUS_REFUNDED:
+        if delivered:
+            _jero_mark_review(record, "Supplier reported refunded but returned delivered items.")
+            return
+        if not _jero_claim(record, "final"):
+            _jero_mark_review(record, "Another bot instance already finalized this order.")
+            return
+        _jero_refund(record, total, "supplier_refunded")
+        record["state"] = "refunded"
+        _jero_set_order_status(record, "Refunded", "Refunded")
+        return
+
+    if status == jero_api.ORDER_STATUS_PARTIAL:
+        explicit = (
+            pending_count == 0
+            and int(result.get("unrecognized_count", 0) or 0) == 0
+            and len(delivered) + refunded_count == quantity
+            and refunded_count > 0
+        )
+        if not explicit:
+            # Unknown refund amount: never guessed; kept for admin reconciliation.
+            _jero_mark_review(record, "Partial supplier result without clear per-item outcomes.")
+            return
+        if not _jero_claim(record, "final"):
+            _jero_mark_review(record, "Another bot instance already finalized this order.")
+            return
+        _jero_refund(record, unit_price * refunded_count, "supplier_partial_refund")
+        record["state"] = "partial"
+        record["delivered"] = delivered
+        record["refunded_items"] = refunded_count
+        _jero_set_order_status(record, "Partially Completed", "Completed")
+        return
+
+
+def jero_apply_result_sync(external_order_id: str, result: dict, source: str = "lookup") -> dict:
+    """Apply a normalised supplier order result exactly once (thread safe)."""
+    with jero_order_lock, topup_credit_lock:
+        record = jero_orders.get(external_order_id)
+        if record is None:
+            return {}
+        if record.get("state") in JERO_TERMINAL_STATES:
+            return record
+        if result.get("order_id"):
+            record["supplier_order_id"] = str(result["order_id"])[:64]
+        for key in ("total", "balance", "refund_amount"):
+            if result.get(key) is not None:
+                record[f"supplier_{key}"] = result[key]
+        if result.get("message"):
+            record["supplier_message"] = result["message"][:300]
+        record["last_result_source"] = source
+        record["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        status = result.get("status")
+        if status == jero_api.ORDER_STATUS_PROCESSING:
+            record["state"] = "processing"
+            _jero_set_order_status(record, "Processing")
+        elif status in {
+            jero_api.ORDER_STATUS_COMPLETED,
+            jero_api.ORDER_STATUS_REFUNDED,
+            jero_api.ORDER_STATUS_PARTIAL,
+        }:
+            _jero_finalize(record, result)
+        else:
+            if record.get("supplier_order_id") and int(result.get("unrecognized_count", 0) or 0):
+                _jero_mark_review(record, "Supplier order exists but its items were not recognized.")
+            else:
+                record["state"] = "unknown"
+        try:
+            save_bot_state_strict()
+        except Exception as exc:
+            record["persistence_warning"] = f"{type(exc).__name__}"
+            print(f"Jero result persistence failed: {type(exc).__name__}")
+        return record
+
+
+def jero_settle_rejected_sync(external_order_id: str, exc) -> dict:
+    """The supplier rejected the order as a whole: refund the customer once."""
+    with jero_order_lock, topup_credit_lock:
+        record = jero_orders.get(external_order_id)
+        if record is None or record.get("state") in JERO_TERMINAL_STATES:
+            return record or {}
+        if not _jero_claim(record, "final"):
+            _jero_mark_review(record, "Another bot instance already finalized this order.")
+        else:
+            _jero_refund(record, jero_api.money(record["total"]), f"supplier_rejected:{exc.code}")
+            record["state"] = "failed"
+            record["failure_code"] = exc.code
+            record["updated_at"] = datetime.now().isoformat(timespec="seconds")
+            _jero_set_order_status(record, "Failed - Refunded", "Refunded")
+        try:
+            save_bot_state_strict()
+        except Exception as save_exc:
+            record["persistence_warning"] = f"{type(save_exc).__name__}"
+        return record
+
+
+async def _jero_notify_once(bot, record: dict, key: str, text: str, keyboard=None) -> None:
+    notified = record.setdefault("customer_notified", [])
+    if key in notified:
+        return
+    try:
+        await bot.send_message(
+            int(record["user_id"]), text, parse_mode="HTML",
+            reply_markup=keyboard, disable_web_page_preview=True,
+        )
+        notified.append(key)
+    except Exception as exc:
+        print(f"Jero customer notice failed: {type(exc).__name__}")
+
+
+async def _jero_notify_admins(bot, record: dict, title: str) -> None:
+    flag = f"admin:{record.get('state')}:{record.get('failure_code', '')}"
+    notified = record.setdefault("admin_notified", [])
+    if flag in notified:
+        return
+    text = (
+        f"⚠️ <b>{escape_html(title)}</b>\n\n"
+        f"<b>Provider:</b> {escape_html(seller_api_provider_name(record['provider_id']))} "
+        f"(<code>{escape_html(record['provider_id'])}</code>)\n"
+        f"<b>Order:</b> #{record['order_id']} / <code>{escape_html(record['external_order_id'])}</code>\n"
+        f"<b>Supplier order:</b> <code>{escape_html(record.get('supplier_order_id') or 'N/A')}</code>\n"
+        f"<b>Product:</b> {escape_html(record.get('product_name'))} (id {escape_html(record.get('api_product_id'))})\n"
+        f"<b>User ID:</b> <code>{record['user_id']}</code>\n"
+        f"<b>Customer total:</b> {format_money(float(record['total']))}\n"
+        f"<b>State:</b> {escape_html(record.get('state'))}\n"
+        f"<b>Reason:</b> {escape_html(record.get('review_reason') or record.get('failure_code') or 'N/A')}"
+    )
+    sent = False
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, text, parse_mode="HTML")
+            sent = True
+        except Exception:
+            pass
+    if sent:
+        notified.append(flag)
+
+
+async def jero_deliver(bot, external_order_id: str) -> bool:
+    record = jero_orders.get(external_order_id)
+    if not record or record.get("state") not in JERO_DELIVERY_STATES or record.get("delivery_sent"):
+        return False
+    user_id = int(record["user_id"])
+    kind = record.get("kind") or ""
+    lines = [
+        f"✅ <b>{t(user_id, 'order_completed')}:</b> {escape_html(record.get('product_name'))}",
+        f"<b>{t(user_id, 'quantity')}:</b> {int(record['quantity'])}",
+        f"<b>{t(user_id, 'total')}:</b> {format_money(float(record['total']))}",
+    ]
+    if kind == "wordpress":
+        lines.extend(["", f"🛠 <b>{t(user_id, 'jero_wp_completed')}</b>"])
+        if record.get("supplier_message"):
+            lines.append(escape_html(record["supplier_message"]))
+    else:
+        lines.extend(["", f"🔐 <b>{t(user_id, 'account_details')}:</b>", ""])
+        lines.extend(f"<code>{escape_html(item)}</code>" for item in record.get("delivered") or [])
+        if kind == "ui8":
+            lines.extend(["", f"⏳ {t(user_id, 'jero_ui8_valid_days')}"])
+    if record.get("state") == "partial":
+        lines.extend([
+            "",
+            f"↩️ Refunded items: {int(record.get('refunded_items', 0))} — "
+            f"{format_money(float(record.get('refunded_amount') or 0))} returned to your wallet.",
+        ])
+    try:
+        await send_html_lines(bot, user_id, lines)
+        record["delivery_sent"] = True
+        record["delivered_at"] = datetime.now().isoformat(timespec="seconds")
+    except Exception as exc:
+        record["delivery_attempts"] = int(record.get("delivery_attempts", 0) or 0) + 1
+        record["delivery_last_error"] = type(exc).__name__
+        record["next_check_at"] = _jero_now() + min(600, 30 * (2 ** min(5, record["delivery_attempts"])))
+        save_bot_state()
+        return False
+    try:
+        await bot.send_message(
+            user_id,
+            f"✅ <b>{t(user_id, 'purchase_completed')}</b>\n\n{get_wallet_balance_text(user_id)}",
+            reply_markup=user_back_to_menu_keyboard(styled=False, user_id=user_id),
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+    save_bot_state()
+    return True
+
+
+async def jero_after_update(bot, record: dict) -> None:
+    """Customer/admin side effects for the record's current state."""
+    if not record:
+        return
+    state = record.get("state")
+    user_id = int(record["user_id"])
+    ext = record["external_order_id"]
+    if state in JERO_TERMINAL_STATES or state == "processing":
+        # The supplier has the order; the customer's password is no longer needed.
+        jero_clear_secret(ext)
+    if state in JERO_DELIVERY_STATES:
+        await jero_deliver(bot, ext)
+    elif state == "processing":
+        await _jero_notify_once(bot, record, "processing", f"⏳ {t(user_id, 'jero_order_pending')}")
+    elif state == "refunded":
+        await _jero_notify_once(
+            bot, record, "refunded",
+            f"↩️ {t(user_id, 'jero_order_refunded')}"
+            + (f"\n\n<b>Supplier note:</b> {escape_html(record['supplier_message'])}" if record.get("supplier_message") else "")
+            + f"\n\n{get_wallet_balance_text(user_id)}",
+        )
+    elif state == "failed":
+        code = record.get("failure_code")
+        key = {
+            "out_of_stock": "jero_supplier_out_of_stock",
+            "rate_limited": "jero_supplier_busy",
+        }.get(code, "jero_supplier_unavailable")
+        await _jero_notify_once(bot, record, "failed", f"❌ {t(user_id, key)}\n\n{get_wallet_balance_text(user_id)}")
+        if code in {"insufficient_balance", "unauthorized", "api_paused", "invalid_request", "config"}:
+            title = "Jero supplier balance is too low" if code == "insufficient_balance" else "Jero order rejected"
+            await _jero_notify_admins(bot, record, title)
+    elif state == "needs_review":
+        await _jero_notify_once(bot, record, "needs_review", f"🕓 {t(user_id, 'jero_needs_review')}")
+        await _jero_notify_admins(bot, record, "Jero order needs manual reconciliation")
+
+
+async def jero_submit_order(bot, external_order_id: str, resend: bool = False) -> dict:
+    record = jero_orders.get(external_order_id)
+    if not record or record.get("state") not in JERO_PENDING_STATES:
+        return record or {}
+    provider_id = record["provider_id"]
+    payload = dict(record["payload"])
+    if record.get("kind") == "wordpress":
+        password = _jero_get_secret(external_order_id)
+        if not password:
+            # Never create a new supplier order without the customer's input.
+            return await jero_reconcile_one(bot, external_order_id, allow_resend=False)
+        payload["password"] = password
+    never_sent = external_order_id in jero_fresh_reservations and not resend
+    try:
+        client = jero_client(provider_id)
+        if jero_auth_blocked(provider_id):
+            raise BuyerAPIError("Jero requests are paused after an authentication failure.", "config")
+    except BuyerAPIError as exc:
+        payload.pop("password", None)
+        if never_sent:
+            # Configuration problem before sending: the supplier never saw it.
+            jero_fresh_reservations.discard(external_order_id)
+            record = await asyncio.to_thread(
+                jero_settle_rejected_sync, external_order_id, jero_api.JeroAPIError(str(exc), "config"),
+            )
+        else:
+            record["next_check_at"] = _jero_now() + JERO_AUTH_PAUSE_SECONDS
+        await jero_after_update(bot, record)
+        return record
+    jero_fresh_reservations.discard(external_order_id)
+    try:
+        result = await asyncio.to_thread(client.resend_order if resend else client.create_order, payload)
+    except jero_api.JeroAPIError as exc:
+        _jero_note_error(provider_id, exc)
+        record["sent_once"] = True
+        if exc.rejected_order:
+            record = await asyncio.to_thread(jero_settle_rejected_sync, external_order_id, exc)
+        else:
+            with jero_order_lock:
+                record["state"] = "unknown"
+                record["last_error"] = jero_api.redact(str(exc))[:200]
+                record["next_check_at"] = _jero_now() + 20
+            save_bot_state()
+            await _jero_notify_once(bot, record, "processing", f"⏳ {t(int(record['user_id']), 'jero_order_pending')}")
+        await jero_after_update(bot, record)
+        return record
+    finally:
+        payload.pop("password", None)
+    record["sent_once"] = True
+    record = await asyncio.to_thread(jero_apply_result_sync, external_order_id, result, "resend" if resend else "create")
+    await jero_after_update(bot, record)
+    return record
+
+
+async def jero_reconcile_one(bot, external_order_id: str, allow_resend: bool = True) -> dict:
+    record = jero_orders.get(external_order_id)
+    if not record or record.get("state") not in JERO_PENDING_STATES:
+        return record or {}
+    provider_id = record["provider_id"]
+    now = _jero_now()
+    if jero_auth_blocked(provider_id):
+        record["next_check_at"] = now + JERO_AUTH_PAUSE_SECONDS
+        return record
+    record["lookups"] = int(record.get("lookups", 0) or 0) + 1
+    try:
+        client = jero_client(provider_id)
+        result = await asyncio.to_thread(client.lookup_order, external_order_id)
+    except (jero_api.JeroAPIError, BuyerAPIError) as exc:
+        code = getattr(exc, "code", "config") if isinstance(exc, jero_api.JeroAPIError) else "config"
+        if isinstance(exc, jero_api.JeroAPIError):
+            _jero_note_error(provider_id, exc)
+        record["last_error"] = jero_api.redact(str(exc))[:200]
+        can_resend = (
+            allow_resend
+            and code in JERO_LOOKUP_NOT_FOUND_CODES
+            and record.get("state") in {"reserved", "unknown"}
+            and int(record.get("resends", 0) or 0) < JERO_MAX_RESENDS
+            and (record.get("kind") != "wordpress" or _jero_get_secret(external_order_id))
+        )
+        if can_resend:
+            record["resends"] = int(record.get("resends", 0) or 0) + 1
+            return await jero_submit_order(bot, external_order_id, resend=True)
+        attempts = int(record["lookups"])
+        record["next_check_at"] = now + min(900, 30 * (2 ** min(5, attempts))) + random.uniform(0, 10)
+        age = now - float(record.get("created_ts", now) or now)
+        if age > JERO_REVIEW_AFTER_SECONDS:
+            with jero_order_lock, topup_credit_lock:
+                _jero_mark_review(record, "Order outcome still unknown after 24 hours (no automatic refund).")
+                try:
+                    save_bot_state_strict()
+                except Exception:
+                    pass
+            await jero_after_update(bot, record)
+        else:
+            save_bot_state()
+        return record
+    record = await asyncio.to_thread(jero_apply_result_sync, external_order_id, result, "lookup")
+    if record.get("state") in JERO_PENDING_STATES:
+        attempts = int(record.get("lookups", 0) or 0)
+        record["next_check_at"] = _jero_now() + min(300, 20 * (2 ** min(4, attempts))) + random.uniform(0, 5)
+    await jero_after_update(bot, record)
+    return record
+
+
+async def jero_reconcile_once(bot) -> None:
+    _jero_prune()
+    now = _jero_now()
+    for external_order_id, record in list(jero_orders.items()):
+        if not isinstance(record, dict):
+            continue
+        due = float(record.get("next_check_at", 0) or 0) <= now
+        state = record.get("state")
+        if state in JERO_PENDING_STATES and due:
+            await jero_reconcile_one(bot, external_order_id)
+        elif state in JERO_DELIVERY_STATES and not record.get("delivery_sent") and due:
+            await jero_deliver(bot, external_order_id)
+        elif state in JERO_TERMINAL_STATES and not record.get("admin_notified") and state == "needs_review":
+            await _jero_notify_admins(bot, record, "Jero order needs manual reconciliation")
+
+
+async def jero_readonly_probe(bot) -> None:
+    """Secret-free read-only check of products and balance (no orders)."""
+    for provider_id, provider in load_seller_api_providers().items():
+        if provider.get("type") != JERO_PROVIDER_TYPE or provider_id in jero_probe_done:
+            continue
+        if not provider.get("enabled") or not provider.get("configured"):
+            continue
+        jero_probe_done.add(provider_id)
+        try:
+            products, _ = await asyncio.to_thread(fetch_jero_products, provider_id)
+            priced = sum(1 for item in products if item.get("_jero_price_valid"))
+            stocked = sum(1 for item in products if item.get("_jero_stock_known"))
+            tiered = sum(1 for item in products if item.get("tiers"))
+            special = sorted(item["id"] for item in products if item.get("_jero_special"))
+            shape = _jero_provider_status(provider_id).get("jero_products_shape")
+            print(
+                f"Jero read-only probe [{provider_id}]: products OK count={len(products)} "
+                f"price_valid={priced} stock_known={stocked} with_tiers={tiered} "
+                f"special_ids={special} shape={shape}"
+            )
+        except Exception as exc:
+            print(f"Jero read-only probe [{provider_id}]: products FAILED {jero_api.redact(str(exc))[:300]}")
+        try:
+            balance = await asyncio.to_thread(fetch_jero_balance, provider_id)
+            print(
+                f"Jero read-only probe [{provider_id}]: balance OK currency={balance.get('walletCurrency')} "
+                f"shape={_jero_provider_status(provider_id).get('jero_balance_shape')}"
+            )
+        except Exception as exc:
+            print(f"Jero read-only probe [{provider_id}]: balance FAILED {jero_api.redact(str(exc))[:300]}")
+        save_bot_state()
+
+
+async def jero_reconcile_loop(application, first_delay: int = 60) -> None:
+    try:
+        # The delay also lets a previous deployment stop before this
+        # instance touches pending orders.
+        await asyncio.sleep(max(1, int(first_delay)))
+        await jero_readonly_probe(application.bot)
+        while True:
+            try:
+                await jero_reconcile_once(application.bot)
+            except Exception as exc:
+                print(f"Jero reconcile tick failed safely: {type(exc).__name__}")
+            await asyncio.sleep(JERO_RECONCILE_INTERVAL_SECONDS)
+    except asyncio.CancelledError:
+        return
+
+
+def schedule_jero_reconciler(application, first_delay: int = 60) -> None:
+    global jero_reconciler_task
+    if jero_reconciler_task is not None and not jero_reconciler_task.done():
+        return
+    jero_reconciler_task = application.create_task(jero_reconcile_loop(application, first_delay))
+
+
+async def jero_confirm_draft(context, user_id: int, draft_id: str) -> dict:
+    bot = context.bot
+    with jero_order_lock:
+        _jero_prune()
+        existing = jero_draft_results.get(draft_id)
+        if existing:
+            await bot.send_message(user_id, f"⏳ {t(user_id, 'jero_order_already')}")
+            return jero_orders.get(existing, {}) if isinstance(existing, str) else {}
+        draft = jero_checkout_drafts.get(draft_id)
+        if not draft or int(draft.get("user_id", 0)) != int(user_id):
+            await bot.send_message(user_id, f"❌ {t(user_id, 'jero_draft_expired')}")
+            return {}
+        # Consume the draft before any await: a second click sees it gone.
+        jero_checkout_drafts.pop(draft_id, None)
+        jero_draft_results[draft_id] = "pending"
+    secret_key = f"draft:{draft_id}"
+    password = None
+    try:
+        mapping = api_product_mappings.get(draft["mapping_key"])
+        error = validate_api_shop_purchase(mapping, int(draft["quantity"]), user_id) if mapping else t(user_id, "product_no_longer_available")
+        if not error and jero_unit_price(mapping) != jero_api.money(draft["unit_price"]):
+            error = t(user_id, "jero_price_changed")
+        if not error and draft.get("kind") == "wordpress":
+            password = _jero_get_secret(secret_key)
+            if not password:
+                error = t(user_id, "jero_draft_expired")
+        if error:
+            jero_draft_results.pop(draft_id, None)
+            await bot.send_message(user_id, f"❌ {escape_html(error)}", parse_mode="HTML")
+            return {}
+        reservation = await asyncio.to_thread(jero_reserve_order, user_id, mapping, draft)
+        if not reservation.get("ok"):
+            jero_draft_results.pop(draft_id, None)
+            if reservation.get("error") == "wallet":
+                await bot.send_message(user_id, f"❌ {t(user_id, 'wallet_not_enough')}")
+            else:
+                await bot.send_message(user_id, f"❌ {t(user_id, 'please_contact_support')}")
+            return {}
+        record = reservation["record"]
+        jero_draft_results[draft_id] = record["external_order_id"]
+        if password:
+            jero_secret_inputs[record["external_order_id"]] = {
+                "password": password,
+                "expires_at": _jero_now() + JERO_SECRET_TTL_SECONDS,
+            }
+        user_state[user_id] = {"step": "main"}
+        await bot.send_message(user_id, f"⏳ {t(user_id, 'jero_order_submitted')}")
+        return await jero_submit_order(bot, record["external_order_id"])
+    finally:
+        jero_clear_secret(secret_key)
+        password = None
+
+
+def jero_cancel_draft(user_id: int, draft_id: str) -> None:
+    draft = jero_checkout_drafts.get(draft_id)
+    if draft and int(draft.get("user_id", 0)) == int(user_id):
+        jero_checkout_drafts.pop(draft_id, None)
+    jero_clear_secret(f"draft:{draft_id}")
+    if user_state.get(user_id, {}).get("step", "").startswith("jero_"):
+        user_state[user_id] = {"step": "main"}
+
+
+async def jero_start_special_flow(context, user_id: int, mapping: dict, callback_token: str) -> None:
+    kind = jero_special_kind(mapping)
+    cancel_keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"❌ {t(user_id, 'cancel')}", callback_data="jero_flow_cancel")],
+    ])
+    if kind == "wordpress":
+        user_state[user_id] = {"step": "jero_wp_site", "api_callback_token": callback_token}
+        await context.bot.send_message(
+            user_id,
+            f"🛠 <b>{escape_html(api_mapping_display_name(mapping))}</b>\n\n"
+            f"{escape_html(t(user_id, 'jero_wp_intro'))}\n\n"
+            f"👉 {escape_html(t(user_id, 'jero_wp_ask_site'))}",
+            reply_markup=cancel_keyboard,
+            parse_mode="HTML",
+        )
+        return
+    if kind == "ui8":
+        user_state[user_id] = {"step": "jero_ui8_links", "api_callback_token": callback_token}
+        await context.bot.send_message(
+            user_id,
+            f"🔗 <b>{escape_html(api_mapping_display_name(mapping))}</b>\n\n"
+            f"<b>{t(user_id, 'price')}:</b> {format_money(api_shop_mapping_price(mapping))} / link\n\n"
+            f"👉 {escape_html(t(user_id, 'jero_ui8_ask_links'))}",
+            reply_markup=cancel_keyboard,
+            parse_mode="HTML",
+        )
+
+
+async def jero_handle_text_step(update, context, user_id: int, state: dict, text: str) -> bool:
+    """Handle Jero special-product input steps. Returns True when consumed."""
+    step = state.get("step", "")
+    if not step.startswith("jero_"):
+        return False
+    callback_token = str(state.get("api_callback_token") or "")
+    mapping = find_api_shop_mapping(callback_token)
+    if mapping is None or not is_jero_mapping(mapping):
+        user_state[user_id] = {"step": "main"}
+        await update.message.reply_text(f"❌ {t(user_id, 'product_no_longer_available')}")
+        return True
+    if step == "jero_wp_site":
+        site = jero_api.validate_wordpress_site(text)
+        if not site:
+            await update.message.reply_text(f"❌ {t(user_id, 'jero_wp_invalid_site')}")
+            return True
+        user_state[user_id] = {"step": "jero_wp_username", "api_callback_token": callback_token, "site": site}
+        await update.message.reply_text(f"👉 {t(user_id, 'jero_wp_ask_username')}")
+        return True
+    if step == "jero_wp_username":
+        username = text.strip()
+        if not username or len(username) > 60 or "\n" in username:
+            await update.message.reply_text(f"❌ {t(user_id, 'jero_wp_invalid_username')}")
+            return True
+        user_state[user_id] = {
+            "step": "jero_wp_password", "api_callback_token": callback_token,
+            "site": state.get("site"), "username": username,
+        }
+        await update.message.reply_text(f"🔒 {t(user_id, 'jero_wp_ask_password')}")
+        return True
+    if step == "jero_wp_password":
+        password = update.message.text  # keep exact characters
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        if not password or len(password) > 200 or "\n" in password:
+            await context.bot.send_message(user_id, f"❌ {t(user_id, 'jero_wp_invalid_password')}")
+            return True
+        site, username = state.get("site"), state.get("username")
+        user_state[user_id] = {"step": "main"}
+        draft = await jero_send_confirmation(context, user_id, mapping, 1, site=site, username=username)
+        if draft:
+            jero_secret_inputs[f"draft:{draft['id']}"] = {
+                "password": password,
+                "expires_at": _jero_now() + JERO_SECRET_TTL_SECONDS,
+            }
+        password = None
+        return True
+    if step == "jero_ui8_links":
+        result = jero_api.validate_ui8_links(text)
+        accepted = result["accepted"]
+        if not accepted:
+            lines = [f"❌ {escape_html(t(user_id, 'jero_ui8_no_valid'))}"]
+            for value in (result["invalid"] + result["duplicates"])[:20]:
+                lines.append(f"• <code>{escape_html(value)}</code>")
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML", disable_web_page_preview=True)
+            return True
+        user_state[user_id] = {"step": "main"}
+        await jero_send_confirmation(
+            context, user_id, mapping, len(accepted),
+            links=accepted,
+            rejected_links={key: result[key] for key in ("invalid", "duplicates", "over_limit")},
+        )
+        return True
+    return False
+
+
+def jero_unresolved_orders() -> list:
+    return [
+        record for record in jero_orders.values()
+        if isinstance(record, dict) and (
+            record.get("state") in JERO_PENDING_STATES
+            or record.get("state") == "needs_review"
+            or (record.get("state") in JERO_DELIVERY_STATES and not record.get("delivery_sent"))
+        )
+    ]
+
+
+def render_jero_orders_panel() -> str:
+    records = sorted(jero_unresolved_orders(), key=lambda item: str(item.get("created_at")), reverse=True)
+    lines = ["🧾 <b>JERO SUPPLIER ORDERS</b>", "", f"Unresolved: <b>{len(records)}</b>"]
+    for record in records[:20]:
+        lines.extend([
+            "",
+            f"#{record.get('order_id')} <code>{escape_html(record.get('external_order_id'))}</code>",
+            f"{escape_html(record.get('product_name'))} × {int(record.get('quantity', 0))} — "
+            f"{format_money(float(record.get('total', 0)))}",
+            f"State: <b>{escape_html(record.get('state'))}</b> | Supplier: "
+            f"<code>{escape_html(record.get('supplier_order_id') or 'N/A')}</code>",
+        ])
+        if record.get("review_reason"):
+            lines.append(f"Reason: {escape_html(record['review_reason'])}")
+        if record.get("last_error"):
+            lines.append(f"Last error: {escape_html(record['last_error'])}")
+    lines.extend([
+        "",
+        "Pending orders are checked automatically. Nothing here is refunded automatically "
+        "unless the supplier confirms the outcome.",
+    ])
+    return "\n".join(lines)
+
+
+def _jero_mapping_snapshot_fields(product: dict) -> dict:
+    """Extra mapping fields for Jero products (tiers kept as metadata only)."""
+    if not isinstance(product, dict) or "_jero_price_valid" not in product:
+        return {}
+    return {
+        "api_price_valid": bool(product.get("_jero_price_valid")),
+        "api_stock_known": bool(product.get("_jero_stock_known")),
+        "api_tiers": list(product.get("tiers") or [])[:20],
+        "api_tiers_unclear": bool(product.get("_jero_tiers_unclear")),
+        "jero_special_kind": str(product.get("_jero_special_kind") or ""),
+    }
+
+
+def _any_jero_provider() -> bool:
+    return any(
+        provider.get("type") == JERO_PROVIDER_TYPE
+        for provider in load_seller_api_providers().values()
+    )
+
+
+def _seller_api_key_format_line(provider: dict) -> str:
+    api_key = str(provider.get("api_key") or "")
+    if provider.get("type") == JERO_PROVIDER_TYPE:
+        # Jero keys have their own format; the api_ prefix rule does not apply.
+        return "<b>Auth:</b> Authorization: Bearer (no key prefix required)"
+    return f"<b>Starts with api_:</b> {'Yes' if api_key.startswith('api_') else 'No'}"
+
+
+def render_jero_debug_config(provider_id: str, provider: dict) -> str:
+    status = _jero_provider_status(provider_id)
+    blocked = "Yes" if jero_auth_blocked(provider_id) else "No"
+    return "\n".join([
+        "🔎 <b>SELLER API DEBUG CONFIG</b>",
+        "",
+        f"<b>Provider:</b> {escape_html(provider.get('name'))} (<code>{escape_html(provider_id)}</code>)",
+        f"<b>Provider type:</b> <code>{JERO_PROVIDER_TYPE}</code>",
+        f"<b>Enabled:</b> {'true' if provider.get('enabled') else 'false'}",
+        f"<b>Endpoint (complete URL):</b> <code>{escape_html(provider.get('base_url') or 'Not configured')}</code>",
+        f"<b>Masked key:</b> <code>{escape_html(provider.get('masked_key'))}</code>",
+        f"<b>Key length:</b> {len(str(provider.get('api_key') or ''))}",
+        "<b>Auth:</b> <code>Authorization: Bearer ****</code> (never in query or body)",
+        "<b>Products:</b> <code>GET ?action=products</code>",
+        "<b>Balance:</b> <code>GET ?action=balance</code>",
+        "<b>Order:</b> <code>POST ?action=order</code> (JSON, stable external_order_id)",
+        "<b>Lookup:</b> <code>GET ?action=order&amp;external_order_id=…</code>",
+        "<b>Limits:</b> 120 requests/min, 30 orders/min, 100 items/order",
+        f"<b>Products parser verified:</b> {escape_html(status.get('jero_products_verified_at') or 'Not yet')}",
+        f"<b>Paused after auth failure:</b> {blocked}",
+        f"<b>Last auth error:</b> {escape_html(status.get('jero_auth_error') or 'None')}",
+        f"<b>Unresolved supplier orders:</b> {len(jero_unresolved_orders())}",
+    ])
+
+
+def jero_product_detail_lines(product: dict) -> str:
+    if not isinstance(product, dict) or "_jero_price_valid" not in product:
+        return ""
+    kind = product.get("_jero_special_kind") or ""
+    kind_text = {
+        "wordpress": "WordPress install (site, username, password; quantity 1)",
+        "ui8": "UI8 download (one link per item)",
+    }.get(kind, "Ordinary account product")
+    tiers = product.get("tiers") or []
+    tier_text = f"{len(tiers)} tier(s), shown as metadata only (no automatic discount)" if tiers else "None"
+    warnings = []
+    if not product.get("_jero_price_valid"):
+        warnings.append("missing/invalid supplier price — customers cannot buy it")
+    if not product.get("_jero_stock_known") and not kind:
+        warnings.append("supplier stock missing — customers cannot buy it")
+    if product.get("_jero_tiers_unclear"):
+        warnings.append("tier structure unclear")
+    lines = [f"\n<b>Jero product type:</b> {escape_html(kind_text)}", f"<b>Tiers:</b> {escape_html(tier_text)}"]
+    for tier in tiers[:5]:
+        lines.append(f"• <code>{escape_html(json.dumps(tier, ensure_ascii=False)[:120])}</code>")
+    if warnings:
+        lines.append("⚠️ " + escape_html("; ".join(warnings)))
+    return "\n".join(lines)
+
+
+def _jero_buy_label(mapping: dict, user_id: int = None) -> str:
+    if not is_jero_mapping(mapping):
+        return ""
+    kind = jero_special_kind(mapping)
+    if kind == "wordpress":
+        return "🛠 Install on my site"
+    if kind == "ui8":
+        return "🔗 Order with UI8 links"
+    return ""
 
 
 async def deliver_accounts_to_user(bot, user_id: int, product_id: str, qty: int):
@@ -14635,12 +15942,15 @@ async def post_init(application):
     start_nowpayments_webhook_server()
     schedule_seller_api_auto_refresh(application, first_delay=30)
     schedule_sales_report_auto_daily(application, first_delay=5)
+    schedule_jero_reconciler(application, first_delay=90)
 
 
 async def post_shutdown(application):
     global sales_report_auto_task
     tasks = list(seller_api_auto_refresh_tasks.values())
     seller_api_auto_refresh_tasks.clear()
+    if jero_reconciler_task is not None:
+        tasks.append(jero_reconciler_task)
     if sales_report_auto_task is not None:
         tasks.append(sales_report_auto_task)
         sales_report_auto_task = None
@@ -15036,6 +16346,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         enter_client_mode(user_id)
         await send_user_dashboard(update.message)
         return
+
+    if user_mode[user_id] != "admin" and str(step).startswith("jero_"):
+        if await jero_handle_text_step(update, context, user_id, state, text):
+            return
 
     if user_mode[user_id] != "admin" and step == "api_shop_custom_quantity":
         callback_token = str(state.get("api_callback_token") or "")
@@ -17755,6 +19069,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if data == "seller_api_jero_orders":
+        await send_inline_from_callback(query, render_jero_orders_panel(), seller_api_provider_keyboard())
+        return
+
     if data == "seller_api_test":
         provider_id = selected_seller_api_provider_id(user_id)
         try:
@@ -20039,6 +21357,23 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_shop_cards_message(query, from_callback=True, category_id=category_id)
         return
 
+    if data.startswith("jero_ok_"):
+        await jero_confirm_draft(context, user_id, data.replace("jero_ok_", "", 1))
+        return
+
+    if data.startswith("jero_no_") or data == "jero_flow_cancel":
+        if data.startswith("jero_no_"):
+            jero_cancel_draft(user_id, data.replace("jero_no_", "", 1))
+        elif str(user_state.get(user_id, {}).get("step", "")).startswith("jero_"):
+            user_state[user_id] = {"step": "main"}
+        await send_shop_inline_with_style_fallback(
+            query,
+            f"❌ <b>{t(user_id, 'cancel')}</b>",
+            shop_return_keyboard(user_id=user_id),
+            shop_return_keyboard(styled=False, user_id=user_id),
+        )
+        return
+
     if data.startswith("api_shop_buy_"):
         callback_token = data.replace("api_shop_buy_", "", 1)
         mapping = find_api_shop_mapping(callback_token)
@@ -20058,6 +21393,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 api_shop_product_details_keyboard(mapping, user_id=user_id),
                 api_shop_product_details_keyboard(mapping, styled=False, user_id=user_id),
             )
+            return
+        if is_jero_mapping(mapping) and jero_special_kind(mapping):
+            await jero_start_special_flow(context, user_id, mapping, callback_token)
             return
         if api_mapping_requires_customer_email(mapping) or api_shop_mapping_stock(mapping) == 1:
             await send_shop_inline_with_style_fallback(
@@ -20122,12 +21460,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 api_shop_quantity_keyboard(mapping, styled=False, user_id=user_id) if mapping else shop_return_keyboard(styled=False, user_id=user_id),
             )
             return
-        await send_shop_inline_with_style_fallback(
-            query,
-            f"⏳ <b>{t(user_id, 'processing_purchase')}</b>",
-            user_back_to_menu_keyboard(user_id=user_id),
-            user_back_to_menu_keyboard(styled=False, user_id=user_id),
-        )
+        if not is_jero_mapping(mapping):
+            await send_shop_inline_with_style_fallback(
+                query,
+                f"⏳ <b>{t(user_id, 'processing_purchase')}</b>",
+                user_back_to_menu_keyboard(user_id=user_id),
+                user_back_to_menu_keyboard(styled=False, user_id=user_id),
+            )
         await continue_api_shop_purchase(context, user_id, callback_token, quantity)
         return
 
