@@ -9105,7 +9105,7 @@ def render_store_position_page(user_id: int, page: int = 0) -> tuple:
         f"<b>List:</b> {escape_html(store_position_category_name(category_id))}\n"
         f"Configured items: <b>{len(items)}</b> | Page: <b>{page + 1}/{pages}</b>\n\n"
         "Root positions include products and folders. Positions include disabled and temporarily missing products. "
-        "Customer pages contain 10 currently visible catalog items."
+        f"Customer pages contain {SHOP_PRODUCT_PAGE_SIZE} currently visible catalog items."
     )
     return text, items, page, pages
 
@@ -11920,7 +11920,7 @@ def validate_api_shop_purchase(mapping: dict, quantity: int, user_id: int = None
     return ""
 
 
-STOREFRONT_PAGE_SIZE = 10
+STOREFRONT_PAGE_SIZE = 15
 STOREFRONT_CONTEXT_LIMIT = 2000
 STOREFRONT_SORTS = {"default", "price_low", "price_high", "name", "newest"}
 STOREFRONT_FILTERS = {"all", "instant", "manual"}
@@ -12246,7 +12246,7 @@ def shop_product_rows(product_ids: list, user_id: int = None, styled: bool = Tru
     return rows
 
 
-SHOP_PRODUCT_PAGE_SIZE = 10
+SHOP_PRODUCT_PAGE_SIZE = 15
 
 
 def visible_configured_product_items(category_id: str, ordered_items: list = None) -> list:
@@ -12350,7 +12350,7 @@ def shop_categories_keyboard(user_id: int = None, styled: bool = True, page: int
 def _shop_categories_keyboard_unlocked(
     user_id: int = None, styled: bool = True, page: int = 0
 ) -> InlineKeyboardMarkup:
-    """Render the original root hierarchy with ten ordered catalog items per page."""
+    """Render the original root hierarchy with SHOP_PRODUCT_PAGE_SIZE (15) ordered catalog items per page."""
     ordered_items = configured_shop_order_items()
     visible_catalog_items = visible_root_catalog_items(ordered_items)
     page, total_pages, start, end = _shop_page_window(len(visible_catalog_items), page)
@@ -12399,7 +12399,7 @@ def shop_menu_keyboard(
 def _shop_menu_keyboard_unlocked(
     user_id: int = None, category_id: str = None, styled: bool = True, page: int = 0
 ) -> InlineKeyboardMarkup:
-    """Render an original category product list with a fixed ten-product page."""
+    """Render an original category product list with a fixed SHOP_PRODUCT_PAGE_SIZE (15) product page."""
     normalize_categories()
     visible_product_items = visible_configured_product_items(category_id)
     page, total_pages, start, end = _shop_page_window(len(visible_product_items), page)

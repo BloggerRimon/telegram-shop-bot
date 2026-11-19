@@ -47,20 +47,42 @@ class Phase15BOrderingTests(Phase15StateMixin, unittest.TestCase):
         bot.category_order[:] = [bot.DEFAULT_CATEGORY_ID]
 
     def test_actual_root_keyboard_has_exact_unique_product_page_sizes(self):
-        for count, expected in ((13, (10, 3)), (15, (10, 5)), (20, (10, 10))):
+        cases = (
+            (0, (0,)), (1, (1,)), (14, (14,)), (15, (15,)),
+            (16, (15, 1)), (30, (15, 15)), (31, (15, 15, 1)),
+        )
+        for count, expected in cases:
             with self.subTest(count=count):
                 self._reset_mock_catalog()
                 for index in range(count):
                     self.add_local(f"p{index:02d}", f"Product {index:02d}", index + 1)
-                first = product_callbacks(bot.shop_categories_keyboard(self.user_id, styled=False, page=0))
-                second = product_callbacks(bot.shop_categories_keyboard(self.user_id, styled=False, page=1))
-                self.assertEqual((len(first), len(second)), expected)
-                self.assertEqual(len(first), len(set(first)))
-                self.assertEqual(len(second), len(set(second)))
-                self.assertFalse(set(first) & set(second))
+                keyboards = [
+                    bot.shop_categories_keyboard(self.user_id, styled=False, page=page)
+                    for page in range(len(expected))
+                ]
+                pages = [product_callbacks(keyboard) for keyboard in keyboards]
+                self.assertEqual(tuple(len(page) for page in pages), expected)
+                flattened = [value for page in pages for value in page]
+                self.assertEqual(flattened, [f"shop_buy_p{index:02d}" for index in range(count)])
+                self.assertEqual(len(flattened), len(set(flattened)))
+                for page_number, keyboard in enumerate(keyboards):
+                    labels = [button.text for row in keyboard.inline_keyboard for button in row]
+                    if len(expected) == 1:
+                        self.assertFalse(any(" / " in label for label in labels))
+                    else:
+                        self.assertIn(f"{page_number + 1} / {len(expected)}", labels)
+                    self.assertEqual(any("Previous" in label for label in labels), page_number > 0)
+                    self.assertEqual(
+                        any("Next" in label for label in labels), page_number + 1 < len(expected)
+                    )
+                # A stale page beyond the end renders the last valid page.
+                stale = product_callbacks(
+                    bot.shop_categories_keyboard(self.user_id, styled=False, page=len(expected) + 5)
+                )
+                self.assertEqual(stale, pages[-1])
 
     def test_actual_root_keyboard_paginates_mixed_catalog_items_in_shop_order(self):
-        for count, expected_sizes in ((13, (10, 3)), (18, (10, 8))):
+        for count, expected_sizes in ((16, (15, 1)), (23, (15, 8))):
             with self.subTest(count=count):
                 self._reset_mock_catalog()
                 expected_order = []
@@ -83,20 +105,20 @@ class Phase15BOrderingTests(Phase15StateMixin, unittest.TestCase):
                 self.assertEqual(pages[0] + pages[1], expected_order)
                 self.assertFalse(set(pages[0]) & set(pages[1]))
 
-    def test_actual_keyboard_deduplicates_18_raw_aliases_to_15_before_slicing(self):
+    def test_actual_keyboard_deduplicates_23_raw_aliases_to_20_before_slicing(self):
         names = ["ChatGPT Codex Token", "Claude Token", "Gmail"]
-        for index in range(12):
+        for index in range(17):
             self.add_local(f"local-{index:02d}", f"Local {index:02d}", index + 1)
         for index, name in enumerate(names):
             self.add_api(f"api-{index}", provider="seller-two", name=name)
         # Put each legacy alias before its provider-aware reference. The raw
-        # order contains 18 product references, but only 15 canonical products.
+        # order contains 23 product references, but only 20 canonical products.
         for index in reversed(range(3)):
             bot.shop_order.insert(5, f"api_product:api-{index}")
         raw_product_references = [
             item for item in bot.shop_order if item.startswith(("product:", "api_product:"))
         ]
-        self.assertEqual(len(raw_product_references), 18)
+        self.assertEqual(len(raw_product_references), 23)
 
         self.add_category("manual", "Manual Services", icon="🤝")
         self.add_local(
@@ -104,7 +126,7 @@ class Phase15BOrderingTests(Phase15StateMixin, unittest.TestCase):
             category_id="manual",
         )
         # An unlisted disabled record exercises visibility filtering without
-        # changing the 18 raw references above.
+        # changing the 23 raw references above.
         bot.PRODUCTS["disabled"] = {
             "name": "Disabled", "price": 1, "category_id": bot.DEFAULT_CATEGORY_ID,
             "enabled": False, "accounts": [{"raw_line": "stock"}], "display_stock": 1,
@@ -115,9 +137,9 @@ class Phase15BOrderingTests(Phase15StateMixin, unittest.TestCase):
         second_keyboard = bot.shop_categories_keyboard(self.user_id, styled=False, page=1)
         first = product_callbacks(first_keyboard)
         second = product_callbacks(second_keyboard)
-        self.assertEqual((len(first), len(second)), (10, 5))
-        self.assertEqual(len(first + second), 15)
-        self.assertEqual(len(set(first + second)), 15)
+        self.assertEqual((len(first), len(second)), (15, 5))
+        self.assertEqual(len(first + second), 20)
+        self.assertEqual(len(set(first + second)), 20)
         self.assertFalse(set(first) & set(second))
         self.assertEqual(
             product_callbacks(bot.shop_categories_keyboard(self.user_id, styled=False, page=0)), first
@@ -149,8 +171,8 @@ class Phase15BOrderingTests(Phase15StateMixin, unittest.TestCase):
             self.assertIsNotNone(mapping)
             self.assertEqual(bot.mapping_provider_id(mapping), "seller-two")
 
-    def test_fifteen_catalog_rows_paginate_folders_once_instead_of_repeating(self):
-        for index in range(12):
+    def test_twenty_catalog_rows_paginate_folders_once_instead_of_repeating(self):
+        for index in range(17):
             self.add_local(f"p{index:02d}", f"Product {index:02d}", index + 1)
         repeated_names = ["ChatGPT Codex Token", "Claude Token", "Gmail"]
         for index, name in enumerate(repeated_names):
@@ -167,8 +189,8 @@ class Phase15BOrderingTests(Phase15StateMixin, unittest.TestCase):
             ]
             for keyboard in keyboards
         ]
-        self.assertEqual([len(page) for page in products], [10, 2])
-        self.assertEqual([len(root_catalog_callbacks(keyboard)) for keyboard in keyboards], [10, 5])
+        self.assertEqual([len(page) for page in products], [15, 2])
+        self.assertEqual([len(root_catalog_callbacks(keyboard)) for keyboard in keyboards], [15, 5])
         self.assertFalse(set(products[0]) & set(products[1]))
         self.assertEqual(folders[0], [])
         self.assertEqual(len(folders[1]), 3)
@@ -190,8 +212,8 @@ class Phase15BOrderingTests(Phase15StateMixin, unittest.TestCase):
             self.add_local(f"p{index:02d}", f"Product {index:02d}", index + 1)
         first = product_callbacks(bot.shop_categories_keyboard(self.user_id, styled=False, page=0))
         second = product_callbacks(bot.shop_categories_keyboard(self.user_id, styled=False, page=1))
-        self.assertEqual(first, [f"shop_buy_p{index:02d}" for index in range(10)])
-        self.assertEqual(second, [f"shop_buy_p{index:02d}" for index in range(10, 20)])
+        self.assertEqual(first, [f"shop_buy_p{index:02d}" for index in range(15)])
+        self.assertEqual(second, [f"shop_buy_p{index:02d}" for index in range(15, 20)])
         self.assertFalse(set(first) & set(second))
 
     def test_same_name_distinct_local_products_remain_separate(self):
@@ -297,9 +319,31 @@ class Phase15BOrderingTests(Phase15StateMixin, unittest.TestCase):
         self.assertTrue(bot.move_configured_product_to_position("product:p24", (2 - 1) * 10 + 3))
         configured = bot.configured_product_order_items(bot.DEFAULT_CATEGORY_ID)
         self.assertEqual(configured[12], "product:p24")
-        visible = product_callbacks(bot.shop_categories_keyboard(self.user_id, styled=False, page=1))
-        self.assertEqual(len(visible), 10)
-        self.assertIn("shop_buy_p24", visible)
+        # Admin page/slot positioning keeps its separate 10-item pages; the
+        # customer page holds 15 visible items, so p24 (visible index 11) is on page 1.
+        first_visible = product_callbacks(bot.shop_categories_keyboard(self.user_id, styled=False, page=0))
+        second_visible = product_callbacks(bot.shop_categories_keyboard(self.user_id, styled=False, page=1))
+        self.assertEqual((len(first_visible), len(second_visible)), (15, 9))
+        self.assertEqual(first_visible[11], "shop_buy_p24")
+        self.assertNotIn("shop_buy_p05", first_visible + second_visible)
+        self.assertFalse(set(first_visible) & set(second_visible))
+
+    def test_admin_position_pagination_stays_ten_items(self):
+        for index in range(25):
+            self.add_local(f"p{index:02d}", f"P{index:02d}", 1)
+        bot.admin_temp[self.user_id] = {"store_position_category": bot.DEFAULT_CATEGORY_ID}
+        text, items, page, pages = bot.render_store_position_page(self.user_id, 0)
+        self.assertEqual((len(items), pages), (25, 3))
+        self.assertIn("Customer pages contain 15 currently visible catalog items.", text)
+        callbacks = [
+            button.callback_data
+            for row in bot.store_position_page_keyboard(self.user_id, 0).inline_keyboard
+            for button in row
+            if button.callback_data and button.callback_data.startswith("admin_pos_view_")
+        ]
+        self.assertEqual(len(callbacks), 10)
+        _, _, _, admin_pages = bot.render_storefront_admin_page(0)
+        self.assertEqual(admin_pages, 3)
 
     def test_manual_position_persists_through_state_snapshot_reload(self):
         for index in range(4):
