@@ -121,6 +121,19 @@ def init_db():
             )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_transactions_user_id ON transactions(user_id);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id);")
+            # Additive: once-only claims for supplier order transitions.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS seller_order_events (
+                    provider_id TEXT NOT NULL,
+                    external_order_id TEXT NOT NULL,
+                    event TEXT NOT NULL,
+                    owner TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (provider_id, external_order_id, event)
+                );
+                """
+            )
 
 
 def save_state(state: dict):
@@ -278,3 +291,36 @@ def list_user_profiles(limit: int = 1000, offset: int = 0):
                 (int(limit), int(offset)),
             )
             return list(cur.fetchall())
+
+
+def claim_seller_order_event(provider_id: str, external_order_id: str, event: str, owner: str) -> bool:
+    """Claim a once-only order transition. True only for the owning instance.
+
+    The first instance to insert the row owns the transition. A retry by the
+    same instance (for example after a failed state save) is allowed again;
+    any other instance is refused, so a completion/refund cannot apply twice.
+    """
+    init_db()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO seller_order_events (provider_id, external_order_id, event, owner)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (provider_id, external_order_id, event) DO NOTHING
+                RETURNING owner;
+                """,
+                (str(provider_id), str(external_order_id), str(event), str(owner)),
+            )
+            row = cur.fetchone()
+            if row:
+                return True
+            cur.execute(
+                """
+                SELECT owner FROM seller_order_events
+                WHERE provider_id = %s AND external_order_id = %s AND event = %s;
+                """,
+                (str(provider_id), str(external_order_id), str(event)),
+            )
+            existing = cur.fetchone()
+            return bool(existing) and existing[0] == str(owner)
