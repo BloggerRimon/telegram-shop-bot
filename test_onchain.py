@@ -195,6 +195,15 @@ class ChainParsingTests(unittest.TestCase):
         tx["vin"][0]["prevout"]["scriptPubKey"]["address"] = nw.BITCOIN_ADDRESS  # our own spend -> change
         self.assertEqual(chains.inspect_utxo("bitcoin", "t", FakeRpc({"getrawtransaction": tx}))["transfers"], [])
 
+    def test_litecoin_addresses_array_format(self):
+        # Alchemy's Litecoin node returns scriptPubKey.addresses (list), and no prevout in verbosity 2.
+        prev = {"vout": [{"n": 0, "value": 1, "scriptPubKey": {"addresses": ["ltc1qsender"]}}]}
+        tx = {"confirmations": 6, "blocktime": 1_800_000_000, "vin": [{"txid": "pp", "vout": 0}],
+              "vout": [{"n": 1, "value": "0.01", "scriptPubKey": {"addresses": [nw.LITECOIN_ADDRESS]}}]}
+        fake = FakeRpc({"getrawtransaction": lambda p: prev if p[0] == "pp" else tx})
+        res = chains.inspect_utxo("litecoin", "t", fake)
+        self.assertEqual((res["transfers"][0]["amount_units"], res["final"]), (1_000_000, True))
+
     def test_tron_trc20_and_fake_token(self):
         our = nw.tron_to_hex(nw.TRON_ADDRESS)[2:]
         usdt = nw.tron_to_hex(nw.USDT_TRC20_CONTRACT)[2:]
