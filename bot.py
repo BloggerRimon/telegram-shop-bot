@@ -38,6 +38,19 @@ import crypto_verify as cv
 import wallet_checker as wc
 import jero_api
 
+# Self-custody on-chain payments (admin-only). Import failures must never take
+# the existing bot down, so the module is optional at runtime.
+try:
+    from onchain import admin_ui as oc_admin
+    from onchain import engine as oc_engine
+    from onchain import webhook as oc_webhook
+    ONCHAIN_AVAILABLE = True
+except Exception as _onchain_import_error:  # pragma: no cover
+    print(f"[onchain] module unavailable: {type(_onchain_import_error).__name__}")
+    oc_admin = oc_engine = oc_webhook = None
+    ONCHAIN_AVAILABLE = False
+onchain_engine_instance = None
+
 try:
     import cryptomus as cm
 except Exception as e:
@@ -15847,12 +15860,28 @@ class NowPaymentsWebhookHandler(BaseHTTPRequestHandler):
             self._send_text(200, public_legal_html(), "text/html; charset=utf-8")
         elif clean_path == NOWPAYMENTS_WEBHOOK_PATH:
             self._send_json(200, {"ok": True, "service": "telegram-shop-bot"})
+        elif clean_path == "/onchain/health":
+            worker = onchain_engine_instance
+            self._send_json(200, {
+                "ok": True,
+                "onchain_module": ONCHAIN_AVAILABLE,
+                "worker_running": bool(worker and worker._thread and worker._thread.is_alive()),
+                "last_tick": worker.last_tick.isoformat() if worker and worker.last_tick else None,
+            })
         else:
             self._send_json(404, {"ok": False, "error": "not found"})
 
     def do_POST(self):
         clean_path = self.path.split("?")[0]
         content_length = int(self.headers.get("Content-Length", "0") or "0")
+        if ONCHAIN_AVAILABLE and clean_path.startswith(oc_webhook.PATH_PREFIX):
+            if content_length > oc_webhook.MAX_BODY_BYTES or content_length < 0:
+                self._send_json(413, {"ok": False, "error": "too large"})
+                return
+            raw_body = self.rfile.read(content_length)
+            status_code, response_payload = oc_webhook.handle(clean_path, self.headers, raw_body)
+            self._send_json(status_code, response_payload)
+            return
         if clean_path == SELLER_API_PURCHASE_PATH and content_length > 65536:
             self._send_json(413, {"success": False, "error": "request_too_large"})
             return
@@ -15925,6 +15954,44 @@ def start_nowpayments_webhook_server():
     thread.start()
 
 
+def start_onchain_engine(application):
+    """Start the admin-only self-custody monitor. Never blocks or breaks bot startup."""
+    global onchain_engine_instance
+    if not ONCHAIN_AVAILABLE or not DATABASE_URL or onchain_engine_instance is not None:
+        return
+    loop = asyncio.get_running_loop()
+
+    def notify_admins(text: str):
+        async def _send():
+            for admin_id in ADMIN_IDS:
+                try:
+                    await application.bot.send_message(admin_id, text)
+                except Exception:
+                    pass
+        try:
+            asyncio.run_coroutine_threadsafe(_send(), loop)
+        except Exception:
+            pass
+
+    try:
+        onchain_engine_instance = oc_engine.Engine(notify=notify_admins)
+        oc_admin.set_engine(onchain_engine_instance)
+        onchain_engine_instance.start()
+        print("✅ On-chain admin-only monitor started (customer activation stays as stored, default OFF)")
+    except Exception as e:
+        print(f"[onchain] engine start failed: {type(e).__name__}")
+
+
+async def onchain_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if ONCHAIN_AVAILABLE:
+        await oc_admin.command(update, context, is_admin)
+
+
+async def onchain_hint_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if ONCHAIN_AVAILABLE:
+        await oc_admin.hint_command(update, context, is_admin)
+
+
 async def post_init(application):
     global app_loop
     app_loop = asyncio.get_running_loop()
@@ -15943,6 +16010,7 @@ async def post_init(application):
     schedule_seller_api_auto_refresh(application, first_delay=30)
     schedule_sales_report_auto_daily(application, first_delay=5)
     schedule_jero_reconciler(application, first_delay=90)
+    start_onchain_engine(application)
 
 
 async def post_shutdown(application):
@@ -17924,6 +17992,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ensure_user(user_id, query.from_user)
 
     if data == "noop":
+        return
+
+    if data.startswith("oc:"):
+        if ONCHAIN_AVAILABLE:
+            await oc_admin.callback(query, data, is_admin)
         return
 
     if data.startswith("manual_fulfill_") and not is_admin(user_id):
@@ -22112,6 +22185,8 @@ def main():
     app.add_handler(CommandHandler(["shop", "wallet", "topup", "orders", "support"], client_menu_command_persistent))
     app.add_handler(CommandHandler("admin", admin_command_persistent))
     app.add_handler(CommandHandler("myid", myid))
+    app.add_handler(CommandHandler("onchain", onchain_command))
+    app.add_handler(CommandHandler("oc_hint", onchain_hint_command))
     app.add_handler(CommandHandler("checkchannel", checkchannel_command))
     app.add_handler(CommandHandler("checkmember", checkmember_command))
     app.add_handler(CommandHandler("addstock", addstock_persistent))
