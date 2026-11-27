@@ -53,6 +53,12 @@ def conn():
 
 
 DDL = [
+    """CREATE TABLE IF NOT EXISTS onchain_customer_settlements (
+        invoice_id BIGINT PRIMARY KEY,
+        transfer_uid TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'pending',
+        completed_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
     """CREATE TABLE IF NOT EXISTS onchain_settings (
         key TEXT PRIMARY KEY,
         value JSONB NOT NULL,
@@ -246,7 +252,7 @@ class AmountSpaceExhausted(Exception):
 
 def create_invoice_reserved(*, purpose: str, created_by: Optional[int], user_id: Optional[int], asset: nw.Asset,
                             base_units: int, usd_amount: Decimal, rate_usd: Optional[Decimal], rate_source: str,
-                            valuation_rule: str, ttl_minutes: int, max_offsets: int = 999) -> dict:
+                            valuation_rule: str, ttl_minutes: int, max_offsets: int = 999, note: Optional[str] = None) -> dict:
     """Atomically reserve a unique exact amount (base + k*quantum) for this asset.
 
     Uniqueness is enforced by the partial unique index on active invoices, so two
@@ -271,6 +277,9 @@ def create_invoice_reserved(*, purpose: str, created_by: Optional[int], user_id:
                     (ref, purpose, created_by, user_id, asset.network, asset.id, network.address, units,
                      asset.decimals, usd_amount, rate_usd, rate_source, valuation_rule, int(ttl_minutes)))
                 row = cur.fetchone()
+                if note is not None:
+                    cur.execute("UPDATE onchain_invoices SET note=%s WHERE id=%s", (note, row["id"]))
+                    row["note"] = note
                 cur.execute("INSERT INTO onchain_audit (actor, action, detail) VALUES (%s,'invoice_created',%s)",
                             (created_by, _j({"invoice": row["id"], "ref": ref, "asset": asset.id, "purpose": purpose})))
                 return row
@@ -516,14 +525,16 @@ def credit_final_transfer(uid: str, confirmations: int) -> dict:
         inv = cur.fetchone()
         if not inv or inv["status"] != "detected" or inv["matched_transfer_uid"] != uid:
             return {"result": "skip"}
-        if inv["purpose"] != "admin_test":
-            # Customer crediting is intentionally not released in this version.
-            cur.execute("UPDATE onchain_transfers SET status='review', reason='customer_credit_not_released' "
-                        "WHERE uid=%s", (uid,))
-            cur.execute("UPDATE onchain_invoices SET status='review', updated_at=NOW() WHERE id=%s", (inv["id"],))
-            cur.execute("INSERT INTO onchain_review (transfer_uid, invoice_id, reason) VALUES (%s,%s,%s) "
-                        "ON CONFLICT (transfer_uid) DO NOTHING", (uid, inv["id"], "customer_credit_not_released"))
-            return {"result": "review"}
+        if inv["purpose"] == "customer":
+            # Durable outbox. The bot applies the normal wallet credit using its
+            # existing persistent idempotency keys before acknowledging this row.
+            cur.execute("INSERT INTO onchain_customer_settlements (invoice_id, transfer_uid) "
+                        "VALUES (%s,%s) ON CONFLICT DO NOTHING", (inv["id"], uid))
+            cur.execute("UPDATE onchain_transfers SET status='final', confirmations=%s, updated_at=NOW() WHERE uid=%s",
+                        (confirmations, uid))
+            cur.execute("UPDATE onchain_invoices SET status='paid', paid_at=NOW(), updated_at=NOW() WHERE id=%s",
+                        (inv["id"],))
+            return {"result": "customer_pending", "invoice_id": inv["id"]}
         cur.execute("INSERT INTO onchain_test_ledger (invoice_id, transfer_uid, admin_id, asset_id, amount_units, "
                     "usd_amount) VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING id",
                     (inv["id"], uid, inv["created_by"], inv["asset_id"], t["amount_units"], inv["usd_amount"]))
@@ -563,6 +574,35 @@ def paid_test_assets() -> set:
     with conn() as c, c.cursor() as cur:
         cur.execute("SELECT DISTINCT asset_id FROM onchain_test_ledger")
         return {r["asset_id"] for r in cur.fetchall()}
+
+
+def pending_customer_settlements(limit: int = 25):
+    with conn() as c, c.cursor() as cur:
+        cur.execute("SELECT i.*, s.transfer_uid FROM onchain_customer_settlements s "
+                    "JOIN onchain_invoices i ON i.id=s.invoice_id "
+                    "WHERE s.status='pending' AND i.purpose='customer' AND i.status='paid' "
+                    "ORDER BY i.id LIMIT %s", (limit,))
+        return cur.fetchall()
+
+
+def finish_customer_settlement(invoice_id: int):
+    with conn() as c, c.cursor() as cur:
+        cur.execute("UPDATE onchain_customer_settlements SET status='completed', completed_at=NOW() "
+                    "WHERE invoice_id=%s", (invoice_id,))
+
+
+def customer_settlement_complete(invoice_id: int) -> bool:
+    with conn() as c, c.cursor() as cur:
+        cur.execute("SELECT status FROM onchain_customer_settlements WHERE invoice_id=%s", (invoice_id,))
+        row = cur.fetchone()
+        return bool(row and row["status"] == "completed")
+
+
+def latest_customer_invoice(user_id: int, kind: str):
+    with conn() as c, c.cursor() as cur:
+        cur.execute("SELECT * FROM onchain_invoices WHERE purpose='customer' AND user_id=%s "
+                    "AND note::jsonb->>'kind'=%s ORDER BY id DESC LIMIT 1", (user_id, kind))
+        return cur.fetchone()
 
 
 def last_event_times() -> Dict[str, Any]:

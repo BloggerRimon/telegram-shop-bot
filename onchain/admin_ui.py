@@ -17,6 +17,7 @@ from telegram import InlineKeyboardMarkup as KB
 from . import engine as eng
 from . import networks as nw
 from . import store
+from . import customer
 
 PREFIX = "oc:"
 TEST_AMOUNTS = ("1", "2", "5")
@@ -38,6 +39,7 @@ def _fmt(units, asset_id):
 
 def _home_kb():
     return KB([
+        [B("🔄 Payment gateway", callback_data="oc:gateway")],
         [B("🧪 New admin test invoice", callback_data="oc:new")],
         [B("📋 Invoices", callback_data="oc:invs"), B("📡 Events/health", callback_data="oc:events")],
         [B("🧾 Review queue", callback_data="oc:review"), B("💼 Test ledger", callback_data="oc:ledger")],
@@ -62,7 +64,8 @@ def home_text() -> str:
         f"Customer activation (master): <b>{'ON' if master else 'OFF'}</b>",
         f"Emergency env ({nw.ENV_EMERGENCY}): <b>{'ACTIVE' if nw.emergency_disabled() else 'off'}</b>",
         f"New customer invoices paused: <b>{'yes' if paused else 'no'}</b>",
-        "Customers still use: <b>Cryptomus</b> (no customer checkout is wired to this system).",
+        f"New customer crypto payments: <b>{esc({'trust_wallet': 'Trust Wallet', 'cryptomus': 'Cryptomus'}.get(customer.gateway(), customer.gateway()))}</b>.",
+        "Previous invoices keep their original gateway and continue verification.",
         "",
         "<b>Readiness</b> (ready = infra OK + successful admin test):",
     ]
@@ -184,6 +187,17 @@ async def _dispatch(query, uid, action, args, is_admin):
     run = asyncio.to_thread
     if action == "home":
         await _send(query, await run(home_text), _home_kb())
+    elif action == "gateway" and not args:
+        active = await run(customer.gateway)
+        await _send(query, f"🔄 <b>New customer crypto payments: {esc(active)}</b>\n\n"
+                           "Switching does not delete Cryptomus or stop previous invoices.\n"
+                           "Trust Wallet accepts only assets that passed their admin test.",
+                    KB([[B("Use Trust Wallet", callback_data="oc:gateway:trust_wallet")],
+                        [B("Use Cryptomus", callback_data="oc:gateway:cryptomus")], _back()]))
+    elif action == "gateway" and len(args) == 1:
+        await run(customer.switch_gateway, args[0], uid)
+        await _send(query, f"✅ New crypto payments use {esc(args[0])}. Previous invoices keep working.",
+                    KB([_back()]))
     elif action == "new" and not args:
         rows = [[B(nw.ASSETS[a].label, callback_data=f"oc:new:{a}")] for a in nw.ASSET_ORDER]
         await _send(query, "🧪 Choose asset for an admin test invoice:", KB(rows + [_back()]))
@@ -252,8 +266,8 @@ async def _dispatch(query, uid, action, args, is_admin):
         kb = [[B("Turn OFF", callback_data="oc:master:off")]] if on else \
              [[B("I reviewed the tests — turn ON", callback_data="oc:master:on")]]
         await _send(query, f"🔐 Master customer activation is <b>{'ON' if on else 'OFF'}</b>.\n\n"
-                           "Even when ON, this version does not expose any customer checkout; it only opens "
-                           "the server-side gate. Cryptomus stays the customer payment method.", KB(kb + [_back()]))
+                           "New Trust Wallet invoices also require the gateway switch, a tested asset, "
+                           "and its network to be enabled. Previous invoices keep tracking.", KB(kb + [_back()]))
     elif action == "master" and args[0] == "on":
         kb = [[B("✅ Yes, activate", callback_data="oc:master:confirm")], _back()]
         await _send(query, "Confirm: activate customer gate? (Only networks you enabled AND assets with a "

@@ -234,7 +234,7 @@ class DbTests(unittest.TestCase):
         self.env.start()
         store._initialized = False
         with store.conn() as c, c.cursor() as cur:
-            cur.execute("DROP TABLE IF EXISTS onchain_settings, onchain_audit, onchain_invoices, onchain_raw_events, "
+            cur.execute("DROP TABLE IF EXISTS onchain_customer_settlements, onchain_settings, onchain_audit, onchain_invoices, onchain_raw_events, "
                         "onchain_tx_hints, onchain_transfers, onchain_test_ledger, onchain_review, onchain_checkpoints")
         store.init_schema(force=True)
         # monitoring started 1h ago so "now" transfers are eligible
@@ -276,15 +276,19 @@ class DbTests(unittest.TestCase):
         with self.assertRaises(engine.GateClosed):
             engine.create_customer_invoice(USER, "usdt_trc20", Decimal("5"))
 
-    def test_customer_path_not_released_even_when_flags_on(self):
+    def test_customer_release_is_required_even_when_flags_on(self):
         inv = self.inv()
         self.run_hint("ethereum", "0x" + "a1" * 32, self.fake_found(inv))
         store.set_setting("network_enabled:ethereum", True, ADMIN)
         store.set_setting("customer_new_payments_enabled", True, ADMIN)
-        self.assertEqual(engine.customer_gate("usdt_erc20"), (True, "ok"))
-        self.assertEqual(engine.customer_gate("eth")[1], "asset_not_ready")  # tested one asset only
-        with self.assertRaises(engine.NotReleased):
+        self.assertEqual(engine.customer_gate("usdt_erc20"), (False, "checkout_off"))
+        with self.assertRaises(engine.GateClosed):
             engine.create_customer_invoice(USER, "usdt_erc20", Decimal("5"))
+        with patch.dict(os.environ, {"ONCHAIN_CUSTOMER_CHECKOUT_ENABLED": "true"}):
+            self.assertEqual(engine.customer_gate("usdt_erc20"), (True, "ok"))
+            self.assertEqual(engine.customer_gate("eth")[1], "asset_not_ready")
+            inv = engine.create_customer_invoice(USER, "usdt_erc20", Decimal("5"))
+            self.assertEqual(inv["purpose"], "customer")
         with patch.dict(os.environ, {"ONCHAIN_EMERGENCY_DISABLE": "true"}):
             self.assertEqual(engine.customer_gate("usdt_erc20"), (False, "emergency_disabled"))
 

@@ -7,6 +7,7 @@ invoices are enabled, so already-issued invoices keep tracking after a rollback.
 from __future__ import annotations
 
 import threading
+import json
 import time
 import traceback
 from datetime import datetime, timezone
@@ -84,6 +85,8 @@ def customer_gate(asset_id: str) -> Tuple[bool, str]:
         return False, "new_invoices_paused"
     if not master_enabled():
         return False, "master_off"
+    if nw.env("ONCHAIN_CUSTOMER_CHECKOUT_ENABLED").lower() != "true":
+        return False, "checkout_off"
     if not network_enabled(nw.ASSETS[asset_id].network):
         return False, "network_off"
     if not asset_ready(asset_id):
@@ -141,13 +144,23 @@ def create_admin_test_invoice(admin_id: int, asset_id: str, usd: Decimal, is_adm
                                          valuation_rule=rule, ttl_minutes=INVOICE_TTL_MINUTES)
 
 
-def create_customer_invoice(user_id: int, asset_id: str, usd: Decimal) -> dict:
+def create_customer_invoice(user_id: int, asset_id: str, usd: Decimal, *, kind: str = "deposit",
+                            product_id=None, qty=None, rate_fn=fetch_rate_usd) -> dict:
     ok, reason = customer_gate(asset_id)
     if not ok:
         raise GateClosed(reason)
-    # Deliberately not released: the customer checkout must first be designed to
-    # comply with Telegram's digital-goods rules (Stars) and reviewed by the owner.
-    raise NotReleased("customer self-custody checkout is not released in this version")
+    usd = Decimal(str(usd)).quantize(Decimal("0.01"))
+    if not usd.is_finite() or usd <= 0 or usd > Decimal("100000"):
+        raise GateClosed("invalid_amount")
+    if kind not in ("deposit", "order") or (kind == "order" and (not product_id or int(qty or 0) <= 0)):
+        raise GateClosed("invalid_checkout")
+    asset = nw.ASSETS[asset_id]
+    units, rate, source, rule = quote_units(asset, usd, rate_fn)
+    return store.create_invoice_reserved(
+        purpose="customer", created_by=user_id, user_id=user_id, asset=asset, base_units=units,
+        usd_amount=usd, rate_usd=rate, rate_source=source, valuation_rule=rule,
+        ttl_minutes=INVOICE_TTL_MINUTES,
+        note=json.dumps({"kind": kind, "product_id": product_id, "qty": qty}))
 
 
 def format_units(units, decimals: int, display: int) -> str:
