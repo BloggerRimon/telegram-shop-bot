@@ -73,3 +73,12 @@ still rate-limit; configure a free TRONGRID_API_KEY for reliable TRON discovery.
 Owner-approved untested assets have not completed a real-funds end-to-end test.
 Emergency, pause, master, network, chain verification, finality and settlement
 idempotency protections apply identically to tested and owner-approved assets.
+
+TRON also scans solidified Alchemy blocks every 30 seconds while invoices are
+open, independently of public address-history rate limits. It finds native TRX
+destinations and allowlisted USDT receipt logs, then queues normal transaction
+verification. A persistent bounded cursor (40 blocks per pass) resumes on restart
+and advances only after a complete successful range. No open invoice means no
+whole-chain scanning. Indexer failures use bounded backoff and do not disable the
+separate solid-block scanner. The scanner uses the existing RPC key and plan;
+normal RPC compute usage applies, with no billing-plan change.
