@@ -439,7 +439,7 @@ class DbTests(unittest.TestCase):
 
     def test_evm_poller_starts_at_head_no_backfill(self):
         fake = FakeRpc({"eth_blockNumber": "0x100", "alchemy_getAssetTransfers": {"transfers": [{"hash": "0xold"}]}})
-        self.eng.client = fake
+        self.eng.discovery_client = fake
         self.eng.poll_evm("ethereum")
         self.assertEqual(store.get_checkpoint("evm_block:ethereum"), 256)
         self.assertEqual(store.recent_hints(), [])
