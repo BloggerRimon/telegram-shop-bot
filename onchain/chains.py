@@ -361,7 +361,7 @@ def discover_tron(client: RpcClient, min_timestamp_ms: int, limit: int = 50) -> 
                                 ("transactions", "txID", {})):
         params = dict(p, **extra)
         for _ in range(20):
-            response = client.get(f"{base}/v1/accounts/{nw.TRON_ADDRESS}/{path}", dict(params), h)
+            response = client.get(f"{base}/v1/accounts/{nw.TRON_ADDRESS}/{path}", dict(params), h, retries=0)
             if not isinstance(response, dict) or response.get("success") is False or "data" not in response:
                 raise ChainError("tron_history_invalid_response")
             for row in response["data"]:
