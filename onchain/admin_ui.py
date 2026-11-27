@@ -314,6 +314,9 @@ def _events_text() -> str:
         lines.append(f"Poller {esc(k)} error: {esc(v)}")
     for k in nw.NETWORKS:
         lines.append(f"{k}: last webhook {esc(last.get(k))}")
+        probe = store.get_checkpoint("rpc_probe:" + k, {}) or {}
+        if probe:
+            lines.append(f"  RPC check: {'OK' if probe.get('ok') else esc(probe.get('error'))} · {esc(probe.get('checked_at'))}")
     lines += ["", "<b>Recent tx hints</b>"]
     for h in store.recent_hints(8):
         lines.append(f"{esc(h['network'])} {esc(h['txid'][:18])}… {esc(h['source'])} → {esc(h['status'])}"
