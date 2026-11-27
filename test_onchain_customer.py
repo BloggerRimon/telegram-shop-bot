@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("BOT_TOKEN", "1:TEST")
 import bot
-from onchain import customer, engine, store, chains
+from onchain import customer, engine, store, chains, networks as nw
 
 TEST_DB = os.getenv("ONCHAIN_TEST_DATABASE_URL", "")
 
@@ -232,6 +232,83 @@ class CustomerGatewayTests(unittest.TestCase):
         q = SimpleNamespace(from_user=SimpleNamespace(id=42), edit_message_text=AsyncMock())
         asyncio.run(admin_ui.callback(q, "oc:gateway:trust_wallet", lambda u: u == 1))
         self.assertEqual(customer.gateway(), "cryptomus")
+
+    def confirm_asset(self, inv, digit):
+        net = nw.NETWORKS[inv["network"]]
+        txid = digit * (88 if net.family == "solana" else 64)
+        if net.family == "evm":
+            txid = "0x" + txid
+        result = self.found(inv)
+        result["confirmations"] = net.min_confirmations
+        result["transfers"][0]["locator"] = ("log:1" if nw.ASSETS[inv["asset_id"]].kind == "token"
+                                                 else "vout:0" if net.family == "utxo" else "native")
+        store.add_hint(net.key, txid, "test")
+        with patch.object(chains, "inspect_tx", return_value=result):
+            self.eng.process_hint(net.key, txid, 0)
+        return txid, result
+
+    def test_all_nine_assets_only_release_after_own_test_and_settle_once(self):
+        store.set_setting("customer_payment_gateway", "trust_wallet", 1)
+        store.set_setting("customer_new_payments_enabled", True, 1)
+        with patch.dict(os.environ, {"ONCHAIN_AUTO_ENABLE_AFTER_TEST": "true"}):
+            for index, aid in enumerate(nw.ASSET_ORDER):
+                with self.subTest(asset=aid):
+                    network = nw.ASSETS[aid].network
+                    store.set_checkpoint("monitoring_started_at:" + network,
+                                         (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat())
+                    self.assertFalse(engine.customer_gate(aid)[0])
+                    admin = engine.create_admin_test_invoice(1, aid, Decimal("1"), lambda u: u == 1,
+                                                              rate_fn=lambda _: Decimal("100"))
+                    self.confirm_asset(admin, "a")
+                    self.assertTrue(engine.customer_gate(aid)[0])
+                    customer_invoice = engine.create_customer_invoice(42, aid, Decimal("5"),
+                                                                       rate_fn=lambda _: Decimal("100"))
+                    txid, result = self.confirm_asset(customer_invoice, "b")
+                    # Replayed delivery cannot make a second settlement.
+                    with patch.object(chains, "inspect_tx", return_value=result):
+                        self.eng.process_hint(network, txid, 0)
+                    asyncio.run(customer.settle_pending(bot))
+            self.assertEqual(bot.user_wallet[42], 45)
+            self.assertEqual(len(bot.credited_topups), 9)
+            with store.conn() as c:
+                self.assertEqual(c.execute("SELECT count(*) AS n FROM onchain_test_ledger").fetchone()["n"], 9)
+
+    def test_auto_enable_does_not_override_pause_or_cryptomus_rollback(self):
+        store.set_setting("customer_new_payments_enabled", True, 1)
+        with patch.dict(os.environ, {"ONCHAIN_AUTO_ENABLE_AFTER_TEST": "true"}):
+            for aid, paused, gateway in (("eth", True, "trust_wallet"), ("sol", False, "cryptomus")):
+                network = nw.ASSETS[aid].network
+                store.set_checkpoint("monitoring_started_at:" + network,
+                                     (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat())
+                store.set_setting("new_invoices_paused", paused, 1)
+                store.set_setting("customer_payment_gateway", gateway, 1)
+                inv = engine.create_admin_test_invoice(1, aid, Decimal("1"), lambda u: u == 1,
+                                                       rate_fn=lambda _: Decimal("100"))
+                self.confirm_asset(inv, "a")
+                self.assertEqual(store.get_invoice(inv["id"])["status"], "paid")
+                self.assertFalse(engine.network_enabled(network))
+
+    def test_batched_transaction_separate_outputs_credit_separate_customers(self):
+        network, aid = "litecoin", "ltc"
+        store.set_checkpoint("monitoring_started_at:" + network,
+                             (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat())
+        admin = engine.create_admin_test_invoice(1, aid, Decimal("1"), lambda u: u == 1,
+                                                 rate_fn=lambda _: Decimal("100"))
+        self.confirm_asset(admin, "a")
+        customer.switch_gateway("trust_wallet", 1)
+        for index, user_id in enumerate((42, 43)):
+            inv = engine.create_customer_invoice(user_id, aid, Decimal("5"),
+                                                 rate_fn=lambda _: Decimal("100"))
+            found = self.found(inv)
+            found["transfers"][0]["locator"] = f"vout:{index}"
+            txid = "b" * 64
+            store.add_hint(network, txid, "test")
+            with patch.object(chains, "inspect_tx", return_value=found):
+                self.eng.process_hint(network, txid, 0)
+        asyncio.run(customer.settle_pending(bot))
+        self.assertEqual(bot.user_wallet[42], 5)
+        self.assertEqual(bot.user_wallet[43], 5)
+        self.assertEqual(len(bot.credited_topups), 2)
 
 
 if __name__ == "__main__":

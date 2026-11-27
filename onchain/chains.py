@@ -12,6 +12,7 @@ inspect_tx(network, txid) returns:
 from __future__ import annotations
 
 import time
+import re
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import List, Optional
@@ -41,7 +42,7 @@ class RpcClient:
             try:
                 r = self.s.post(url, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
                                 timeout=TIMEOUT)
-                if r.status_code == 429 or r.status_code >= 500:
+                if not 200 <= r.status_code < 300:
                     raise ChainError(f"http_{r.status_code}")
                 data = r.json()
                 if data.get("error"):
@@ -60,7 +61,7 @@ class RpcClient:
         for attempt in range(retries + 1):
             try:
                 r = self.s.post(url, json=payload, headers=headers or {}, timeout=TIMEOUT)
-                if r.status_code == 429 or r.status_code >= 500:
+                if not 200 <= r.status_code < 300:
                     raise ChainError(f"http_{r.status_code}")
                 return r.json()
             except (requests.RequestException, ValueError, ChainError) as e:
@@ -74,7 +75,7 @@ class RpcClient:
         for attempt in range(retries + 1):
             try:
                 r = self.s.get(url, params=params or {}, headers=headers or {}, timeout=TIMEOUT)
-                if r.status_code == 429 or r.status_code >= 500:
+                if not 200 <= r.status_code < 300:
                     raise ChainError(f"http_{r.status_code}")
                 return r.json()
             except (requests.RequestException, ValueError, ChainError) as e:
@@ -308,8 +309,46 @@ def discover_solana(client: RpcClient, until_sig: Optional[str], limit: int = 50
     params = {"limit": limit, "commitment": "confirmed"}
     if until_sig:
         params["until"] = until_sig
-    rows = client.rpc(url, "getSignaturesForAddress", [nw.SOLANA_ADDRESS, params]) or []
-    return [r["signature"] for r in rows if r.get("err") is None]
+    signatures = []
+    for _ in range(20):
+        rows = client.rpc(url, "getSignaturesForAddress", [nw.SOLANA_ADDRESS, params]) or []
+        signatures.extend(r["signature"] for r in rows if r.get("err") is None)
+        if len(rows) < limit:
+            return list(dict.fromkeys(signatures))
+        before = rows[-1]["signature"]
+        if before == params.get("before"):
+            raise ChainError("solana_pagination_stalled")
+        params["before"] = before
+    raise ChainError("solana_history_page_limit")
+
+
+def discover_utxo(network_key: str, client: RpcClient, after_height: int, limit: int = 50) -> dict:
+    """Public address index supplies hashes only; Alchemy independently verifies each tx."""
+    coin = {"bitcoin": "btc", "litecoin": "ltc"}[network_key]
+    address = nw.NETWORKS[network_key].address
+    url = f"https://api.blockcypher.com/v1/{coin}/main/addrs/{address}/full"
+    params = {"after": max(0, int(after_height)), "limit": limit}
+    hashes, newest = [], int(after_height)
+    for _ in range(20):
+        response = client.get(url, dict(params))
+        if not isinstance(response, dict) or response.get("error") or response.get("address") != address:
+            raise ChainError("utxo_index_invalid_response")
+        rows = response.get("txs") or []
+        heights = []
+        for row in rows:
+            txid = row.get("hash", "")
+            if re.fullmatch(r"[0-9a-fA-F]{64}", txid):
+                hashes.append(txid.lower())
+            height = int(row.get("block_height") or 0)
+            if height > 0:
+                heights.append(height)
+                newest = max(newest, height)
+        if not response.get("hasMore"):
+            return {"txids": list(dict.fromkeys(hashes)), "height": newest}
+        if not heights or min(heights) == params.get("before"):
+            raise ChainError("utxo_index_pagination_stalled")
+        params["before"] = min(heights)
+    raise ChainError("utxo_index_page_limit")
 
 
 def discover_tron(client: RpcClient, min_timestamp_ms: int, limit: int = 50) -> List[dict]:
@@ -318,13 +357,23 @@ def discover_tron(client: RpcClient, min_timestamp_ms: int, limit: int = 50) -> 
     h = {"TRON-PRO-API-KEY": nw.env(nw.ENV_TRONGRID_API_KEY)} if nw.env(nw.ENV_TRONGRID_API_KEY) else {}
     out = []
     p = {"only_to": "true", "limit": limit, "min_timestamp": int(min_timestamp_ms), "order_by": "block_timestamp,asc"}
-    trc20 = client.get(f"{base}/v1/accounts/{nw.TRON_ADDRESS}/transactions/trc20",
-                       dict(p, contract_address=nw.USDT_TRC20_CONTRACT), h)
-    for r in (trc20 or {}).get("data") or []:
-        out.append({"txid": r.get("transaction_id"), "ts_ms": int(r.get("block_timestamp") or 0)})
-    native = client.get(f"{base}/v1/accounts/{nw.TRON_ADDRESS}/transactions", p, h)
-    for r in (native or {}).get("data") or []:
-        out.append({"txid": r.get("txID"), "ts_ms": int(r.get("block_timestamp") or 0)})
+    for path, tx_key, extra in (("transactions/trc20", "transaction_id", {"contract_address": nw.USDT_TRC20_CONTRACT}),
+                                ("transactions", "txID", {})):
+        params = dict(p, **extra)
+        for _ in range(20):
+            response = client.get(f"{base}/v1/accounts/{nw.TRON_ADDRESS}/{path}", dict(params), h)
+            if not isinstance(response, dict) or response.get("success") is False or "data" not in response:
+                raise ChainError("tron_history_invalid_response")
+            for row in response["data"]:
+                out.append({"txid": row.get(tx_key), "ts_ms": int(row.get("block_timestamp") or 0)})
+            fingerprint = (response.get("meta") or {}).get("fingerprint")
+            if not fingerprint:
+                break
+            if fingerprint == params.get("fingerprint"):
+                raise ChainError("tron_history_pagination_stalled")
+            params["fingerprint"] = fingerprint
+        else:
+            raise ChainError("tron_history_page_limit")
     return [x for x in out if x["txid"]]
 
 

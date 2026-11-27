@@ -110,9 +110,17 @@ def _credit_and_reserve(bot, inv):
         bot.user_orders.setdefault(uid, [])
         result = bot.apply_confirmed_topup_credit(
             uid, amount, "Trust Wallet", "onchain_verified", payment_id=ref,
-            tx_hash=txid, network=inv["network"],
-            transaction_meta={"onchain_invoice_id": inv["id"]})
+            network=inv["network"],
+            transaction_meta={"onchain_invoice_id": inv["id"], "onchain_transfer_uid": inv["transfer_uid"],
+                              "blockchain_txid": txid})
         credit = result["record"]
+        # One blockchain transaction can contain several independently payable
+        # outputs/logs. The invoice/outbox identifies a payment; the bare TXID
+        # must not act as a global credit alias across outputs or chains.
+        credit["tx_hash"] = txid
+        credit["onchain_transfer_uid"] = inv["transfer_uid"]
+        if result.get("transaction"):
+            result["transaction"].setdefault("meta", {})["txid"] = txid
         # Existing legacy credit helper swallows some persistence errors. Never
         # acknowledge the outbox or deliver anything until a strict save succeeds.
         bot.save_bot_state_strict()

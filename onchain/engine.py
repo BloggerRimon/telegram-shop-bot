@@ -29,8 +29,8 @@ DISCOVERY = {
     "ethereum": "alchemy webhook + alchemy_getAssetTransfers reconciliation",
     "bsc": "alchemy webhook + alchemy_getAssetTransfers reconciliation (support to be confirmed)",
     "solana": "getSignaturesForAddress poller (+ optional webhook)",
-    "bitcoin": "alchemy Bitcoin Address Activity webhook (beta) + admin tx hint",
-    "litecoin": "admin tx hint only (no free address index confirmed)",
+    "bitcoin": "Alchemy webhook + public address index reconciliation (independent RPC verification)",
+    "litecoin": "public address index poller + independent Alchemy RPC verification",
     "tron": "TronGrid account history poller",
 }
 
@@ -58,8 +58,8 @@ def network_infra(network: str) -> Dict[str, object]:
     hook = bool(nw.env(nw.signing_key_env(network))) if network in wh.WEBHOOK_NETWORKS else None
     if network in ("ethereum", "bsc", "solana"):
         discovery_ok = rpc
-    elif network == "bitcoin":
-        discovery_ok = bool(hook)
+    elif network in ("bitcoin", "litecoin"):
+        discovery_ok = rpc
     elif network == "tron":
         discovery_ok = True
     else:
@@ -180,6 +180,8 @@ class Engine:
         self.last_tick: Optional[datetime] = None
         self.last_error: Optional[str] = None
         self.poller_errors: Dict[str, str] = {}
+        self._poll_failures: Dict[str, int] = {}
+        self._poll_retry_at: Dict[str, float] = {}
 
     # -- lifecycle
     def start(self):
@@ -232,28 +234,48 @@ class Engine:
 
     def run_pollers(self):
         for name, fn, every in (("solana", self.poll_solana, 60), ("tron", self.poll_tron, 60),
+                                ("bitcoin", lambda: self.poll_utxo("bitcoin"), 180),
+                                ("litecoin", lambda: self.poll_utxo("litecoin"), 180),
                                 ("ethereum", lambda: self.poll_evm("ethereum"), 120),
                                 ("bsc", lambda: self.poll_evm("bsc"), 120)):
             try:
+                if time.time() < self._poll_retry_at.get(name, 0):
+                    continue
                 if self._due(name, every):
                     fn()
                     self.poller_errors.pop(name, None)
+                    self._poll_failures.pop(name, None)
+                    self._poll_retry_at.pop(name, None)
             except Exception as e:
                 self.poller_errors[name] = str(e)[:120] or type(e).__name__
+                failures = min(self._poll_failures.get(name, 0) + 1, 6)
+                self._poll_failures[name] = failures
+                self._poll_retry_at[name] = time.time() + min(900, every * 2 ** failures)
 
     def poll_solana(self):
         if not nw.alchemy_url("solana"):
             return
         cp = store.get_checkpoint("solana_last_sig")
-        if not cp:
-            latest = chains.discover_solana(self.client, None, limit=1)
-            store.set_checkpoint("solana_last_sig", latest[0] if latest else "")
-            return  # never backfill history
+        # An empty address has no seed signature. Do not skip its first deposit.
+        # Independent verification rejects transfers from before monitoring/invoice creation.
         sigs = chains.discover_solana(self.client, cp or None, limit=50)
         for s in sigs:
             store.add_hint("solana", s, "poller")
         if sigs:
             store.set_checkpoint("solana_last_sig", sigs[0])  # newest first
+
+    def poll_utxo(self, network: str):
+        if not nw.alchemy_url(network):
+            return
+        cp = store.get_checkpoint(f"utxo_height:{network}")
+        if cp is None:
+            head = int(self.client.rpc(nw.alchemy_url(network), "getblockcount", []))
+            cp = max(0, head - 100)
+        # Re-read recent blocks to tolerate delayed index updates. Hints and credits deduplicate.
+        found = chains.discover_utxo(network, self.client, max(0, int(cp) - 12))
+        for txid in found["txids"]:
+            store.add_hint(network, txid, "address_index")
+        store.set_checkpoint(f"utxo_height:{network}", max(int(cp), int(found["height"])))
 
     def poll_tron(self):
         started_ms = int(store.monitoring_started_at("tron").timestamp() * 1000)
@@ -325,6 +347,16 @@ class Engine:
                     inv = store.get_invoice(c["invoice_id"])
                     self.notify(f"✅ Admin test payment confirmed: {inv['public_ref']} ({inv['asset_id']}) — "
                                 f"test ledger only, no customer balance changed.")
+                    if (nw.env("ONCHAIN_AUTO_ENABLE_AFTER_TEST").lower() == "true"
+                            and nw.env("ONCHAIN_CUSTOMER_CHECKOUT_ENABLED").lower() == "true"
+                            and inv["purpose"] == "admin_test" and master_enabled()
+                            and not nw.emergency_disabled()
+                            and store.get_setting("new_invoices_paused", False) is not True
+                            and store.get_setting("customer_payment_gateway") == "trust_wallet"
+                            and asset_ready(inv["asset_id"])):
+                        store.set_setting("network_enabled:" + network, True, inv["created_by"])
+                        self.notify(f"✅ {inv['asset_id']} passed its admin test and is now available for "
+                                    "new customer payments. Untested assets stay disabled.")
             else:
                 cur_t = store.get_transfer(uid)
                 if cur_t and cur_t["status"] in ("detected", "confirming"):
