@@ -1,4 +1,5 @@
 import os
+import sys
 import asyncio
 import hashlib
 import hmac
@@ -44,12 +45,14 @@ try:
     from onchain import admin_ui as oc_admin
     from onchain import engine as oc_engine
     from onchain import webhook as oc_webhook
+    from onchain import customer as oc_customer
     ONCHAIN_AVAILABLE = True
 except Exception as _onchain_import_error:  # pragma: no cover
     print(f"[onchain] module unavailable: {type(_onchain_import_error).__name__}")
-    oc_admin = oc_engine = oc_webhook = None
+    oc_admin = oc_engine = oc_webhook = oc_customer = None
     ONCHAIN_AVAILABLE = False
 onchain_engine_instance = None
+onchain_customer_task = None
 
 try:
     import cryptomus as cm
@@ -15261,23 +15264,42 @@ async def run_cryptomus_manual_verify(query, user_id: int, kind: str):
         state["verify_in_progress"] = False
 
 
+def selected_customer_gateway():
+    if ONCHAIN_AVAILABLE and DATABASE_URL:
+        return oc_customer.gateway(PAYMENT_GATEWAY)
+    return PAYMENT_GATEWAY
+
+
 def create_gateway_payment(user_id: int, kind: str, usd_amount: float, network_label: str, ref: str, product_id=None, qty=None) -> dict:
-    if PAYMENT_GATEWAY == "cryptomus":
+    gateway = selected_customer_gateway()
+    if gateway == "trust_wallet":
+        return oc_customer.create_payment(user_id, kind, usd_amount, network_label, product_id, qty)
+    if gateway == "cryptomus":
         return create_cryptomus_payment(user_id, kind, usd_amount, network_label, ref, product_id=product_id, qty=qty)
     return create_nowpayments_payment(user_id, kind, usd_amount, network_label, ref, product_id=product_id, qty=qty)
 
 
+def gateway_payment_request_keyboard(record, keyboard):
+    if str(record.get("provider", "")).lower() == "trust wallet":
+        return oc_customer.bind_verify_keyboard(keyboard, record["invoice_id"])
+    return keyboard
+
+
 def render_gateway_payment_text(record: dict) -> str:
-    if str(record.get("provider") or "").lower() == "cryptomus":
+    if str(record.get("provider") or "").lower() in ("cryptomus", "trust wallet"):
         return render_cryptomus_payment_text(record)
     return render_nowpayments_payment_text(record)
 
 
 async def run_gateway_manual_verify(query, user_id: int, kind: str):
-    if PAYMENT_GATEWAY == "cryptomus":
-        await run_cryptomus_manual_verify(query, user_id, kind)
-    else:
+    # Legacy buttons remain on their original gateway after an admin switch.
+    # New self-custody buttons are bound to an invoice via ocpay:verify:<id>.
+    provider = str(user_state.get(user_id, {}).get("payment_provider") or "").lower()
+    if provider == "nowpayments" or (PAYMENT_GATEWAY != "cryptomus" and provider != "cryptomus"):
         await run_nowpayments_manual_verify(query, user_id, kind)
+    else:
+        await run_cryptomus_manual_verify(query, user_id, kind)
+
 
 
 # NOWPAYMENTS INTEGRATION
@@ -15956,7 +15978,7 @@ def start_nowpayments_webhook_server():
 
 def start_onchain_engine(application):
     """Start the admin-only self-custody monitor. Never blocks or breaks bot startup."""
-    global onchain_engine_instance
+    global onchain_engine_instance, onchain_customer_task
     if not ONCHAIN_AVAILABLE or not DATABASE_URL or onchain_engine_instance is not None:
         return
     loop = asyncio.get_running_loop()
@@ -15974,9 +15996,12 @@ def start_onchain_engine(application):
             pass
 
     try:
+        oc_engine.store.init_schema()
+        oc_customer.bootstrap()
         onchain_engine_instance = oc_engine.Engine(notify=notify_admins)
         oc_admin.set_engine(onchain_engine_instance)
         onchain_engine_instance.start()
+        onchain_customer_task = application.create_task(oc_customer.settlement_loop(sys.modules[__name__]))
         print("✅ On-chain admin-only monitor started (customer activation stays as stored, default OFF)")
     except Exception as e:
         print(f"[onchain] engine start failed: {type(e).__name__}")
@@ -16016,6 +16041,10 @@ async def post_init(application):
 async def post_shutdown(application):
     global sales_report_auto_task
     tasks = list(seller_api_auto_refresh_tasks.values())
+    if onchain_customer_task is not None:
+        tasks.append(onchain_customer_task)
+    if onchain_engine_instance is not None:
+        onchain_engine_instance.stop()
     seller_api_auto_refresh_tasks.clear()
     if jero_reconciler_task is not None:
         tasks.append(jero_reconciler_task)
@@ -17992,6 +18021,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ensure_user(user_id, query.from_user)
 
     if data == "noop":
+        return
+
+    if data.startswith("ocpay:verify:"):
+        if ONCHAIN_AVAILABLE:
+            try:
+                invoice_id = int(data.rsplit(":", 1)[1])
+                await oc_customer.verify(sys.modules[__name__], query, user_id, invoice_id)
+            except Exception as exc:
+                print(f"[onchain] customer verify failed: {type(exc).__name__}")
+                await query.message.reply_text(f"Could not verify right now. Please contact support: {SUPPORT_USERNAME}")
         return
 
     if data.startswith("oc:"):
@@ -21743,7 +21782,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print("Crypto order create error:", e)
             await send_inline_from_callback(
                 query,
-                f"❌ <b>Could not create crypto payment.</b>\n\nPlease try again or contact live support: {SUPPORT_USERNAME}",
+                ("This network is temporarily unavailable. Please choose a tested network or contact support."
+                 if ONCHAIN_AVAILABLE and isinstance(e, oc_engine.GateClosed) else
+                 f"❌ <b>Could not create crypto payment.</b>\n\nPlease try again or contact live support: {SUPPORT_USERNAME}"),
                 paymod.network_keyboard("buy"),
             )
             return
@@ -21760,7 +21801,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_inline_from_callback(
             query,
             render_gateway_payment_text(np_record),
-            paymod.payment_request_keyboard("buypay"),
+            gateway_payment_request_keyboard(np_record, paymod.payment_request_keyboard("buypay")),
         )
         return
 
@@ -21903,7 +21944,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print("Crypto deposit create error:", e)
             await send_user_inline_with_style_fallback(
                 query,
-                f"❌ <b>{t(user_id, 'something_wrong')}</b>\n\n{t(user_id, 'try_again')} {t(user_id, 'please_contact_support')}",
+                ("This network is temporarily unavailable. Please choose a tested network or contact support."
+                 if ONCHAIN_AVAILABLE and isinstance(e, oc_engine.GateClosed) else
+                 f"❌ <b>{t(user_id, 'something_wrong')}</b>\n\n{t(user_id, 'try_again')} {t(user_id, 'please_contact_support')}"),
                 network_keyboard("dep", styled=True, user_id=user_id),
                 network_keyboard("dep", styled=False, user_id=user_id),
             )
@@ -21919,8 +21962,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_user_inline_with_style_fallback(
             query,
             render_gateway_payment_text(np_record),
-            deposit_payment_request_keyboard(user_id=user_id),
-            deposit_payment_request_keyboard(styled=False, user_id=user_id),
+            gateway_payment_request_keyboard(np_record, deposit_payment_request_keyboard(user_id=user_id)),
+            gateway_payment_request_keyboard(np_record, deposit_payment_request_keyboard(styled=False, user_id=user_id)),
         )
         return
 
