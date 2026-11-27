@@ -38,6 +38,7 @@ import payment as paymod
 import crypto_verify as cv
 import wallet_checker as wc
 import jero_api
+import seller_transport
 
 # Self-custody on-chain payments (admin-only). Import failures must never take
 # the existing bot down, so the module is optional at runtime.
@@ -2299,14 +2300,12 @@ def _buyer_api_get(
     else:
         request_params["key"] = provider["api_key"]
     try:
-        response = requests.get(
-            buyer_api_endpoint(path, provider_id),
-            params=request_params,
-            headers=headers,
-            timeout=20,
+        response = seller_transport.read_get(
+            buyer_api_endpoint(path, provider_id), provider_id=provider_id,
+            params=request_params, headers=headers,
         )
     except requests.Timeout as exc:
-        raise BuyerAPIError("Seller API request timed out.") from exc
+        raise BuyerAPIError(f"Seller API request timed out ({seller_transport.error_kind(exc)}).") from exc
     except requests.ConnectionError as exc:
         raise BuyerAPIError("Could not connect to the Seller API.") from exc
     except requests.RequestException as exc:
@@ -2395,6 +2394,12 @@ def purchase_buyer_api_product(
         raise BuyerAPIError("Jero purchases use the durable supplier order flow.", "config")
     headers = None
     if provider_type == "warzone_v1":
+        # A read-only request must succeed before creating a chargeable order.
+        # A known outage must not become another ambiguous purchase/debit.
+        try:
+            _buyer_api_get(seller_api_balance_path(provider_id), provider_id=provider_id)
+        except BuyerAPIError as exc:
+            raise BuyerAPIError("Seller is unavailable; no purchase request was sent.", "not_sent") from exc
         payload = {
             provider.get("product_id_field", "product_id"): str(api_product_id),
             provider.get("quantity_field", "quantity"): int(quantity),
@@ -2419,10 +2424,14 @@ def purchase_buyer_api_product(
             buyer_api_endpoint(seller_api_purchase_path(provider_id), provider_id),
             json=payload,
             headers=headers,
-            timeout=30,
+            timeout=(8, 60) if provider_type == "warzone_v1" else 30,
         )
+    except requests.ConnectTimeout as exc:
+        print(f"Seller purchase [{provider_id}]: connect_timeout (not sent)")
+        raise BuyerAPIError("Could not establish the purchase connection. No order was sent.", "not_sent") from exc
     except requests.Timeout as exc:
-        raise BuyerAPIError("Purchase request timed out.", "timeout") from exc
+        print(f"Seller purchase [{provider_id}]: {seller_transport.error_kind(exc)} (outcome unknown; do not retry)")
+        raise BuyerAPIError("Purchase response timed out; outcome requires seller history review.", "timeout") from exc
     except requests.ConnectionError as exc:
         raise BuyerAPIError("Could not connect to the purchase service.", "http_error") from exc
     except requests.RequestException as exc:
@@ -4528,6 +4537,7 @@ def add_api_pending_support_order_record(
         "price_type": "Shop price",
         "status": "pending_support",
         "payment_type": "Wallet",
+        "provider_id": mapping_provider_id(mapping),
         "failure_category": failure_category,
         "created_at": now_dt(),
         "updated_at": now_dt(),
@@ -12623,6 +12633,7 @@ def api_purchase_failure_category(error) -> str:
         "insufficient_seller_balance",
         "out_of_stock",
         "product_unavailable",
+        "not_sent",
         "timeout",
         "http_error",
         "invalid_response",
@@ -12659,6 +12670,7 @@ async def notify_admin_api_purchase_failure(
         "insufficient_seller_balance": "insufficient seller balance",
         "out_of_stock": "out of stock",
         "product_unavailable": "product unavailable",
+        "not_sent": "purchase not sent",
         "timeout": "timeout",
         "http_error": "HTTP error",
         "invalid_response": "invalid response",
@@ -12671,6 +12683,7 @@ async def notify_admin_api_purchase_failure(
         "insufficient_seller_balance": "Automatic fulfillment reported a balance-related issue.",
         "out_of_stock": "Automatic fulfillment reported that stock was unavailable.",
         "product_unavailable": "Automatic fulfillment reported that the product was unavailable.",
+        "not_sent": "The purchase connection was unavailable; this request was not sent.",
         "timeout": "Automatic fulfillment timed out before a confirmed delivery response.",
         "http_error": "Automatic fulfillment returned a network or HTTP error.",
         "invalid_response": "Automatic fulfillment returned an invalid response.",
@@ -12968,7 +12981,7 @@ async def notify_unavailable_api_provider(context, user_id: int, mapping: dict) 
             pass
     await context.bot.send_message(
         user_id,
-        f"⚠️ {t(user_id, 'product_unavailable')} {t(user_id, 'try_again')}",
+        f"⚠️ {t(user_id, 'product_unavailable')} {t(user_id, 'try_again')}\nNo new charge was made.",
         reply_markup=api_purchase_failure_keyboard(user_id),
     )
 
@@ -13074,6 +13087,17 @@ async def process_api_shop_purchase(
     if not provider or not provider.get("enabled") or not provider.get("configured"):
         await notify_unavailable_api_provider(context, user_id, mapping)
         return False
+    pending = next((order for order in all_orders
+                    if order.get("user_id") == user_id and order.get("status") == "pending_support"
+                    and order.get("product_type") == "api"
+                    and str(order.get("api_product_id")) == str(mapping.get("api_product_id"))
+                    and order.get("provider_id", provider_id) == provider_id), None)
+    if pending:
+        await context.bot.send_message(
+            user_id, f"⏳ Your earlier order #{pending['id']} is still under review. "
+                     "Please contact support before trying the same product again. No new charge was made.",
+            reply_markup=api_purchase_failure_keyboard(user_id))
+        return False
     validation_error = validate_api_shop_purchase(mapping, quantity, user_id)
     if validation_error:
         await context.bot.send_message(user_id, f"❌ {validation_error}")
@@ -13174,7 +13198,7 @@ async def process_api_shop_purchase(
                     })
             if attempt_errors:
                 if (
-                    all(api_purchase_failure_category(error) == "config" for error in attempt_errors)
+                    all(api_purchase_failure_category(error) in {"config", "not_sent"} for error in attempt_errors)
                     and not delivered_items
                 ):
                     await notify_unavailable_api_provider(context, user_id, mapping)
@@ -13208,7 +13232,7 @@ async def process_api_shop_purchase(
                 )
             except BuyerAPIError as exc:
                 print(f"Mapped product purchase failed: category={api_purchase_failure_category(exc)}")
-                if api_purchase_failure_category(exc) == "config":
+                if api_purchase_failure_category(exc) in {"config", "not_sent"}:
                     await notify_unavailable_api_provider(context, user_id, mapping)
                     return False
                 await handle_api_purchase_failure(
