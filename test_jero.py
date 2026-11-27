@@ -349,6 +349,7 @@ class JeroBotBase(Phase15StateMixin):
         self.saves = [
             patch.object(bot, "save_bot_state_strict"),
             patch.object(bot, "save_bot_state"),
+            patch.object(bot, "jero_refresh_inventory", new_callable=AsyncMock, return_value=True),
         ]
         for item in self.saves:
             item.start()
@@ -544,7 +545,12 @@ class JeroPurchaseTests(JeroBotBase, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(order["status"], "Completed")
         self.assertEqual(bot._jero_find_tx(record["tx_id"])["status"], "Completed")
         for call in self.sent.await_args_list:
-            self.assertEqual(call.args[0] if call.args else call.kwargs.get("chat_id"), self.user_id)
+            recipient = call.args[0] if call.args else call.kwargs.get("chat_id")
+            self.assertIn(recipient, {self.user_id, *bot.ADMIN_IDS})
+            if recipient in bot.ADMIN_IDS:
+                text = call.args[1] if len(call.args) > 1 else call.kwargs.get("text", "")
+                self.assertIn("API Product Sold", text)
+                self.assertNotIn("acc1|pw1", text)
 
     async def test_duplicate_confirmation_charges_once(self):
         mapping = self.add_jero()
