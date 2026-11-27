@@ -28,20 +28,32 @@ class ChainError(Exception):
     pass
 
 
+def safe_error(error) -> str:
+    text = str(error)
+    for name in (nw.ENV_ALCHEMY_API_KEY, nw.ENV_TRONGRID_API_KEY):
+        value = nw.env(name)
+        if value:
+            text = text.replace(value, "[redacted]")
+    return re.sub(r"https?://[^\s'\"]+", "[rpc endpoint]", text)[:160]
+
+
 class RpcClient:
     """Small JSON-RPC / HTTP helper with bounded retries and backoff. Never logs URLs (they contain keys)."""
 
-    def __init__(self, session: Optional[requests.Session] = None):
+    def __init__(self, session: Optional[requests.Session] = None, timeout: int = TIMEOUT, retries: int = 2):
         self.s = session or requests.Session()
+        self.timeout = timeout
+        self.retries = retries
 
-    def rpc(self, url: str, method: str, params: list, retries: int = 2):
+    def rpc(self, url: str, method: str, params: list, retries: Optional[int] = None):
         if not url:
             raise ChainError("rpc_not_configured")
+        retries = self.retries if retries is None else retries
         delay = 1.0
         for attempt in range(retries + 1):
             try:
                 r = self.s.post(url, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
-                                timeout=TIMEOUT)
+                                timeout=self.timeout)
                 if not 200 <= r.status_code < 300:
                     raise ChainError(f"http_{r.status_code}")
                 data = r.json()
@@ -50,37 +62,39 @@ class RpcClient:
                 return data.get("result")
             except (requests.RequestException, ValueError, ChainError) as e:
                 if attempt >= retries or (isinstance(e, ChainError) and str(e).startswith("rpc_error")):
-                    raise ChainError(str(e)[:160]) from None
+                    raise ChainError(safe_error(e)) from None
                 time.sleep(delay)
                 delay *= 2
 
-    def post(self, url: str, payload: dict, headers: Optional[dict] = None, retries: int = 2):
+    def post(self, url: str, payload: dict, headers: Optional[dict] = None, retries: Optional[int] = None):
         if not url:
             raise ChainError("http_not_configured")
+        retries = self.retries if retries is None else retries
         delay = 1.0
         for attempt in range(retries + 1):
             try:
-                r = self.s.post(url, json=payload, headers=headers or {}, timeout=TIMEOUT)
+                r = self.s.post(url, json=payload, headers=headers or {}, timeout=self.timeout)
                 if not 200 <= r.status_code < 300:
                     raise ChainError(f"http_{r.status_code}")
                 return r.json()
             except (requests.RequestException, ValueError, ChainError) as e:
                 if attempt >= retries:
-                    raise ChainError(str(e)[:160]) from None
+                    raise ChainError(safe_error(e)) from None
                 time.sleep(delay)
                 delay *= 2
 
-    def get(self, url: str, params: Optional[dict] = None, headers: Optional[dict] = None, retries: int = 2):
+    def get(self, url: str, params: Optional[dict] = None, headers: Optional[dict] = None, retries: Optional[int] = None):
+        retries = self.retries if retries is None else retries
         delay = 1.0
         for attempt in range(retries + 1):
             try:
-                r = self.s.get(url, params=params or {}, headers=headers or {}, timeout=TIMEOUT)
+                r = self.s.get(url, params=params or {}, headers=headers or {}, timeout=self.timeout)
                 if not 200 <= r.status_code < 300:
                     raise ChainError(f"http_{r.status_code}")
                 return r.json()
             except (requests.RequestException, ValueError, ChainError) as e:
                 if attempt >= retries:
-                    raise ChainError(str(e)[:160]) from None
+                    raise ChainError(safe_error(e)) from None
                 time.sleep(delay)
                 delay *= 2
 
@@ -390,6 +404,19 @@ def discover_evm(network_key: str, client: RpcClient, from_block: int, to_block:
         params = {"fromBlock": hex(from_block), "toBlock": hex(to_block), "toAddress": net.address,
                   "category": cats, "withMetadata": False, "excludeZeroValue": True, "maxCount": "0x64"}
         params.update(extra)
-        res = client.rpc(nw.alchemy_url(network_key), "alchemy_getAssetTransfers", [params]) or {}
-        hashes.extend(t.get("hash") for t in res.get("transfers") or [] if t.get("hash"))
+        pages = set()
+        for _ in range(100):
+            res = client.rpc(nw.alchemy_url(network_key), "alchemy_getAssetTransfers", [dict(params)])
+            if not isinstance(res, dict) or not isinstance(res.get("transfers"), list):
+                raise ChainError("evm_transfers_invalid_response")
+            hashes.extend(t.get("hash") for t in res["transfers"] if t.get("hash"))
+            page = res.get("pageKey")
+            if not page:
+                break
+            if page in pages:
+                raise ChainError("evm_pagination_stalled")
+            pages.add(page)
+            params["pageKey"] = page
+        else:
+            raise ChainError("evm_history_page_limit")
     return list(dict.fromkeys(hashes))
