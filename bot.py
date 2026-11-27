@@ -465,6 +465,8 @@ def _new_seller_api_auto_refresh_status():
     return {
     "enabled": False,
     "interval_minutes": 10,
+    "interval_seconds": None,
+    "live_stock_sync_initialized": False,
     "last_run_at": None,
     "last_success_at": None,
     "last_error": None,
@@ -7204,11 +7206,13 @@ def render_seller_api_auto_refresh_status(provider_id: str = "default") -> str:
     status = get_seller_api_provider_status(provider_id)
     enabled = "✅ Enabled" if _buyer_api_bool_value(status.get("enabled")) else "❌ Disabled"
     balance_text = status.get("last_balance_text")
+    delay = seller_api_refresh_interval_seconds(provider_id)
+    interval_label = f"{delay} seconds" if delay < 60 else f"{delay // 60} minutes"
     if balance_text in (None, "") and status.get("last_error"):
         balance_text = "Could not fetch"
     return (
         f"<b>Auto Refresh:</b> {enabled}\n"
-        f"<b>Interval:</b> {int(status.get('interval_minutes', 10))} minutes\n"
+        f"<b>Interval:</b> {interval_label}\n"
         f"<b>Last run:</b> {_seller_api_status_value(status.get('last_run_at'))}\n"
         f"<b>Last success:</b> {_seller_api_status_value(status.get('last_success_at'))}\n"
         f"<b>Last error:</b> {_seller_api_status_value(status.get('last_error'), 'None')}\n"
@@ -7227,6 +7231,8 @@ def seller_api_auto_refresh_keyboard(provider_id: str = "default") -> InlineKeyb
     enabled = _buyer_api_bool_value(status.get("enabled"))
     interval = int(status.get("interval_minutes", 10) or 10)
     return InlineKeyboardMarkup([
+        *([[InlineKeyboardButton("30 seconds", callback_data="seller_api_auto_seconds_30")]]
+          if seller_api_provider_type(provider_id) == "jero_reseller" else []),
         [InlineKeyboardButton(
             "❌ Disable Auto Refresh" if enabled else "✅ Enable Auto Refresh",
             callback_data="seller_api_auto_toggle",
@@ -7572,7 +7578,7 @@ def _sync_api_product_mapping_validity_unlocked(
             fresh_snapshot.pop("name", None)
         if fresh_snapshot.get("api_cost") is None:
             fresh_snapshot.pop("api_cost", None)
-        if fresh_snapshot.get("last_stock") is None:
+        if fresh_snapshot.get("last_stock") is None and fresh_snapshot.get("api_stock_known") is not False:
             fresh_snapshot.pop("last_stock", None)
         mapping.update(fresh_snapshot)
         if "api_cost" in fresh_snapshot:
@@ -7868,6 +7874,40 @@ async def run_seller_api_refresh(bot, source: str = "manual", provider_id: str =
             print(f"Seller API refresh state save failed: {type(exc).__name__}")
 
 
+def seller_api_refresh_interval_seconds(provider_id: str) -> int:
+    status = get_seller_api_provider_status(provider_id)
+    seconds = _buyer_api_numeric_value(status.get("interval_seconds"))
+    if seconds is not None and 15 <= seconds <= 1800:
+        return int(seconds)
+    return max(60, int(status.get("interval_minutes", 10) or 10) * 60)
+
+
+def initialize_jero_stock_refresh() -> None:
+    """Enable Seller 3 live inventory once; preserve later admin changes/restarts."""
+    provider = load_seller_api_providers().get("seller_3", {})
+    if provider.get("type") != "jero_reseller" or not provider.get("enabled") or not provider.get("configured"):
+        return
+    status = get_seller_api_provider_status("seller_3")
+    if not status.get("live_stock_sync_initialized"):
+        status.update(enabled=True, interval_seconds=30, live_stock_sync_initialized=True)
+        save_bot_state()
+
+
+async def jero_refresh_inventory(bot, provider_id: str, force: bool = False) -> bool:
+    """Refresh mapped inventory before charging, or reuse a recent successful view refresh."""
+    status = get_seller_api_provider_status(provider_id)
+    if not force and status.get("last_success_at"):
+        try:
+            if (datetime.now() - datetime.fromisoformat(status["last_success_at"])).total_seconds() < 15:
+                return True
+        except (TypeError, ValueError):
+            pass
+    result = await run_seller_api_refresh(bot, source="checkout", provider_id=provider_id)
+    if not result.get("success"):
+        await maybe_notify_seller_api_refresh_error(bot, result.get("error") or "Inventory refresh unavailable", provider_id)
+    return bool(result.get("success"))
+
+
 async def seller_api_auto_refresh_loop(
     application, provider_id: str = "default", first_delay: int = 30
 ):
@@ -7876,8 +7916,7 @@ async def seller_api_auto_refresh_loop(
         await asyncio.sleep(max(1, int(first_delay)))
         while _buyer_api_bool_value(status.get("enabled")):
             await run_seller_api_refresh(application.bot, source="auto", provider_id=provider_id)
-            interval = int(status.get("interval_minutes", 10) or 10)
-            await asyncio.sleep(interval * 60)
+            await asyncio.sleep(seller_api_refresh_interval_seconds(provider_id))
     except asyncio.CancelledError:
         return
     except Exception as exc:
@@ -11780,7 +11819,8 @@ def api_shop_product_row(mapping: dict, styled: bool = True, user_id: int = None
     stock = _buyer_api_numeric_value(mapping.get("last_stock"))
     out_of_stock = stock is not None and stock <= 0
     if out_of_stock:
-        stock_label = f"🔔 {t(user_id, 'notify_soon')}"
+        stock_label = (f"❌ {t(user_id, 'out_of_stock')}" if is_jero_mapping(mapping)
+                       else f"🔔 {t(user_id, 'notify_soon')}")
     elif stock is None:
         stock_label = f"📦 {t(user_id, 'stock')}"
     else:
@@ -13469,7 +13509,7 @@ def jero_mapping_validation_error(mapping: dict, quantity: int, user_id: int = N
     kind = jero_special_kind(mapping)
     if kind == "wordpress" and quantity != 1:
         return t(user_id, "invalid_quantity")
-    if not kind and api_shop_mapping_stock(mapping) is None:
+    if not kind and (mapping.get("api_stock_known") is False or api_shop_mapping_stock(mapping) is None):
         # Missing supplier stock is never treated as unlimited.
         return t(user_id, "product_unavailable")
     return ""
@@ -13722,6 +13762,8 @@ def jero_reserve_order(user_id: int, mapping: dict, draft: dict) -> dict:
             "refund_reference": "",
             "refunded_amount": "0.00",
             "customer_notified": [],
+            "reporting_version": 2,
+            "api_unit_cost": str(mapping.get("api_cost") or ""),
         }
         jero_orders[external_order_id] = record
         jero_fresh_reservations.add(external_order_id)
@@ -13899,6 +13941,7 @@ def jero_apply_result_sync(external_order_id: str, result: dict, source: str = "
         if result.get("message"):
             record["supplier_message"] = result["message"][:300]
         record["last_result_source"] = source
+        record["reporting_version"] = 2
         record["updated_at"] = datetime.now().isoformat(timespec="seconds")
         status = result.get("status")
         if status == jero_api.ORDER_STATUS_PROCESSING:
@@ -13935,6 +13978,9 @@ def jero_settle_rejected_sync(external_order_id: str, exc) -> dict:
             _jero_refund(record, jero_api.money(record["total"]), f"supplier_rejected:{exc.code}")
             record["state"] = "failed"
             record["failure_code"] = exc.code
+            mapping = api_product_mappings.get(record.get("mapping_key"))
+            if exc.code == "out_of_stock" and isinstance(mapping, dict):
+                mapping["last_stock"] = 0
             record["updated_at"] = datetime.now().isoformat(timespec="seconds")
             _jero_set_order_status(record, "Failed - Refunded", "Refunded")
         try:
@@ -13958,31 +14004,57 @@ async def _jero_notify_once(bot, record: dict, key: str, text: str, keyboard=Non
         print(f"Jero customer notice failed: {type(exc).__name__}")
 
 
+def jero_admin_notice_title(record: dict) -> str:
+    return {
+        "reserved": "API Order Submitted", "processing": "API Order Processing",
+        "unknown": "API ORDER NEEDS SUPPORT", "completed": "API Product Sold",
+        "partial": "API Order Partially Completed", "refunded": "API Order Refunded",
+        "failed": "API Order Rejected — Customer Refunded", "needs_review": "API ORDER NEEDS SUPPORT",
+    }.get(record.get("state"), "API Order Update")
+
+
 async def _jero_notify_admins(bot, record: dict, title: str) -> None:
     flag = f"admin:{record.get('state')}:{record.get('failure_code', '')}"
     notified = record.setdefault("admin_notified", [])
     if flag in notified:
         return
+    recipients = record.setdefault("admin_notice_recipients", {}).setdefault(flag, [])
+    user_id = int(record["user_id"])
+    profile = get_user_profile(user_id)
+    username = str(profile.get("username") or "").strip().lstrip("@")
+    reason = jero_api.redact(str(record.get("review_reason") or record.get("failure_code")
+                                or record.get("last_error") or "N/A"))[:300]
+    icon = "✅" if record.get("state") == "completed" else "⚠️"
     text = (
-        f"⚠️ <b>{escape_html(title)}</b>\n\n"
+        f"{icon} <b>{escape_html(title)}</b>\n\n"
         f"<b>Provider:</b> {escape_html(seller_api_provider_name(record['provider_id']))} "
         f"(<code>{escape_html(record['provider_id'])}</code>)\n"
         f"<b>Order:</b> #{record['order_id']} / <code>{escape_html(record['external_order_id'])}</code>\n"
         f"<b>Supplier order:</b> <code>{escape_html(record.get('supplier_order_id') or 'N/A')}</code>\n"
         f"<b>Product:</b> {escape_html(record.get('product_name'))} (id {escape_html(record.get('api_product_id'))})\n"
-        f"<b>User ID:</b> <code>{record['user_id']}</code>\n"
+        f"<b>Quantity:</b> {int(record['quantity'])}\n"
+        f"<b>User:</b> <code>{user_id}</code> {escape_html('@' + username if username else '')}\n"
+        f"<b>Unit price:</b> {format_money(float(record['unit_price']))}\n"
         f"<b>Customer total:</b> {format_money(float(record['total']))}\n"
+        f"<b>Supplier balance:</b> {escape_html(record.get('supplier_balance') or 'N/A')}\n"
+        f"<b>Refunded:</b> {format_money(float(record.get('refunded_amount') or 0))}\n"
+        f"<b>Delivered items:</b> {len(record.get('delivered') or [])}\n"
         f"<b>State:</b> {escape_html(record.get('state'))}\n"
-        f"<b>Reason:</b> {escape_html(record.get('review_reason') or record.get('failure_code') or 'N/A')}"
+        f"<b>Reason:</b> {escape_html(reason)}"
     )
-    sent = False
+    if record.get("state") in {"unknown", "needs_review"}:
+        text += "\n\n<b>Action needed:</b> check the supplier order before manual delivery or refund."
     for admin_id in ADMIN_IDS:
+        if str(admin_id) in recipients:
+            continue
         try:
-            await bot.send_message(admin_id, text, parse_mode="HTML")
-            sent = True
-        except Exception:
-            pass
-    if sent:
+            await bot.send_message(admin_id, text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🧾 Supplier orders", callback_data="seller_api_jero_orders")],
+            ]))
+            recipients.append(str(admin_id))
+        except Exception as exc:
+            print(f"Jero admin notice retry needed: {type(exc).__name__}")
+    if ADMIN_IDS and all(str(admin_id) in recipients for admin_id in ADMIN_IDS):
         notified.append(flag)
 
 
@@ -14063,12 +14135,16 @@ async def jero_after_update(bot, record: dict) -> None:
             "rate_limited": "jero_supplier_busy",
         }.get(code, "jero_supplier_unavailable")
         await _jero_notify_once(bot, record, "failed", f"❌ {t(user_id, key)}\n\n{get_wallet_balance_text(user_id)}")
-        if code in {"insufficient_balance", "unauthorized", "api_paused", "invalid_request", "config"}:
-            title = "Jero supplier balance is too low" if code == "insufficient_balance" else "Jero order rejected"
-            await _jero_notify_admins(bot, record, title)
     elif state == "needs_review":
         await _jero_notify_once(bot, record, "needs_review", f"🕓 {t(user_id, 'jero_needs_review')}")
-        await _jero_notify_admins(bot, record, "Jero order needs manual reconciliation")
+    elif state == "unknown":
+        await _jero_notify_once(bot, record, "unknown_support",
+            f"⚠️ {t(user_id, 'jero_needs_review')}\n\n<b>Order:</b> #{record['order_id']}\n"
+            f"<b>Support:</b> {escape_html(SUPPORT_USERNAME)}",
+            InlineKeyboardMarkup([[InlineKeyboardButton("Support", url=SUPPORT_URL)]]))
+    await _jero_notify_admins(bot, record, jero_admin_notice_title(record))
+    # Persist successful per-recipient notices, so failures can retry without resending to everyone.
+    save_bot_state()
 
 
 async def jero_submit_order(bot, external_order_id: str, resend: bool = False) -> dict:
@@ -14165,6 +14241,7 @@ async def jero_reconcile_one(bot, external_order_id: str, allow_resend: bool = T
                     pass
             await jero_after_update(bot, record)
         else:
+            await _jero_notify_admins(bot, record, jero_admin_notice_title(record))
             save_bot_state()
         return record
     record = await asyncio.to_thread(jero_apply_result_sync, external_order_id, result, "lookup")
@@ -14183,12 +14260,20 @@ async def jero_reconcile_once(bot) -> None:
             continue
         due = float(record.get("next_check_at", 0) or 0) <= now
         state = record.get("state")
+        flag = f"admin:{state}:{record.get('failure_code', '')}"
+        admin_pending = bool(ADMIN_IDS) and flag not in record.get("admin_notified", [])
+        customer_key = {"refunded": "refunded", "failed": "failed", "needs_review": "needs_review"}.get(state)
+        customer_pending = customer_key and customer_key not in record.get("customer_notified", [])
         if state in JERO_PENDING_STATES and due:
             await jero_reconcile_one(bot, external_order_id)
         elif state in JERO_DELIVERY_STATES and not record.get("delivery_sent") and due:
-            await jero_deliver(bot, external_order_id)
-        elif state in JERO_TERMINAL_STATES and not record.get("admin_notified") and state == "needs_review":
-            await _jero_notify_admins(bot, record, "Jero order needs manual reconciliation")
+            await jero_after_update(bot, record)
+        elif state in JERO_TERMINAL_STATES and (record.get("reporting_version") == 2 or state == "needs_review"):
+            if (admin_pending or customer_pending) and (state not in JERO_DELIVERY_STATES or record.get("delivery_sent")):
+                await jero_after_update(bot, record)
+        elif state in JERO_PENDING_STATES and record.get("reporting_version") == 2 and admin_pending:
+            await _jero_notify_admins(bot, record, jero_admin_notice_title(record))
+            save_bot_state()
 
 
 async def jero_readonly_probe(bot) -> None:
@@ -14265,6 +14350,10 @@ async def jero_confirm_draft(context, user_id: int, draft_id: str) -> dict:
     secret_key = f"draft:{draft_id}"
     password = None
     try:
+        if not await jero_refresh_inventory(bot, draft["provider_id"], force=True):
+            jero_draft_results.pop(draft_id, None)
+            await bot.send_message(user_id, f"❌ {t(user_id, 'product_unavailable')} {t(user_id, 'please_contact_support')}")
+            return {}
         mapping = api_product_mappings.get(draft["mapping_key"])
         error = validate_api_shop_purchase(mapping, int(draft["quantity"]), user_id) if mapping else t(user_id, "product_no_longer_available")
         if not error and jero_unit_price(mapping) != jero_api.money(draft["unit_price"]):
@@ -16032,6 +16121,7 @@ async def post_init(application):
     ])
     load_nowpayments_pending()
     start_nowpayments_webhook_server()
+    initialize_jero_stock_refresh()
     schedule_seller_api_auto_refresh(application, first_delay=30)
     schedule_sales_report_auto_daily(application, first_delay=5)
     schedule_jero_reconciler(application, first_delay=90)
@@ -18457,6 +18547,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if data == "seller_api_auto_seconds_30":
+        provider_id = selected_seller_api_provider_id(user_id)
+        status = get_seller_api_provider_status(provider_id)
+        status["interval_seconds"] = 30
+        schedule_seller_api_auto_refresh(context.application, first_delay=1, provider_id=provider_id)
+        save_bot_state()
+        await send_inline_from_callback(query, render_seller_api_auto_refresh_panel(provider_id),
+                                        seller_api_auto_refresh_keyboard(provider_id))
+        return
+
     if data.startswith("seller_api_auto_interval_"):
         provider_id = selected_seller_api_provider_id(user_id)
         status = get_seller_api_provider_status(provider_id)
@@ -18467,6 +18567,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if interval not in {5, 10, 30}:
             interval = 10
         status["interval_minutes"] = interval
+        status["interval_seconds"] = None
         if _buyer_api_bool_value(status.get("enabled")):
             schedule_seller_api_auto_refresh(
                 context.application, first_delay=interval * 60, provider_id=provider_id
@@ -21612,6 +21713,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("api_shop_view_"):
         callback_token = data.replace("api_shop_view_", "", 1)
         mapping = find_api_shop_mapping(callback_token)
+        if mapping is not None and is_jero_mapping(mapping):
+            if not await jero_refresh_inventory(context.bot, mapping_provider_id(mapping)):
+                await query.message.reply_text(f"❌ {t(user_id, 'product_unavailable')} {t(user_id, 'please_contact_support')}")
+                return
+            mapping = find_api_shop_mapping(callback_token)
         if mapping is None:
             await send_shop_inline_with_style_fallback(
                 query,
