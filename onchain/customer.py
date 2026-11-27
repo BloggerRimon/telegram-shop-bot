@@ -12,6 +12,7 @@ from decimal import Decimal
 from telegram import InlineKeyboardMarkup
 
 from . import engine, networks as nw, store
+from . import payment_review
 
 LABEL_ASSETS = {
     "USDT (TRC20)": "usdt_trc20", "USDT (ERC20)": "usdt_erc20",
@@ -118,10 +119,10 @@ def _credit_and_reserve(bot, inv):
         bot.user_transactions.setdefault(uid, [])
         bot.user_orders.setdefault(uid, [])
         result = bot.apply_confirmed_topup_credit(
-            uid, amount, "Trust Wallet", "onchain_verified", payment_id=ref,
+            uid, amount, "Trust Wallet", "onchain_manual" if inv.get("manual_actor") else "onchain_verified", payment_id=ref,
             network=inv["network"],
             transaction_meta={"onchain_invoice_id": inv["id"], "onchain_transfer_uid": inv["transfer_uid"],
-                              "blockchain_txid": txid})
+                              "blockchain_txid": txid, "manual_approval_by": inv.get("manual_actor")})
         credit = result["record"]
         # One blockchain transaction can contain several independently payable
         # outputs/logs. The invoice/outbox identifies a payment; the bare TXID
@@ -212,6 +213,7 @@ async def settlement_loop(bot):
     while True:
         try:
             await settle_pending(bot)
+            await payment_review.notify_delays(bot)
         except Exception as exc:
             print(f"[onchain] customer outbox retry: {type(exc).__name__}")
         await asyncio.sleep(10)
@@ -222,6 +224,12 @@ async def verify(bot, query, uid, invoice_id):
     if not inv or inv["purpose"] != "customer" or int(inv["user_id"]) != int(uid):
         await query.message.reply_text("This payment request is not available for your account.")
         return
+    if inv["status"] != "cancelled":
+        profile = getattr(bot, "user_profiles", {}).get(int(uid), {})
+        person = getattr(query, "from_user", None)
+        name = getattr(person, "full_name", None) or " ".join(filter(None, [profile.get("first_name"), profile.get("last_name")]))
+        username = getattr(person, "username", None) or profile.get("username") or ""
+        await asyncio.to_thread(payment_review.report_payment, invoice_id, int(uid), name, username)
     await settle_pending(bot)
     inv = await asyncio.to_thread(store.get_invoice, invoice_id)
     if inv["status"] == "paid":
@@ -233,4 +241,7 @@ async def verify(bot, query, uid, invoice_id):
         text = "This payment request expired. If you already sent funds, contact support with the transaction ID."
     else:
         text = "⌛ Payment not confirmed yet. Please wait 1–2 minutes and tap Verify again."
+    if inv["status"] not in ("paid", "cancelled"):
+        text += ("\nIf it is still uncredited 10 minutes after your first Verify, an admin will be notified."
+                 f"\nFor faster investigation, submit your receipt TXID:\n/payment_tx {inv['public_ref']} TXID")
     await query.message.reply_text(text)
