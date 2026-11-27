@@ -82,3 +82,20 @@ and advances only after a complete successful range. No open invoice means no
 whole-chain scanning. Indexer failures use bounded backoff and do not disable the
 separate solid-block scanner. The scanner uses the existing RPC key and plan;
 normal RPC compute usage applies, with no billing-plan change.
+
+All-network recovery: paginated EVM transfer history drains every page before
+advancing its cursor. ETH/BSC and BTC/LTC also scan bounded raw-node block ranges
+for open/recently expired invoice windows, independent of address indexers.
+Completed windows stop scanning; transaction hashes still use normal independent
+verification. A transfer mined inside an invoice's original time window can pay
+an expired invoice when discovery was delayed; cancelled invoices and genuinely
+late transfers remain excluded. Duplicate credits remain blocked.
+
+Discovery calls use an 8-second timeout without immediate retry storms, while
+transaction verification retains its existing retry policy. Queued hints run
+before and after discovery. Per-poller health is persisted, repeated failures
+notify admins with throttling, and recovery sends a single recovery notice.
+A separate read-only startup canary checks all six configured RPC networks and
+records `rpc_probe:<network>` results visible in admin health. It creates no
+invoices and does not move funds. Node outages can still delay payment; the
+recovery paths and alerts reduce silent failures rather than guarantee uptime.
