@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from onchain import chains, engine, networks as nw, store
+from onchain import chains, engine, networks as nw, store, tron_scan
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -92,7 +92,8 @@ class DiscoveryTests(unittest.TestCase):
         eng.poll_solana = Mock()
         eng.poll_utxo = Mock()
         eng.poll_evm = Mock()
-        with patch.object(eng, "_due", return_value=True), patch.object(engine.time, "time", return_value=1000):
+        with patch.object(eng, "_due", return_value=True), patch.object(engine.time, "time", return_value=1000), \
+                patch.object(tron_scan, "poll"):
             eng.run_pollers()
             eng.run_pollers()
         self.assertEqual(eng.poll_tron.call_count, 1)

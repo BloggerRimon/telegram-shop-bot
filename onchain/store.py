@@ -576,6 +576,14 @@ def paid_test_assets() -> set:
         return {r["asset_id"] for r in cur.fetchall()}
 
 
+def earliest_open_invoice_time(network: str):
+    with conn() as c, c.cursor() as cur:
+        cur.execute("SELECT MIN(created_at) AS started FROM onchain_invoices WHERE network=%s "
+                    "AND status IN ('awaiting','detected') AND (expires_at > NOW() OR status='detected')",
+                    (network,))
+        return cur.fetchone()["started"]
+
+
 def pending_customer_settlements(limit: int = 25):
     with conn() as c, c.cursor() as cur:
         cur.execute("SELECT i.*, s.transfer_uid FROM onchain_customer_settlements s "

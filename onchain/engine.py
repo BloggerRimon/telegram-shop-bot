@@ -16,7 +16,7 @@ from typing import Callable, Dict, Optional, Tuple
 
 import requests
 
-from . import chains, store
+from . import chains, store, tron_scan
 from . import networks as nw
 from . import webhook as wh
 
@@ -31,7 +31,7 @@ DISCOVERY = {
     "solana": "getSignaturesForAddress poller (+ optional webhook)",
     "bitcoin": "Alchemy webhook + public address index reconciliation (independent RPC verification)",
     "litecoin": "public address index poller + independent Alchemy RPC verification",
-    "tron": "TronGrid account history poller",
+    "tron": "TronGrid history + independent solid-block scanner while invoices are open",
 }
 
 
@@ -246,7 +246,8 @@ class Engine:
         return True
 
     def run_pollers(self):
-        for name, fn, every in (("solana", self.poll_solana, 60), ("tron", self.poll_tron, 60),
+        for name, fn, every in (("tron_blocks", lambda: tron_scan.poll(self.client), 30),
+                                ("solana", self.poll_solana, 60), ("tron", self.poll_tron, 60),
                                 ("bitcoin", lambda: self.poll_utxo("bitcoin"), 180),
                                 ("litecoin", lambda: self.poll_utxo("litecoin"), 180),
                                 ("ethereum", lambda: self.poll_evm("ethereum"), 120),
