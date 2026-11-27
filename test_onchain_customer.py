@@ -27,7 +27,7 @@ class CustomerGatewayTests(unittest.TestCase):
             "ONCHAIN_CUSTOMER_LAUNCH": "", "ONCHAIN_EMERGENCY_DISABLE": "false"})
         self.env.start()
         with store.conn() as c:
-            c.execute("DROP TABLE IF EXISTS onchain_customer_settlements, onchain_settings, onchain_audit, "
+            c.execute("DROP TABLE IF EXISTS onchain_payment_reports, onchain_delay_alerts, onchain_manual_receipts, onchain_manual_drafts, onchain_customer_settlements, onchain_settings, onchain_audit, "
                       "onchain_invoices, onchain_raw_events, onchain_tx_hints, onchain_transfers, "
                       "onchain_test_ledger, onchain_review, onchain_checkpoints")
         store._initialized = False
