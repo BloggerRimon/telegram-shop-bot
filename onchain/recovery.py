@@ -50,11 +50,14 @@ def evm_hashes(client, network, start, end, assets):
                           and int(tx.get("value", "0x0"), 16) > 0)
     tokens = [nw.ASSETS[aid].contract for aid in assets if nw.ASSETS[aid].kind == "token"]
     if tokens:
-        logs = client.rpc(url, "eth_getLogs", [{"fromBlock": hex(start), "toBlock": hex(end),
-            "address": tokens, "topics": [nw.ERC20_TRANSFER_TOPIC, None, "0x" + "0" * 24 + net.address[2:].lower()]}])
-        if not isinstance(logs, list):
-            raise chains.ChainError("recovery_logs_missing")
-        hashes.extend(log["transactionHash"] for log in logs if log.get("transactionHash") and not log.get("removed"))
+        # Alchemy Free limits eth_getLogs to ten blocks on ETH and BSC.
+        # Complete every chunk before the caller advances its durable cursor.
+        for offset in range(start, end + 1, 10):
+            logs = client.rpc(url, "eth_getLogs", [{"fromBlock": hex(offset), "toBlock": hex(min(end, offset + 9)),
+                "address": tokens, "topics": [nw.ERC20_TRANSFER_TOPIC, None, "0x" + "0" * 24 + net.address[2:].lower()]}])
+            if not isinstance(logs, list):
+                raise chains.ChainError("recovery_logs_missing")
+            hashes.extend(log["transactionHash"] for log in logs if log.get("transactionHash") and not log.get("removed"))
     return list(dict.fromkeys(hashes))
 
 
