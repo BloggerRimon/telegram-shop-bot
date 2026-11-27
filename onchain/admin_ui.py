@@ -41,6 +41,7 @@ def _fmt(units, asset_id):
 def _home_kb():
     return KB([
         [B("🔄 Payment gateway", callback_data="oc:gateway")],
+        [B("🔔 Technical alerts", callback_data="oc:technical")],
         [B("⏱ Delayed customer payments", callback_data="oc:delays")],
         [B("🧪 New admin test invoice", callback_data="oc:new")],
         [B("📋 Invoices", callback_data="oc:invs"), B("📡 Events/health", callback_data="oc:events")],
@@ -67,6 +68,7 @@ def home_text() -> str:
         f"Emergency env ({nw.ENV_EMERGENCY}): <b>{'ACTIVE' if nw.emergency_disabled() else 'off'}</b>",
         f"New customer invoices paused: <b>{'yes' if paused else 'no'}</b>",
         f"New customer crypto payments: <b>{esc({'trust_wallet': 'Trust Wallet', 'cryptomus': 'Cryptomus'}.get(customer.gateway(), customer.gateway()))}</b>.",
+        f"Technical chat alerts: <b>{'ON' if store.get_setting('technical_payment_alerts', False) is True else 'OFF (health panel only)'}</b>",
         "Previous invoices keep their original gateway and continue verification.",
         "",
         "<b>Availability / real payment tests</b>:",
@@ -191,6 +193,15 @@ async def _dispatch(query, uid, action, args, is_admin):
     run = asyncio.to_thread
     if action == "home":
         await _send(query, await run(home_text), _home_kb())
+    elif action == "technical":
+        if args and args[0] in ('on', 'off'):
+            await run(store.set_setting, 'technical_payment_alerts', args[0] == 'on', uid)
+        active = await run(store.get_setting, 'technical_payment_alerts', False)
+        await _send(query, f"🔔 Technical payment alerts: <b>{'ON' if active is True else 'OFF'}</b>\n\n"
+                    "Routine RPC errors and recovery messages stay in Events/health while OFF. "
+                    "Payment retries keep running. Delayed buyer payment alerts, real invoice mismatches and order/refund notices remain active. "
+                    "While ON, repeated technical errors are limited to once per source every six hours.",
+                    KB([[B('Turn OFF', callback_data='oc:technical:off'), B('Turn ON', callback_data='oc:technical:on')], _back()]))
     elif action == "delays":
         rows = await run(payment_review.delayed_invoices)
         kb = [[B(f"Review invoice #{r['id']}", callback_data=f"oc:payment:{r['id']}")] for r in rows[:20]]
