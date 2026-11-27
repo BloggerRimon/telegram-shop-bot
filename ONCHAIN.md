@@ -9,13 +9,19 @@ receives funds at the configured public wallet addresses; no wallet secrets are 
 - PAYMENT_GATEWAY retains the original gateway fallback (Cryptomus in production).
 - ONCHAIN_CUSTOMER_CHECKOUT_ENABLED=true releases customer invoice creation.
 - /onchain -> Payment gateway chooses Trust Wallet or Cryptomus for NEW invoices.
-- Trust Wallet only accepts assets with a successful admin test, enabled network,
-  available RPC/discovery and enabled master gate. Other network buttons retain
-  their layout but refuse invoice creation until ready. Successful real admin
-  tests are required per asset, including the native coin and token on one chain.
+- Trust Wallet accepts assets with a successful admin test OR an explicit
+  ONCHAIN_OWNER_APPROVED_ASSETS deployment allowlist, plus enabled network,
+  available RPC/discovery and enabled master/release gates. The allowlist contains
+  exact comma-separated asset IDs, never a wildcard. It does not create ledger
+  entries or mark an asset as tested. Admin status distinguishes real-test passes
+  from owner-approved, untested assets.
 - Optional ONCHAIN_CUSTOMER_LAUNCH=trust_wallet_bsc_v1 performs the initial release
   after the BEP20 admin test. A persistent checkpoint ensures restarts never
   override a subsequent admin rollback.
+- ONCHAIN_CUSTOMER_LAUNCH=trust_wallet_all_v1 performs a one-time all-network
+  launch only when every asset is explicitly owner-approved and has configured
+  infrastructure. Approval and actual tested assets are audited separately.
+  The saved launch checkpoint preserves later gateway/network rollback choices.
 - Switching back to Cryptomus never deletes code, keys, pending invoices or history.
   All previous invoices continue verification on their original gateway.
 - ONCHAIN_AUTO_ENABLE_AFTER_TEST=true optionally enables a network immediately
@@ -64,4 +70,6 @@ public BlockCypher address index every three minutes; the index supplies hashes
 only and every transaction is independently checked through Alchemy. Poller
 failures back off without blocking the other networks. Public TronGrid access can
 still rate-limit; configure a free TRONGRID_API_KEY for reliable TRON discovery.
-Only independently tested and ready assets should be exposed for payment.
+Owner-approved untested assets have not completed a real-funds end-to-end test.
+Emergency, pause, master, network, chain verification, finality and settlement
+idempotency protections apply identically to tested and owner-approved assets.

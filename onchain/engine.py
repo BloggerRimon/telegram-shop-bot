@@ -75,6 +75,19 @@ def asset_ready(asset_id: str, paid_assets: Optional[set] = None) -> bool:
     return bool(infra["address_valid"] and infra["rpc"] and infra["discovery_ok"] and asset_id in paid)
 
 
+def owner_approved_assets() -> set:
+    """Explicit deployment allowlist; never manufactures a successful payment test."""
+    return set(nw.env("ONCHAIN_OWNER_APPROVED_ASSETS").split(",")) & set(nw.ASSETS)
+
+
+def asset_available(asset_id: str) -> bool:
+    if asset_id not in nw.ASSETS:
+        return False
+    infra = network_infra(nw.ASSETS[asset_id].network)
+    return bool(infra["address_valid"] and infra["rpc"] and infra["discovery_ok"]
+                and (asset_id in owner_approved_assets() or asset_id in store.paid_test_assets()))
+
+
 def customer_gate(asset_id: str) -> Tuple[bool, str]:
     """Server-side gate for ANY customer-facing invoice. Hiding buttons is not enough."""
     if asset_id not in nw.ASSETS:
@@ -89,15 +102,15 @@ def customer_gate(asset_id: str) -> Tuple[bool, str]:
         return False, "checkout_off"
     if not network_enabled(nw.ASSETS[asset_id].network):
         return False, "network_off"
-    if not asset_ready(asset_id):
+    if not asset_available(asset_id):
         return False, "asset_not_ready"
     return True, "ok"
 
 
 def can_enable_network(network: str) -> Tuple[bool, str]:
-    ready = [a.id for a in nw.assets_for_network(network) if asset_ready(a.id)]
+    ready = [a.id for a in nw.assets_for_network(network) if asset_available(a.id)]
     if not ready:
-        return False, "no asset on this network has a successful admin test yet"
+        return False, "no tested or explicitly owner-approved asset is available on this network"
     return True, "ok"
 
 

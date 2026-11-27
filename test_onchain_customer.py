@@ -23,6 +23,7 @@ class CustomerGatewayTests(unittest.TestCase):
         self.env = patch.dict(os.environ, {
             "ONCHAIN_DATABASE_URL": TEST_DB, "ALCHEMY_API_KEY": "test",
             "ALCHEMY_SIGNING_KEY_BSC": "test", "ONCHAIN_CUSTOMER_CHECKOUT_ENABLED": "true",
+            "ONCHAIN_OWNER_APPROVED_ASSETS": "",
             "ONCHAIN_CUSTOMER_LAUNCH": "", "ONCHAIN_EMERGENCY_DISABLE": "false"})
         self.env.start()
         with store.conn() as c:
@@ -309,6 +310,63 @@ class CustomerGatewayTests(unittest.TestCase):
         self.assertEqual(bot.user_wallet[42], 5)
         self.assertEqual(bot.user_wallet[43], 5)
         self.assertEqual(len(bot.credited_topups), 2)
+
+    def test_owner_approved_all_asset_launch_does_not_fake_payment_tests(self):
+        approved = ",".join(nw.ASSET_ORDER)
+        with patch.dict(os.environ, {"ONCHAIN_OWNER_APPROVED_ASSETS": approved,
+                                     "ONCHAIN_CUSTOMER_LAUNCH": "trust_wallet_all_v1"}):
+            customer.bootstrap()
+            for aid in nw.ASSET_ORDER:
+                with self.subTest(asset=aid):
+                    self.assertFalse(engine.asset_ready(aid))
+                    self.assertTrue(engine.asset_available(aid))
+                    self.assertTrue(engine.customer_gate(aid)[0])
+                    inv = engine.create_customer_invoice(42, aid, Decimal("5"),
+                                                         rate_fn=lambda _: Decimal("100"))
+                    self.assertEqual(inv["destination"], nw.NETWORKS[inv["network"]].address)
+            self.assertEqual(store.paid_test_assets(), set())
+            self.assertEqual(store.test_ledger(), [])
+            audit = [a for a in store.recent_audit(30) if a["action"] == "customer_launch"]
+            self.assertEqual(len(audit), 1)
+            self.assertEqual(set(audit[0]["detail"]["owner_approved_assets"]), set(nw.ASSET_ORDER))
+            from onchain import admin_ui
+            text = admin_ui.home_text()
+            self.assertEqual(text.count("real test pending"), 9)
+            self.assertNotIn("real test passed", text)
+
+    def test_owner_approval_preserves_all_other_payment_gates(self):
+        with patch.dict(os.environ, {"ONCHAIN_OWNER_APPROVED_ASSETS": ",".join(nw.ASSET_ORDER),
+                                     "ONCHAIN_CUSTOMER_LAUNCH": "trust_wallet_all_v1"}):
+            customer.bootstrap()
+            store.set_setting("new_invoices_paused", True, 1)
+            self.assertEqual(engine.customer_gate("ltc"), (False, "new_invoices_paused"))
+            store.set_setting("new_invoices_paused", False, 1)
+            with patch.dict(os.environ, {"ONCHAIN_EMERGENCY_DISABLE": "true"}):
+                self.assertEqual(engine.customer_gate("ltc"), (False, "emergency_disabled"))
+            with patch.dict(os.environ, {"ONCHAIN_CUSTOMER_CHECKOUT_ENABLED": "false"}):
+                self.assertEqual(engine.customer_gate("ltc"), (False, "checkout_off"))
+            with patch.dict(os.environ, {"ONCHAIN_OWNER_APPROVED_ASSETS": ""}):
+                self.assertEqual(engine.customer_gate("ltc"), (False, "asset_not_ready"))
+            store.set_setting("network_enabled:litecoin", False, 1)
+            self.assertEqual(engine.customer_gate("ltc"), (False, "network_off"))
+
+    def test_owner_launch_does_not_repeat_after_admin_rollback(self):
+        with patch.dict(os.environ, {"ONCHAIN_OWNER_APPROVED_ASSETS": ",".join(nw.ASSET_ORDER),
+                                     "ONCHAIN_CUSTOMER_LAUNCH": "trust_wallet_all_v1"}):
+            customer.bootstrap()
+            customer.switch_gateway("cryptomus", 1)
+            store.set_setting("network_enabled:ethereum", False, 1)
+            customer.bootstrap()
+            self.assertEqual(customer.gateway(), "cryptomus")
+            self.assertFalse(engine.network_enabled("ethereum"))
+
+    def test_owner_allowlist_rejects_wildcards_unknown_assets_and_missing_rpc(self):
+        with patch.dict(os.environ, {"ONCHAIN_OWNER_APPROVED_ASSETS": "*,fake,ltc"}):
+            self.assertEqual(engine.owner_approved_assets(), {"ltc"})
+            self.assertFalse(engine.asset_available("eth"))
+            self.assertFalse(engine.asset_available("fake"))
+            with patch.dict(os.environ, {"ALCHEMY_API_KEY": "", "ONCHAIN_RPC_URL_LITECOIN": ""}):
+                self.assertFalse(engine.asset_available("ltc"))
 
 
 if __name__ == "__main__":

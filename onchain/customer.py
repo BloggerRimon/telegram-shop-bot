@@ -32,9 +32,9 @@ def switch_gateway(value: str, actor: int):
     if value == "trust_wallet":
         if nw.env("ONCHAIN_CUSTOMER_CHECKOUT_ENABLED").lower() != "true":
             raise engine.GateClosed("customer checkout release is not enabled")
-        ready = [aid for aid in nw.ASSET_ORDER if engine.asset_ready(aid)]
+        ready = [aid for aid in nw.ASSET_ORDER if engine.asset_available(aid)]
         if not ready:
-            raise engine.GateClosed("a successful admin test is required")
+            raise engine.GateClosed("a successful admin test or explicit owner approval is required")
         for aid in ready:
             store.set_setting("network_enabled:" + nw.ASSETS[aid].network, True, actor)
         store.set_setting("customer_new_payments_enabled", True, actor)
@@ -44,14 +44,23 @@ def switch_gateway(value: str, actor: int):
 
 def bootstrap():
     """One explicit release, once. Restarts never override an owner's rollback."""
-    if nw.env("ONCHAIN_CUSTOMER_LAUNCH") != "trust_wallet_bsc_v1":
+    launch = nw.env("ONCHAIN_CUSTOMER_LAUNCH")
+    if launch not in ("trust_wallet_bsc_v1", "trust_wallet_all_v1"):
         return
-    if store.get_checkpoint("customer_launch:trust_wallet_bsc_v1"):
+    checkpoint = "customer_launch:" + launch
+    if store.get_checkpoint(checkpoint):
         return
-    if not engine.asset_ready("usdt_bep20"):
+    if launch == "trust_wallet_all_v1":
+        if not all(aid in engine.owner_approved_assets() and engine.asset_available(aid)
+                   for aid in nw.ASSET_ORDER):
+            raise engine.GateClosed("all assets must have explicit owner approval and infrastructure")
+    elif not engine.asset_ready("usdt_bep20"):
         raise engine.GateClosed("BEP20 admin test is required before launch")
     switch_gateway("trust_wallet", 0)
-    store.set_checkpoint("customer_launch:trust_wallet_bsc_v1", True)
+    store.audit(0, "customer_launch", {"launch": launch,
+                                      "owner_approved_assets": sorted(engine.owner_approved_assets()),
+                                      "real_tested_assets": sorted(store.paid_test_assets())})
+    store.set_checkpoint(checkpoint, True)
 
 
 def invoice_record(inv):
