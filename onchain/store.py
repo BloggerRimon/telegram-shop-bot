@@ -165,6 +165,22 @@ DDL = [
         name TEXT PRIMARY KEY,
         value JSONB NOT NULL,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
+    """CREATE TABLE IF NOT EXISTS onchain_payment_reports (
+        invoice_id BIGINT PRIMARY KEY REFERENCES onchain_invoices(id) ON DELETE CASCADE,
+        reported_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        buyer_name TEXT NOT NULL DEFAULT '', username TEXT NOT NULL DEFAULT '', txid TEXT)""",
+    """CREATE TABLE IF NOT EXISTS onchain_delay_alerts (
+        invoice_id BIGINT REFERENCES onchain_invoices(id) ON DELETE CASCADE,
+        admin_id BIGINT NOT NULL, sent_at TIMESTAMPTZ, lease_until TIMESTAMPTZ,
+        PRIMARY KEY(invoice_id, admin_id))""",
+    """CREATE TABLE IF NOT EXISTS onchain_manual_receipts (
+        invoice_id BIGINT PRIMARY KEY REFERENCES onchain_invoices(id) ON DELETE CASCADE,
+        network TEXT NOT NULL, txid TEXT NOT NULL, actor BIGINT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(network, txid))""",
+    """CREATE TABLE IF NOT EXISTS onchain_manual_drafts (
+        token TEXT PRIMARY KEY, invoice_id BIGINT REFERENCES onchain_invoices(id) ON DELETE CASCADE,
+        txid TEXT NOT NULL, actor BIGINT NOT NULL,
+        expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + interval '15 minutes')""",
 ]
 
 _initialized = False
@@ -473,6 +489,11 @@ def resolve_review(review_id: int, actor: int, resolution: str) -> bool:
 
 
 # ---------------------------------------------------------------- matching & credit
+def lock_payment_tx(cur, network, txid):
+    """Same lock order for automatic matching, finalization and manual approval."""
+    cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (network + ":" + txid,))
+
+
 def match_transfer(uid: str) -> dict:
     """Attach a detected transfer to exactly one eligible invoice, or route it to review.
 
@@ -481,10 +502,27 @@ def match_transfer(uid: str) -> dict:
     must not turn an on-time payment into a late payment. Cancelled invoices stay excluded.
     """
     with conn() as c, c.cursor() as cur:
+        cur.execute("SELECT network, txid FROM onchain_transfers WHERE uid=%s", (uid,))
+        identity = cur.fetchone()
+        if not identity:
+            return {"result": "skip"}
+        lock_payment_tx(cur, identity["network"], identity["txid"])
         cur.execute("SELECT * FROM onchain_transfers WHERE uid=%s FOR UPDATE", (uid,))
         t = cur.fetchone()
         if not t or t["invoice_id"] is not None or t["status"] not in ("detected", "confirming"):
             return {"result": "skip"}
+        cur.execute("SELECT invoice_id FROM onchain_manual_receipts WHERE network=%s AND txid=%s",
+                    (t["network"], t["txid"]))
+        receipt = cur.fetchone()
+        if receipt:
+            # A manually attested TX is consumed. Other batched outputs require
+            # review rather than risking another credit from the same receipt.
+            cur.execute("UPDATE onchain_transfers SET status='review', reason='manual_receipt_consumed', "
+                        "updated_at=NOW() WHERE uid=%s", (uid,))
+            cur.execute("INSERT INTO onchain_review (transfer_uid, invoice_id, reason, detail) "
+                        "VALUES (%s,%s,'manual_receipt_consumed',%s) ON CONFLICT (transfer_uid) DO NOTHING",
+                        (uid, receipt["invoice_id"], _j({"txid": t["txid"]})))
+            return {"result": "review", "reason": "manual_receipt_consumed"}
         if t["block_time"] is None:
             return {"result": "wait_block_time"}
         cur.execute("SELECT value FROM onchain_checkpoints WHERE name=%s", (f"monitoring_started_at:{t['network']}",))
@@ -536,9 +574,18 @@ def credit_final_transfer(uid: str, confirmations: int) -> dict:
     credit impossible even with concurrent workers.
     """
     with conn() as c, c.cursor() as cur:
+        cur.execute("SELECT network, txid FROM onchain_transfers WHERE uid=%s", (uid,))
+        identity = cur.fetchone()
+        if not identity:
+            return {"result": "skip"}
+        lock_payment_tx(cur, identity["network"], identity["txid"])
         cur.execute("SELECT * FROM onchain_transfers WHERE uid=%s FOR UPDATE", (uid,))
         t = cur.fetchone()
         if not t or t["status"] not in ("detected", "confirming") or t["invoice_id"] is None:
+            return {"result": "skip"}
+        cur.execute("SELECT 1 FROM onchain_manual_receipts WHERE network=%s AND txid=%s",
+                    (t["network"], t["txid"]))
+        if cur.fetchone():
             return {"result": "skip"}
         cur.execute("SELECT * FROM onchain_invoices WHERE id=%s FOR UPDATE", (t["invoice_id"],))
         inv = cur.fetchone()
@@ -616,8 +663,9 @@ def recovery_invoice_window(network: str):
 
 def pending_customer_settlements(limit: int = 25):
     with conn() as c, c.cursor() as cur:
-        cur.execute("SELECT i.*, s.transfer_uid FROM onchain_customer_settlements s "
+        cur.execute("SELECT i.*, s.transfer_uid, m.actor AS manual_actor FROM onchain_customer_settlements s "
                     "JOIN onchain_invoices i ON i.id=s.invoice_id "
+                    "LEFT JOIN onchain_manual_receipts m ON m.invoice_id=i.id "
                     "WHERE s.status='pending' AND i.purpose='customer' AND i.status='paid' "
                     "ORDER BY i.id LIMIT %s", (limit,))
         return cur.fetchall()
