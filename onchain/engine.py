@@ -199,6 +199,16 @@ class Engine:
         self._poll_retry_at: Dict[str, float] = {}
 
     # -- lifecycle
+    def technical_alert(self, key, text):
+        """Technical diagnostics stay in /onchain health unless the admin opts in."""
+        if store.get_setting("technical_payment_alerts", False) is not True:
+            return
+        checkpoint = "technical_notice:" + key
+        last = float(store.get_checkpoint(checkpoint, 0) or 0)
+        if time.time() - last >= 21600:
+            self.notify(text)
+            store.set_checkpoint(checkpoint, time.time())
+
     def start(self):
         if self._thread and self._thread.is_alive():
             return
@@ -267,10 +277,11 @@ class Engine:
                 if self._due(name, every):
                     fn()
                     previous = store.get_checkpoint("poller_health:" + name, {}) or {}
-                    if previous.get("error") and previous.get("last_alert"):
+                    if (previous.get("error") and previous.get("alerted")
+                            and store.get_setting("technical_payment_alerts", False) is True):
                         self.notify(f"✅ Payment monitoring recovered: {name}.")
                     store.set_checkpoint("poller_health:" + name, {"last_success": datetime.now(timezone.utc).isoformat(),
-                        "error": None, "failures": 0})
+                        "error": None, "failures": 0, "alerted": False, "last_alert": previous.get("last_alert")})
                     self.poller_errors.pop(name, None)
                     self._poll_failures.pop(name, None)
                     self._poll_retry_at.pop(name, None)
@@ -281,10 +292,12 @@ class Engine:
                 self._poll_retry_at[name] = time.time() + min(900, every * 2 ** failures)
                 health = store.get_checkpoint("poller_health:" + name, {}) or {}
                 last_alert = float(health.get("last_alert") or 0)
-                if failures >= 2 and time.time() - last_alert >= 3600:
+                if (failures >= 2 and time.time() - last_alert >= 21600
+                        and store.get_setting("technical_payment_alerts", False) is True):
                     self.notify(f"⚠️ Payment monitoring error: {name} — {self.poller_errors[name]}. "
                                 "Retries and independent recovery remain active. Check /onchain health.")
                     last_alert = time.time()
+                    health["alerted"] = True
                 health.update(error=self.poller_errors[name], failures=failures,
                               last_failure=datetime.now(timezone.utc).isoformat(), last_alert=last_alert)
                 store.set_checkpoint("poller_health:" + name, health)
@@ -350,7 +363,8 @@ class Engine:
         if st == "error":
             if attempts >= MAX_HINT_ATTEMPTS:
                 store.update_hint(network, txid, "gave_up", res.get("error"))
-                self.notify(f"⚠️ Payment verification needs review: {network} {txid} — {chains.safe_error(res.get('error'))}")
+                self.technical_alert("verification:" + network,
+                    f"⚠️ Payment verification needs review: {network} {txid} — {chains.safe_error(res.get('error'))}")
             else:
                 store.update_hint(network, txid, "retry", res.get("error"), min(600, 30 * (attempts + 1)))
             return
@@ -358,7 +372,8 @@ class Engine:
             self._drop_known(network, txid, "not_found_after_detection")
             if attempts >= NOT_FOUND_GIVE_UP:
                 store.update_hint(network, txid, "not_found", res.get("error"))
-                self.notify(f"⚠️ Payment transaction remains unavailable: {network} {txid}. Discovery can retry it later.")
+                self.technical_alert("unavailable:" + network,
+                    f"⚠️ Payment transaction remains unavailable: {network} {txid}. Discovery can retry it later.")
             else:
                 store.update_hint(network, txid, "retry", "not_found", 60)
             return
@@ -378,7 +393,7 @@ class Engine:
                 "source": "chain"})
             uids.append(uid)
             m = store.match_transfer(uid)
-            if m["result"] == "review":
+            if m["result"] == "review" and m.get("reason") not in ("unmatched", "transfer_before_invoice", "manual_receipt_consumed"):
                 self.notify(f"🧾 On-chain review needed: {network} {tr['asset_id']} — {m.get('reason')}")
             if res["final"]:
                 c = store.credit_final_transfer(uid, int(res.get("confirmations") or 0))
