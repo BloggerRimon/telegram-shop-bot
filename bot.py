@@ -43,6 +43,7 @@ import jero_api
 # the existing bot down, so the module is optional at runtime.
 try:
     from onchain import admin_ui as oc_admin
+    from onchain import payment_review as oc_review
     from onchain import engine as oc_engine
     from onchain import webhook as oc_webhook
     from onchain import customer as oc_customer
@@ -16106,6 +16107,16 @@ async def onchain_hint_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await oc_admin.hint_command(update, context, is_admin)
 
 
+async def onchain_payment_tx_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if ONCHAIN_AVAILABLE:
+        await oc_review.tx_command(sys.modules[__name__], update, context)
+
+
+async def onchain_manual_payment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if ONCHAIN_AVAILABLE:
+        await oc_review.manual_command(update, context, is_admin)
+
+
 async def post_init(application):
     global app_loop
     app_loop = asyncio.get_running_loop()
@@ -22336,6 +22347,8 @@ def main():
     app.add_handler(CommandHandler("myid", myid))
     app.add_handler(CommandHandler("onchain", onchain_command))
     app.add_handler(CommandHandler("oc_hint", onchain_hint_command))
+    app.add_handler(CommandHandler("payment_tx", onchain_payment_tx_command))
+    app.add_handler(CommandHandler("oc_manual", onchain_manual_payment_command))
     app.add_handler(CommandHandler("checkchannel", checkchannel_command))
     app.add_handler(CommandHandler("checkmember", checkmember_command))
     app.add_handler(CommandHandler("addstock", addstock_persistent))

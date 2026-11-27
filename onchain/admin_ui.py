@@ -18,6 +18,7 @@ from . import engine as eng
 from . import networks as nw
 from . import store
 from . import customer
+from . import payment_review
 
 PREFIX = "oc:"
 TEST_AMOUNTS = ("1", "2", "5")
@@ -40,6 +41,7 @@ def _fmt(units, asset_id):
 def _home_kb():
     return KB([
         [B("🔄 Payment gateway", callback_data="oc:gateway")],
+        [B("⏱ Delayed customer payments", callback_data="oc:delays")],
         [B("🧪 New admin test invoice", callback_data="oc:new")],
         [B("📋 Invoices", callback_data="oc:invs"), B("📡 Events/health", callback_data="oc:events")],
         [B("🧾 Review queue", callback_data="oc:review"), B("💼 Test ledger", callback_data="oc:ledger")],
@@ -189,6 +191,29 @@ async def _dispatch(query, uid, action, args, is_admin):
     run = asyncio.to_thread
     if action == "home":
         await _send(query, await run(home_text), _home_kb())
+    elif action == "delays":
+        rows = await run(payment_review.delayed_invoices)
+        kb = [[B(f"Review invoice #{r['id']}", callback_data=f"oc:payment:{r['id']}")] for r in rows[:20]]
+        await _send(query, "⏱ Customer payments reported over 10 minutes ago and still uncredited.", KB(kb + [_back()]))
+    elif action == "payment" and len(args) == 1:
+        r = await run(payment_review.review_record, int(args[0]))
+        if not r or r['purpose'] != 'customer':
+            raise eng.GateClosed('customer_invoice_not_found')
+        await _send(query, payment_review.review_text(r), payment_review.review_keyboard(r))
+    elif action == "manual" and len(args) == 1:
+        try:
+            result = await run(payment_review.approve_manual, args[0], uid)
+        except ValueError as exc:
+            raise eng.GateClosed(str(exc))
+        await _send(query, "✅ Receipt approval recorded. Balance/order update is queued; the same invoice cannot credit twice."
+                    if result['result'] == 'queued' else "ℹ️ Already paid. No additional credit was created.", KB([_back()]))
+    elif action == "mpreview" and len(args) == 1:
+        r = await run(payment_review.review_record, int(args[0]))
+        txid = (r.get('detected_txid') or r.get('reported_txid')) if r else None
+        if not txid:
+            raise eng.GateClosed('Obtain the wallet receipt TXID and use /oc_manual <invoice> <TXID>.')
+        token, inv, txid = await run(payment_review.prepare_manual, r['public_ref'], txid, uid)
+        await _send(query, payment_review.approval_text(r, txid), payment_review.approval_keyboard(token, inv['id']))
     elif action == "gateway" and not args:
         active = await run(customer.gateway)
         await _send(query, f"🔄 <b>New customer crypto payments: {esc(active)}</b>\n\n"
@@ -221,7 +246,11 @@ async def _dispatch(query, uid, action, args, is_admin):
         inv = await run(store.get_invoice, int(args[0]))
         if not inv:
             raise eng.GateClosed("not_found")
-        await _send(query, await run(invoice_text, inv), _inv_kb(inv))
+        if inv['purpose'] == 'customer':
+            r = await run(payment_review.review_record, inv['id'])
+            await _send(query, payment_review.review_text(r), payment_review.review_keyboard(r))
+        else:
+            await _send(query, await run(invoice_text, inv), _inv_kb(inv))
     elif action == "cancel":
         ok = await run(store.cancel_invoice, int(args[0]), uid)
         await _send(query, "✅ Cancelled." if ok else "ℹ️ Only an awaiting invoice can be cancelled.", KB([_back()]))
