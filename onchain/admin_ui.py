@@ -19,6 +19,7 @@ from . import networks as nw
 from . import store
 from . import customer
 from . import payment_review
+from . import conversion
 
 PREFIX = "oc:"
 TEST_AMOUNTS = ("1", "2", "5")
@@ -42,6 +43,7 @@ def _home_kb():
     return KB([
         [B("🔄 Payment gateway", callback_data="oc:gateway")],
         [B("🔔 Technical alerts", callback_data="oc:technical")],
+        [B("💱 USDT conversion preview", callback_data="oc:conversion")],
         [B("⏱ Delayed customer payments", callback_data="oc:delays")],
         [B("🧪 New admin test invoice", callback_data="oc:new")],
         [B("📋 Invoices", callback_data="oc:invs"), B("📡 Events/health", callback_data="oc:events")],
@@ -193,6 +195,31 @@ async def _dispatch(query, uid, action, args, is_admin):
     run = asyncio.to_thread
     if action == "home":
         await _send(query, await run(home_text), _home_kb())
+    elif action == "conversion" and not args:
+        await _send(query, "💱 <b>USDT conversion preparation</b>\n\n"
+                    "All existing payment coins stay enabled. Choose a source coin and receiving USDT network to compare a live quote. "
+                    "This preview does not create a swap or move funds.\n\n"
+                    f"SwapKit quote key: {'configured' if conversion.configured() else 'not configured (SWAPKIT_API_KEY required for live routes)'}",
+                    KB([[B(nw.ASSETS[a].label, callback_data=f'oc:conversion:{a}')] for a in nw.ASSET_ORDER] + [_back()]))
+    elif action == "conversion" and len(args) == 1:
+        if args[0] not in nw.ASSETS:
+            raise eng.GateClosed('unknown_asset')
+        await _send(query, f"Source: {esc(nw.ASSETS[args[0]].label)}\nChoose the USDT receiving network:",
+                    KB([[B(nw.ASSETS[t].label, callback_data=f'oc:conversion:{args[0]}:{t}')] for t in conversion.TARGETS] + [_back()]))
+    elif action == "conversion" and len(args) == 2:
+        source, target = args
+        if source not in nw.ASSETS or target not in conversion.TARGETS:
+            raise eng.GateClosed('unknown_asset')
+        amounts = conversion.PRESETS.get(source, ('5','10','25'))
+        await _send(query, f"Source: {esc(nw.ASSETS[source].label)} → {esc(nw.ASSETS[target].label)}\n"
+                    "Choose an example source amount. This is a quote, not your wallet balance:",
+                    KB([[B(f'{amount} {nw.ASSETS[source].label.split()[0]}', callback_data=f'oc:cquote:{source}:{target}:{amount}')] for amount in amounts] + [_back()]))
+    elif action == "cquote" and len(args) == 3:
+        try:
+            quote = await run(conversion.quote, args[0], args[1], args[2])
+        except conversion.QuoteUnavailable as exc:
+            raise eng.GateClosed(str(exc))
+        await _send(query, conversion.render(quote), KB([_back()]))
     elif action == "technical":
         if args and args[0] in ('on', 'off'):
             await run(store.set_setting, 'technical_payment_alerts', args[0] == 'on', uid)
