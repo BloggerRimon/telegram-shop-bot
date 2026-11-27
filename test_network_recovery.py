@@ -91,18 +91,66 @@ class NetworkRecoveryTests(unittest.TestCase):
         eng.poll_tron = Mock(side_effect=chains.ChainError("http_429"))
         eng.poll_solana, eng.poll_utxo, eng.poll_evm = Mock(), Mock(), Mock()
         with patch.object(eng, "_due", return_value=True), patch.object(tron_scan, "poll"), \
-                patch.object(recovery, "poll"), \
+                patch.object(recovery, "poll"), patch.object(store, "get_setting", return_value=True), \
                 patch.object(store, "get_checkpoint", side_effect=lambda k, default=None: checkpoints.get(k, default)), \
                 patch.object(store, "set_checkpoint", side_effect=lambda k, v: checkpoints.update({k: v})):
-            for timestamp in (10000, 10150, 10500):
+            for timestamp in (100000, 100150, 100500):
                 with patch.object(engine.time, "time", return_value=timestamp):
                     eng.run_pollers()
             self.assertEqual(len(notes), 1)
             eng.poll_tron = Mock()
-            with patch.object(engine.time, "time", return_value=11200):
+            with patch.object(engine.time, "time", return_value=101200):
                 eng.run_pollers()
             self.assertEqual(len(notes), 2)
             self.assertIn("recovered", notes[-1])
+
+    def test_free_tier_log_queries_cover_range_in_ten_block_chunks(self):
+        client = Mock()
+        client.rpc.side_effect = [[{"transactionHash": "a"}], [{"transactionHash": "b"}], []]
+        self.assertEqual(recovery.evm_hashes(client, "bsc", 100, 120, ["usdt_bep20"]), ["a", "b"])
+        ranges = [(int(c.args[2][0]["fromBlock"],16), int(c.args[2][0]["toBlock"],16)) for c in client.rpc.call_args_list]
+        self.assertEqual(ranges, [(100,109),(110,119),(120,120)])
+
+    def test_failed_log_chunk_never_advances_recovery_cursor(self):
+        started = datetime.now(timezone.utc)
+        client = Mock()
+        client.rpc.side_effect = ["0x38", [], chains.ChainError("http_400")]
+        with patch.object(store, "recovery_invoice_window", return_value={"started":started,"ended":started,"assets":["usdt_bep20"]}), \
+             patch.object(store, "get_checkpoint", return_value={"since":started.isoformat(),"next":100}), \
+             patch.object(recovery, "head", return_value=120), patch.object(store, "set_checkpoint") as save:
+            with self.assertRaises(chains.ChainError):
+                recovery.poll(client,"bsc")
+            save.assert_not_called()
+
+    def test_quiet_monitoring_keeps_health_and_retries_without_chat_alerts(self):
+        checkpoints, notes = {}, []
+        eng = engine.Engine(notify=notes.append)
+        eng.poll_tron = Mock(side_effect=chains.ChainError("http_429"))
+        eng.poll_solana, eng.poll_utxo, eng.poll_evm = Mock(), Mock(), Mock()
+        with patch.object(eng, "_due", return_value=True), patch.object(tron_scan, "poll"), \
+             patch.object(recovery, "poll"), patch.object(store, "get_setting", return_value=False), \
+             patch.object(store, "get_checkpoint", side_effect=lambda k, default=None: checkpoints.get(k,default)), \
+             patch.object(store, "set_checkpoint", side_effect=lambda k,v: checkpoints.update({k:v})):
+            for timestamp in (100000,100150,100500):
+                with patch.object(engine.time,"time",return_value=timestamp): eng.run_pollers()
+            self.assertEqual(notes,[])
+            self.assertEqual(checkpoints["poller_health:tron"]["error"],"http_429")
+            self.assertGreater(eng._poll_retry_at["tron"],100500)
+            eng.poll_tron=Mock()
+            with patch.object(engine.time,"time",return_value=101200): eng.run_pollers()
+            self.assertEqual(notes,[])
+            self.assertIsNone(checkpoints["poller_health:tron"]["error"])
+
+    def test_opt_in_technical_hint_alerts_are_persistently_throttled(self):
+        checkpoints, notes = {}, []
+        eng=engine.Engine(notify=notes.append)
+        with patch.object(store,"get_setting",return_value=True), \
+             patch.object(store,"get_checkpoint",side_effect=lambda k,default=None:checkpoints.get(k,default)), \
+             patch.object(store,"set_checkpoint",side_effect=lambda k,v:checkpoints.update({k:v})), \
+             patch.object(engine.time,"time",return_value=100000):
+            eng.technical_alert("verification:bsc","first")
+            engine.Engine(notify=notes.append).technical_alert("verification:bsc","again after restart")
+        self.assertEqual(notes,["first"])
 
     def test_readonly_canary_records_each_network_and_isolates_one_failure(self):
         results = {}
@@ -187,6 +235,20 @@ class PaymentRecoveryDbTests(unittest.TestCase):
             c.execute("UPDATE onchain_tx_hints SET updated_at=NOW()-interval '11 minutes'")
         self.assertEqual(store.retry_stale_hints(), 2)
         self.assertEqual(sorted(h["status"] for h in store.recent_hints()), ["done", "failed", "new", "new"])
+
+    def test_unmatched_wallet_activity_is_saved_without_chat_notification(self):
+        template=self.inv()
+        with store.conn() as c:
+            c.execute("DELETE FROM onchain_invoices WHERE id=%s",(template["id"],))
+        self.run_hint("ethereum","0x"+"e5"*32,self.fake_found(template))
+        self.assertEqual(self.notes,[])
+        self.assertEqual(store.list_review()[0]["reason"],"unmatched")
+
+    def test_real_invoice_amount_mismatch_still_alerts_admin(self):
+        inv=self.inv()
+        self.run_hint("ethereum","0x"+"f6"*32,self.fake_found(inv,amount=int(inv["expected_units"])+1))
+        self.assertEqual(store.list_review()[0]["reason"],"amount_mismatch")
+        self.assertTrue(any("review needed" in note for note in self.notes))
 
 
 if __name__ == "__main__":
