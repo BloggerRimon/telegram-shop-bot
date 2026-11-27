@@ -234,7 +234,7 @@ class DbTests(unittest.TestCase):
         self.env.start()
         store._initialized = False
         with store.conn() as c, c.cursor() as cur:
-            cur.execute("DROP TABLE IF EXISTS onchain_customer_settlements, onchain_settings, onchain_audit, onchain_invoices, onchain_raw_events, "
+            cur.execute("DROP TABLE IF EXISTS onchain_payment_reports, onchain_delay_alerts, onchain_manual_receipts, onchain_manual_drafts, onchain_customer_settlements, onchain_settings, onchain_audit, onchain_invoices, onchain_raw_events, "
                         "onchain_tx_hints, onchain_transfers, onchain_test_ledger, onchain_review, onchain_checkpoints")
         store.init_schema(force=True)
         # monitoring started 1h ago so "now" transfers are eligible
