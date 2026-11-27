@@ -16,7 +16,7 @@ from typing import Callable, Dict, Optional, Tuple
 
 import requests
 
-from . import chains, store, tron_scan
+from . import chains, store, tron_scan, recovery
 from . import networks as nw
 from . import webhook as wh
 
@@ -187,6 +187,8 @@ class Engine:
                  interval: int = 30):
         self.notify = notify or (lambda text: None)
         self.client = client or chains.RpcClient()
+        self.discovery_client = client or chains.RpcClient(timeout=8, retries=0)
+        self._probe_thread = None
         self.interval = interval
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -202,6 +204,8 @@ class Engine:
             return
         self._thread = threading.Thread(target=self._run, name="onchain-engine", daemon=True)
         self._thread.start()
+        self._probe_thread = threading.Thread(target=recovery.probe_all, name="onchain-rpc-probes", daemon=True)
+        self._probe_thread.start()
 
     def stop(self):
         self._stop.set()
@@ -220,7 +224,10 @@ class Engine:
     # -- one pass
     def tick(self):
         store.init_schema()
+        if self._due("retry_exhausted_verifications", 600):
+            store.retry_stale_hints()
         self.ingest_raw_events()
+        self.process_hints()  # queued webhook payments do not wait behind indexer requests
         self.run_pollers()
         self.process_hints()
         store.expire_invoices()
@@ -246,25 +253,41 @@ class Engine:
         return True
 
     def run_pollers(self):
-        for name, fn, every in (("tron_blocks", lambda: tron_scan.poll(self.client), 30),
+        for name, fn, every in (("tron_blocks", lambda: tron_scan.poll(self.discovery_client), 30),
                                 ("solana", self.poll_solana, 60), ("tron", self.poll_tron, 60),
                                 ("bitcoin", lambda: self.poll_utxo("bitcoin"), 180),
                                 ("litecoin", lambda: self.poll_utxo("litecoin"), 180),
                                 ("ethereum", lambda: self.poll_evm("ethereum"), 120),
-                                ("bsc", lambda: self.poll_evm("bsc"), 120)):
+                                ("bsc", lambda: self.poll_evm("bsc"), 120),
+                                *[("rpc_" + n, lambda n=n: recovery.poll(self.discovery_client, n), 30)
+                                  for n in ("ethereum", "bsc", "bitcoin", "litecoin")]):
             try:
                 if time.time() < self._poll_retry_at.get(name, 0):
                     continue
                 if self._due(name, every):
                     fn()
+                    previous = store.get_checkpoint("poller_health:" + name, {}) or {}
+                    if previous.get("error") and previous.get("last_alert"):
+                        self.notify(f"✅ Payment monitoring recovered: {name}.")
+                    store.set_checkpoint("poller_health:" + name, {"last_success": datetime.now(timezone.utc).isoformat(),
+                        "error": None, "failures": 0})
                     self.poller_errors.pop(name, None)
                     self._poll_failures.pop(name, None)
                     self._poll_retry_at.pop(name, None)
             except Exception as e:
-                self.poller_errors[name] = str(e)[:120] or type(e).__name__
+                self.poller_errors[name] = chains.safe_error(e) or type(e).__name__
                 failures = min(self._poll_failures.get(name, 0) + 1, 6)
                 self._poll_failures[name] = failures
                 self._poll_retry_at[name] = time.time() + min(900, every * 2 ** failures)
+                health = store.get_checkpoint("poller_health:" + name, {}) or {}
+                last_alert = float(health.get("last_alert") or 0)
+                if failures >= 2 and time.time() - last_alert >= 3600:
+                    self.notify(f"⚠️ Payment monitoring error: {name} — {self.poller_errors[name]}. "
+                                "Retries and independent recovery remain active. Check /onchain health.")
+                    last_alert = time.time()
+                health.update(error=self.poller_errors[name], failures=failures,
+                              last_failure=datetime.now(timezone.utc).isoformat(), last_alert=last_alert)
+                store.set_checkpoint("poller_health:" + name, health)
 
     def poll_solana(self):
         if not nw.alchemy_url("solana"):
@@ -272,7 +295,7 @@ class Engine:
         cp = store.get_checkpoint("solana_last_sig")
         # An empty address has no seed signature. Do not skip its first deposit.
         # Independent verification rejects transfers from before monitoring/invoice creation.
-        sigs = chains.discover_solana(self.client, cp or None, limit=50)
+        sigs = chains.discover_solana(self.discovery_client, cp or None, limit=50)
         for s in sigs:
             store.add_hint("solana", s, "poller")
         if sigs:
@@ -283,10 +306,10 @@ class Engine:
             return
         cp = store.get_checkpoint(f"utxo_height:{network}")
         if cp is None:
-            head = int(self.client.rpc(nw.alchemy_url(network), "getblockcount", []))
+            head = int(self.discovery_client.rpc(nw.alchemy_url(network), "getblockcount", []))
             cp = max(0, head - 100)
         # Re-read recent blocks to tolerate delayed index updates. Hints and credits deduplicate.
-        found = chains.discover_utxo(network, self.client, max(0, int(cp) - 12))
+        found = chains.discover_utxo(network, self.discovery_client, max(0, int(cp) - 12))
         for txid in found["txids"]:
             store.add_hint(network, txid, "address_index")
         store.set_checkpoint(f"utxo_height:{network}", max(int(cp), int(found["height"])))
@@ -294,7 +317,7 @@ class Engine:
     def poll_tron(self):
         started_ms = int(store.monitoring_started_at("tron").timestamp() * 1000)
         cp = int(store.get_checkpoint("tron_min_ts", started_ms) or started_ms)
-        rows = chains.discover_tron(self.client, max(cp, started_ms))
+        rows = chains.discover_tron(self.discovery_client, max(cp, started_ms))
         newest = cp
         for r in rows:
             store.add_hint("tron", r["txid"], "poller")
@@ -304,7 +327,7 @@ class Engine:
     def poll_evm(self, network: str):
         if not nw.alchemy_url(network):
             return
-        head = chains.evm_head(network, self.client)
+        head = chains.evm_head(network, self.discovery_client)
         cp = store.get_checkpoint(f"evm_block:{network}")
         if cp is None:
             store.set_checkpoint(f"evm_block:{network}", head)  # start at "now": no history
@@ -313,7 +336,7 @@ class Engine:
         if start > head:
             return
         end = min(head, start + 1999)
-        for h in chains.discover_evm(network, self.client, start, end):
+        for h in chains.discover_evm(network, self.discovery_client, start, end):
             store.add_hint(network, h, "reconcile")
         store.set_checkpoint(f"evm_block:{network}", end)
 
@@ -327,6 +350,7 @@ class Engine:
         if st == "error":
             if attempts >= MAX_HINT_ATTEMPTS:
                 store.update_hint(network, txid, "gave_up", res.get("error"))
+                self.notify(f"⚠️ Payment verification needs review: {network} {txid} — {chains.safe_error(res.get('error'))}")
             else:
                 store.update_hint(network, txid, "retry", res.get("error"), min(600, 30 * (attempts + 1)))
             return
@@ -334,6 +358,7 @@ class Engine:
             self._drop_known(network, txid, "not_found_after_detection")
             if attempts >= NOT_FOUND_GIVE_UP:
                 store.update_hint(network, txid, "not_found", res.get("error"))
+                self.notify(f"⚠️ Payment transaction remains unavailable: {network} {txid}. Discovery can retry it later.")
             else:
                 store.update_hint(network, txid, "retry", "not_found", 60)
             return

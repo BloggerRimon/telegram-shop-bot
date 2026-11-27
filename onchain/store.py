@@ -359,7 +359,11 @@ def requeue_stuck_raw_events(minutes: int = 10) -> None:
 def add_hint(network: str, txid: str, source: str) -> bool:
     with conn() as c, c.cursor() as cur:
         cur.execute("INSERT INTO onchain_tx_hints (network, txid, source) VALUES (%s,%s,%s) "
-                    "ON CONFLICT (network, txid) DO NOTHING RETURNING txid", (network, txid, source))
+                    "ON CONFLICT (network, txid) DO UPDATE SET status='new', attempts=0, "
+                    "next_check_at=NOW(), last_error=NULL, source=EXCLUDED.source, updated_at=NOW() "
+                    "WHERE onchain_tx_hints.status IN ('not_found','gave_up') "
+                    "AND onchain_tx_hints.updated_at < NOW() - interval '10 minutes' RETURNING txid",
+                    (network, txid, source))
         return cur.fetchone() is not None
 
 
@@ -387,6 +391,17 @@ def recent_hints(limit: int = 10):
         return cur.fetchall()
 
 
+def retry_stale_hints() -> int:
+    """Resume recent verification after a long RPC outage, preserving completed/failed outcomes."""
+    with conn() as c, c.cursor() as cur:
+        cur.execute("UPDATE onchain_tx_hints SET status='new', attempts=0, next_check_at=NOW(), "
+                    "last_error=NULL, updated_at=NOW() WHERE (network, txid) IN "
+                    "(SELECT network, txid FROM onchain_tx_hints WHERE status IN ('not_found','gave_up') "
+                    "AND created_at > NOW() - interval '24 hours' "
+                    "AND updated_at < NOW() - interval '10 minutes' LIMIT 100) RETURNING txid")
+        return len(cur.fetchall())
+
+
 # ---------------------------------------------------------------- transfers
 def upsert_transfer(t: dict) -> dict:
     """Insert a newly observed incoming transfer; existing rows only get fresher chain data."""
@@ -399,7 +414,10 @@ def upsert_transfer(t: dict) -> dict:
                ON CONFLICT (uid) DO UPDATE SET
                    block_number=COALESCE(EXCLUDED.block_number, onchain_transfers.block_number),
                    block_time=COALESCE(EXCLUDED.block_time, onchain_transfers.block_time),
-                   confirmations=GREATEST(EXCLUDED.confirmations, onchain_transfers.confirmations),
+                   confirmations=EXCLUDED.confirmations,
+                   status=CASE WHEN onchain_transfers.status='dropped' THEN 'detected' ELSE onchain_transfers.status END,
+                   invoice_id=CASE WHEN onchain_transfers.status='dropped' THEN NULL ELSE onchain_transfers.invoice_id END,
+                   reason=CASE WHEN onchain_transfers.status='dropped' THEN NULL ELSE onchain_transfers.reason END,
                    updated_at=NOW()
                RETURNING *""", t)
         return cur.fetchone()
@@ -458,8 +476,9 @@ def resolve_review(review_id: int, actor: int, resolution: str) -> bool:
 def match_transfer(uid: str) -> dict:
     """Attach a detected transfer to exactly one eligible invoice, or route it to review.
 
-    Eligible = same asset, exact amount, invoice was awaiting, created at or before the
-    transfer's block time, and not expired at block time. Returns {'result': ...}.
+    Eligible = same asset, exact amount, invoice awaiting/expired, created before
+    the transfer and unexpired at its block time. Indexer delay after the deadline
+    must not turn an on-time payment into a late payment. Cancelled invoices stay excluded.
     """
     with conn() as c, c.cursor() as cur:
         cur.execute("SELECT * FROM onchain_transfers WHERE uid=%s FOR UPDATE", (uid,))
@@ -477,7 +496,7 @@ def match_transfer(uid: str) -> dict:
             return {"result": "historical"}
         cur.execute(
             """SELECT * FROM onchain_invoices WHERE asset_id=%s AND expected_units=%s
-               AND status='awaiting' AND created_at <= %s AND expires_at >= %s
+               AND status IN ('awaiting','expired') AND created_at <= %s AND expires_at >= %s
                ORDER BY id FOR UPDATE""",
             (t["asset_id"], t["amount_units"], t["block_time"], t["block_time"]))
         cands = cur.fetchall()
@@ -556,7 +575,7 @@ def unmatch_dropped_transfer(uid: str, reason: str) -> None:
         t = cur.fetchone()
         if not t or t["status"] == "final":
             return
-        cur.execute("UPDATE onchain_transfers SET status='dropped', reason=%s, updated_at=NOW() WHERE uid=%s",
+        cur.execute("UPDATE onchain_transfers SET status='dropped', invoice_id=NULL, reason=%s, updated_at=NOW() WHERE uid=%s",
                     (reason, uid))
         if t["invoice_id"]:
             cur.execute("UPDATE onchain_invoices SET status=CASE WHEN expires_at < NOW() THEN 'expired' "
@@ -582,6 +601,17 @@ def earliest_open_invoice_time(network: str):
                     "AND status IN ('awaiting','detected') AND (expires_at > NOW() OR status='detected')",
                     (network,))
         return cur.fetchone()["started"]
+
+
+def recovery_invoice_window(network: str):
+    """Include recently expired invoices so an indexer outage cannot lose on-time transfers."""
+    with conn() as c, c.cursor() as cur:
+        cur.execute("SELECT MIN(created_at) AS started, MAX(expires_at) AS ended, "
+                    "MIN(created_at) FILTER (WHERE status IN ('awaiting','detected')) AS active_started, "
+                    "array_agg(DISTINCT asset_id) AS assets FROM onchain_invoices WHERE network=%s "
+                    "AND (status IN ('awaiting','detected') OR "
+                    "(status='expired' AND expires_at > NOW() - interval '24 hours'))", (network,))
+        return cur.fetchone()
 
 
 def pending_customer_settlements(limit: int = 25):
