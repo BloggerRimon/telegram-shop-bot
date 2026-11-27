@@ -67,12 +67,14 @@ def home_text() -> str:
         f"New customer crypto payments: <b>{esc({'trust_wallet': 'Trust Wallet', 'cryptomus': 'Cryptomus'}.get(customer.gateway(), customer.gateway()))}</b>.",
         "Previous invoices keep their original gateway and continue verification.",
         "",
-        "<b>Readiness</b> (ready = infra OK + successful admin test):",
+        "<b>Availability / real payment tests</b>:",
     ]
     for aid in nw.ASSET_ORDER:
         a = nw.ASSETS[aid]
         ready = eng.asset_ready(aid, paid)
-        lines.append(f"{'✅' if ready else '⏳'} {esc(a.label)} — net {'ON' if eng.network_enabled(a.network) else 'off'}")
+        status = "✅ real test passed" if ready else (
+            "⚠️ owner approved; real test pending" if aid in eng.owner_approved_assets() else "⏳ not released")
+        lines.append(f"{esc(a.label)} — net {'ON' if eng.network_enabled(a.network) else 'off'} · {status}")
     return "\n".join(lines)
 
 
@@ -191,7 +193,8 @@ async def _dispatch(query, uid, action, args, is_admin):
         active = await run(customer.gateway)
         await _send(query, f"🔄 <b>New customer crypto payments: {esc(active)}</b>\n\n"
                            "Switching does not delete Cryptomus or stop previous invoices.\n"
-                           "Trust Wallet accepts only assets that passed their admin test.",
+                           "Trust Wallet accepts tested assets or assets explicitly approved by the owner. "
+                           "The home panel shows real test status separately.",
                     KB([[B("Use Trust Wallet", callback_data="oc:gateway:trust_wallet")],
                         [B("Use Cryptomus", callback_data="oc:gateway:cryptomus")], _back()]))
     elif action == "gateway" and len(args) == 1:
@@ -266,16 +269,16 @@ async def _dispatch(query, uid, action, args, is_admin):
         kb = [[B("Turn OFF", callback_data="oc:master:off")]] if on else \
              [[B("I reviewed the tests — turn ON", callback_data="oc:master:on")]]
         await _send(query, f"🔐 Master customer activation is <b>{'ON' if on else 'OFF'}</b>.\n\n"
-                           "New Trust Wallet invoices also require the gateway switch, a tested asset, "
+                           "New Trust Wallet invoices also require the gateway switch, a tested or owner-approved asset, "
                            "and its network to be enabled. Previous invoices keep tracking.", KB(kb + [_back()]))
     elif action == "master" and args[0] == "on":
         kb = [[B("✅ Yes, activate", callback_data="oc:master:confirm")], _back()]
         await _send(query, "Confirm: activate customer gate? (Only networks you enabled AND assets with a "
-                           "successful admin test pass the gate.)", KB(kb))
+                           "successful admin test or explicit owner approval pass the gate.)", KB(kb))
     elif action == "master" and args[0] == "confirm":
-        ready_any = await run(lambda: any(eng.asset_ready(a) for a in nw.ASSET_ORDER))
+        ready_any = await run(lambda: any(eng.asset_available(a) for a in nw.ASSET_ORDER))
         if not ready_any:
-            raise eng.GateClosed("no asset has a successful admin test yet")
+            raise eng.GateClosed("no tested or owner-approved asset has available infrastructure")
         await run(store.set_setting, "customer_new_payments_enabled", True, uid)
         await _send(query, "✅ Master activation ON.", KB([_back()]))
     elif action == "master" and args[0] == "off":
